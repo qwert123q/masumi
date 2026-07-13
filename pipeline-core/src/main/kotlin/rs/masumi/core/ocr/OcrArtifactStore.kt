@@ -37,6 +37,31 @@ class OcrArtifactStore(
         .filter { it.status.isResumable() }
         .maxWithOrNull(compareBy<OcrJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
 
+    fun prepareRun(job: OcrJobRecord) {
+        requireSafeId(job.jobId, "jobId")
+        requireSha256(job.runArtifactKey, "runArtifactKey")
+        fileSystem.createDirectories(checkpointDirectory(job))
+    }
+
+    fun cleanInterruptedRegion(
+        job: OcrJobRecord,
+        pageId: String,
+        ocrRegionId: String,
+    ) {
+        val pages = requireMatchingPages(job, pageId)
+        require(pages.all { page -> page.regions.any { it.ocrRegionId == ocrRegionId } }) {
+            "region does not belong to duplicate page entries"
+        }
+        requireSha256(ocrRegionId, "ocrRegionId")
+        fileSystem.deleteIfExists(
+            checkpointDirectory(job)
+                .resolve("pages")
+                .resolve(pageId)
+                .resolve("regions")
+                .resolve("$ocrRegionId.json"),
+        )
+    }
+
     fun commitRegion(
         job: OcrJobRecord,
         page: OcrJobPage,

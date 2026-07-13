@@ -95,6 +95,18 @@ class OcrJobReducerTest {
         assertTrue(queued.pages.single().regions.all { it.state == OcrRegionState.PENDING })
     }
 
+    @Test
+    fun `empty candidate page can enter running state before atomic page commit`() {
+        val running = runningJob().copy(
+            pages = listOf(page(regions = emptyList())),
+        )
+
+        val started = OcrJobReducer.startEmptyPage(running, PAGE_ID, 5L)
+
+        assertEquals(OcrPageState.RUNNING, started.pages.single().state)
+        assertTrue(started.pages.single().regions.isEmpty())
+    }
+
     private fun job(): OcrJobRecord = OcrJobRecord(
         jobId = "ocr-job-1",
         projectId = "project-1",

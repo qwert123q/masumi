@@ -146,6 +146,19 @@ class OcrArtifactStoreTest {
         assertEquals("ocr-job-new", assertNotNull(store.findResumableJob()).jobId)
     }
 
+    @Test
+    fun `recovery removes only the unjournaled running region checkpoint`() {
+        val job = runningJob()
+        val artifact = regionArtifact(REGION_ONE, OcrRegionState.RECOGNIZED)
+        store.commitRegion(job, job.pages.single(), artifact)
+        val checkpoint = checkpoint(job).resolve("pages/$PAGE_ID/regions/$REGION_ONE.json")
+        assertTrue(checkpoint.exists())
+
+        store.cleanInterruptedRegion(job, PAGE_ID, REGION_ONE)
+
+        assertFalse(checkpoint.exists())
+    }
+
     private fun runningJob(): OcrJobRecord = OcrJobRecord(
         jobId = "ocr-job-1",
         projectId = "project-1",

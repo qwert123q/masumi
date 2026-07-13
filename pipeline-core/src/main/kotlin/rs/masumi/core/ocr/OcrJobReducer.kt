@@ -68,6 +68,26 @@ object OcrJobReducer {
         }
     }
 
+    fun startEmptyPage(
+        job: OcrJobRecord,
+        pageId: String,
+        nowEpochMillis: Long,
+    ): OcrJobRecord {
+        require(job.status == OcrJobStatus.RUNNING) { "job must be running" }
+        require(!job.cancelRequested) { "cancelled job cannot start another page" }
+        val pages = requirePages(job, pageId)
+        require(pages.all { it.state == OcrPageState.PENDING }) { "page must be pending" }
+        require(pages.all { it.regions.isEmpty() }) { "only empty candidate pages use this transition" }
+        return job.withPages(pageId, nowEpochMillis) { page ->
+            page.copy(
+                state = OcrPageState.RUNNING,
+                artifactPath = null,
+                previewPath = null,
+                error = null,
+            )
+        }
+    }
+
     fun commitTerminalRegion(
         job: OcrJobRecord,
         pageId: String,

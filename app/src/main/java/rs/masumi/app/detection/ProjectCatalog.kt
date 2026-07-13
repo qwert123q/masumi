@@ -1,9 +1,12 @@
 package rs.masumi.app.detection
 
 import rs.masumi.core.detection.DetectionArtifactStore
+import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.detection.DetectionReport
 import rs.masumi.core.detection.DetectionRunArtifact
+import rs.masumi.core.detection.PageDetectionArtifact
 import rs.masumi.core.model.ProjectManifest
+import rs.masumi.core.serialization.DetectionJson
 import rs.masumi.core.serialization.ProjectJson
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,6 +25,7 @@ data class PublishedDetectionRun(
 class ProjectCatalog(
     workspaceRoot: Path,
     private val json: ProjectJson = ProjectJson(),
+    private val detectionJson: DetectionJson = DetectionJson(),
 ) {
     private val projectsDirectory = workspaceRoot.toAbsolutePath().normalize().resolve("projects")
 
@@ -59,6 +63,33 @@ class ProjectCatalog(
                     .thenBy { it.artifact.runArtifactKey },
             )
     }
+
+    fun readPublishedPage(
+        run: PublishedDetectionRun,
+        pageId: String,
+    ): PageDetectionArtifact? = runCatching {
+        require(SHA256.matches(pageId)) { "pageId must be a SHA-256 digest" }
+        val entries = run.artifact.entries.filter { it.pageId == pageId }
+        require(entries.isNotEmpty()) { "page does not belong to detection run" }
+        require(entries.all { it.state == DetectionPageState.COMMITTED }) {
+            "detection page is not committed"
+        }
+        val relativePaths = entries.map { requireNotNull(it.regionsPath) }.distinct()
+        require(relativePaths.size == 1) { "duplicate page entries disagree" }
+        val path = run.directory.resolve(relativePaths.single()).normalize()
+        require(path.startsWith(run.directory.normalize())) { "detection page path escaped run" }
+        require(Files.isRegularFile(path)) { "detection page artifact is missing" }
+        Files.newBufferedReader(path, Charsets.UTF_8).use { reader ->
+            detectionJson.decodePageArtifact(reader.readText())
+        }.also { page ->
+            require(page.pageId == pageId)
+            require(page.sourceSha256 == pageId)
+            require(entries.all { it.pageArtifactKey == page.pageArtifactKey })
+            require(page.model == run.artifact.model)
+            require(page.preprocessing == run.artifact.preprocessing)
+            require(page.thresholds == run.artifact.thresholds)
+        }
+    }.getOrNull()
 
     private fun readProject(directory: Path): ProjectRef? = runCatching {
         require(Files.isDirectory(directory))
