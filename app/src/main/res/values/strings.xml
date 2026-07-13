@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Masumi</string>
+    <string name="main_title">Masumi</string>
+    <string name="main_description">将漫画章节导入为不可变项目。当前版本只建立源图、清单和任务报告，不执行翻译。</string>
+    <string name="import_chapter">导入漫画文件夹</string>
+    <string name="import_status_idle">等待导入</string>
+    <string name="import_status_running">正在导入并校验源图…</string>
+    <string name="import_status_success">导入完成：%1$d 页，%2$d 字节。报告：%3$s</string>
+    <string name="import_status_failed">导入失败：%1$s。报告：%2$s</string>
+    <string name="import_status_failed_unknown">导入失败：未能安全创建项目。</string>
 </resources>

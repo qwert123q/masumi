@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="rs.masumi.app.TestDocumentsProvider"
+            android:authorities="rs.masumi.app.dev.test.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS" />
+    </application>
+</manifest>

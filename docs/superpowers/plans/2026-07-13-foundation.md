@@ -413,16 +413,16 @@ git commit -m "feat: make project import failure atomic"
 - Create: `app/src/main/java/rs/masumi/app/AndroidDocumentSource.kt`
 - Create: `app/src/main/java/rs/masumi/app/DocumentTreeReader.kt`
 - Create: `app/src/main/java/rs/masumi/app/MainActivity.kt`
-- Create: `app/src/androidTest/AndroidManifest.xml`
-- Create: `app/src/androidTest/java/rs/masumi/app/TestDocumentsProvider.kt`
+- Create: `app/src/debug/AndroidManifest.xml`
+- Create: `app/src/debug/java/rs/masumi/app/TestDocumentsProvider.kt`
 - Create: `app/src/androidTest/java/rs/masumi/app/DocumentTreeReaderTest.kt`
-- Create: `app/src/androidTest/java/rs/masumi/app/MainActivityTest.kt`
+- Create: `app/src/androidTest/java/rs/masumi/app/MainActivityLayoutTest.kt`
 - Modify: `app/src/main/AndroidManifest.xml`
 - Modify: `app/src/main/res/values/strings.xml`
 
 - [ ] **Step 1: Write failing device contract tests**
 
-Register a test-only `DocumentsProvider` that exposes two supported files, one unsupported file, and one directory. Write `DocumentTreeReaderTest` to assert that direct children are adapted with the provider names and MIME types and that a returned source stream yields the provider bytes. Write `MainActivityTest` with `ActivityScenario` to assert that the import button and idle status are visible.
+Register a debug-only `DocumentsProvider` that exposes two supported files, one unsupported file, and one directory. Write `DocumentTreeReaderTest` to assert that direct children are adapted with the provider names and MIME types and that a returned source stream yields the provider bytes. Write `MainActivityLayoutTest` to inflate the activity layout in the target context and assert that the import button, idle status, and idle progress state are correct. Keep real Activity launch verification as a separate ADB smoke test so OEM background-launch policy cannot make the instrumentation contract nondeterministic.
 
 - [ ] **Step 2: Run the device tests and verify RED**
 
@@ -457,7 +457,7 @@ Use `DocumentsContract.buildChildDocumentsUriUsingTree` and query document ID, d
 
 Run: `./gradlew :app:connectedDebugAndroidTest`
 
-Expected: the provider contract and Activity launch tests pass on the connected device.
+Expected: the provider and layout contracts pass on the connected device.
 
 - [ ] **Step 7: Build and install the debug application**
 
@@ -466,10 +466,10 @@ Run:
 ```bash
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n rs.masumi.app.dev/rs.masumi.app.MainActivity
+adb shell am start -W -n rs.masumi.app.dev/rs.masumi.app.MainActivity
 ```
 
-Expected: the debug APK installs alongside any future release build and the main screen launches without a crash.
+Expected: the debug APK installs alongside any future release build, the main screen launches without a crash, and a UI hierarchy dump contains the import button and idle status.
 
 - [ ] **Step 8: Commit the Android adapter**
 

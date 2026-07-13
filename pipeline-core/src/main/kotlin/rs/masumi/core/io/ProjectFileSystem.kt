@@ -1,7 +1,6 @@
 package rs.masumi.core.io
 
 import java.io.OutputStream
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -40,13 +39,9 @@ class NioProjectFileSystem : ProjectFileSystem {
     }
 
     override fun writeUtf8(path: Path, content: String) {
-        Files.writeString(
-            path,
-            content,
-            StandardCharsets.UTF_8,
-            StandardOpenOption.CREATE_NEW,
-            StandardOpenOption.WRITE,
-        )
+        newOutputStream(path).bufferedWriter(Charsets.UTF_8).use { writer ->
+            writer.write(content)
+        }
     }
 
     override fun publishDirectory(stagingDirectory: Path, projectDirectory: Path) {
