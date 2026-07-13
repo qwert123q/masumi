@@ -93,6 +93,22 @@ class DetectionArtifactStoreTest {
     }
 
     @Test
+    fun `finds the latest terminal job for durable status display`() {
+        val older = runningJob().copy(jobId = "job-older", updatedAtEpochMillis = 10)
+        val failed = runningJob().copy(
+            jobId = "job-failed",
+            updatedAtEpochMillis = 20,
+            status = DetectionJobStatus.FAILED,
+            error = DetectionError("MODEL_UNAVAILABLE", "Detector model was unavailable"),
+        )
+        store.writeJob(older)
+        store.writeJob(failed)
+
+        assertEquals("job-failed", assertNotNull(store.findLatestJob()).jobId)
+        assertEquals("job-older", assertNotNull(store.findResumableJob()).jobId)
+    }
+
+    @Test
     fun `rejects a page artifact without all model queries`() {
         val job = runningJob()
 

@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Masumi</string>
     <string name="main_title">Masumi</string>
-    <string name="main_description">将漫画章节导入为不可变项目。当前版本只建立源图、清单和任务报告，不执行翻译。</string>
+    <string name="main_description">导入漫画章节，后台分析对白框、框内文字和游离文字，并逐页检查派生预览。源图始终保持不变。</string>
     <string name="import_chapter">导入漫画文件夹</string>
     <string name="import_status_idle">等待导入</string>
     <string name="import_status_running">正在导入并校验源图…</string>
@@ -22,4 +22,26 @@
     <string name="detection_notification_failed">页面分析失败：%1$s</string>
     <string name="detection_notification_failed_unknown">页面分析意外中止，可重新启动恢复</string>
     <string name="cancel_detection">取消分析</string>
+    <string name="detection_section_title">页面分析</string>
+    <string name="start_detection">开始页面分析</string>
+    <string name="detection_status_no_project">尚未导入漫画</string>
+    <string name="detection_status_ready">项目已就绪，可以开始页面分析</string>
+    <string name="detection_status_starting">正在启动后台分析…</string>
+    <string name="detection_status_downloading">正在准备检测模型：%1$d / %2$d 字节</string>
+    <string name="detection_status_progress">已处理 %1$d / %2$d 页</string>
+    <string name="detection_status_succeeded">页面分析完成：%1$d 页</string>
+    <string name="detection_status_succeeded_preserved">页面分析完成：%1$d 页成功，%2$d 页保留原图</string>
+    <string name="detection_status_cancelled">分析已取消，点击开始可从断点继续</string>
+    <string name="detection_status_failed">分析失败：%1$s</string>
+    <string name="preview_section_title">页面预览</string>
+    <string name="preview_content_description">页面检测标注预览</string>
+    <string name="preview_empty">尚无分析结果</string>
+    <string name="preview_page_indicator">第 %1$d / %2$d 页</string>
+    <string name="preview_preserved_page">本页分析失败，保留原始页面（%1$s）</string>
+    <string name="preview_unavailable">预览文件不可用</string>
+    <string name="previous_page">上一页</string>
+    <string name="next_page">下一页</string>
+    <string name="legend_bubble">蓝色：对白框候选</string>
+    <string name="legend_text_in_bubble">绿色：框内文字</string>
+    <string name="legend_free_text">橙色：待分类游离文字</string>
 </resources>

@@ -29,13 +29,18 @@ class DetectionArtifactStore(
         return job
     }
 
-    fun findResumableJob(): DetectionJobRecord? = fileSystem
+    fun findLatestJob(): DetectionJobRecord? = readAllJobs()
+        .maxWithOrNull(compareBy<DetectionJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
+
+    fun findResumableJob(): DetectionJobRecord? = readAllJobs()
+        .filter { job -> job.status.isResumable() }
+        .maxWithOrNull(compareBy<DetectionJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
+
+    private fun readAllJobs(): Sequence<DetectionJobRecord> = fileSystem
         .list(projectDirectory.resolve("jobs"))
         .asSequence()
         .filter { path -> path.fileName.toString().endsWith(".json") }
         .mapNotNull { path -> runCatching { json.decodeJob(fileSystem.readUtf8(path)) }.getOrNull() }
-        .filter { job -> job.status.isResumable() }
-        .maxWithOrNull(compareBy<DetectionJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
 
     fun cleanInterruptedPage(job: DetectionJobRecord, page: DetectionJobPage) {
         require(job.pages.any { it.order == page.order && it.pageId == page.pageId }) {

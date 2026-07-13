@@ -110,9 +110,15 @@ class DetectionForegroundService : Service() {
     }
 
     private fun publishProgress(progress: DetectionProgress) {
-        sendBroadcast(DetectionStatusBroadcast.create(packageName, progress))
+        sendBroadcast(
+            DetectionStatusBroadcast.create(packageName, progress),
+            internalStatusPermission(),
+        )
         notificationManager.notify(NOTIFICATION_ID, progressNotification(progress))
     }
+
+    private fun internalStatusPermission(): String =
+        "$packageName.permission.INTERNAL_DETECTION_STATUS"
 
     private fun progressNotification(progress: DetectionProgress): Notification {
         val completed = progress.committedPageCount + progress.preservedPageCount

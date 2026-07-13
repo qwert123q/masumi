@@ -367,11 +367,11 @@ git commit -m "feat: keep page detection recoverable"
 - Create: `app/src/main/res/values/colors.xml`
 - Modify: `app/src/androidTest/java/rs/masumi/app/MainActivityLayoutTest.kt`
 
-- [ ] **Step 1: Write failing layout tests**
+- [x] **Step 1: Write failing layout tests**
 
 Assert disabled-until-project analysis, hidden cancel, determinate progress, status, preview image, previous/next controls, page indicator, and three legend labels.
 
-- [ ] **Step 2: Build layout and activity state**
+- [x] **Step 2: Build layout and activity state**
 
 Retain import controls. Discover latest project on launch, start/cancel the service, request notification permission immediately before first analysis on API 33+, register a non-exported receiver while started, and reload durable state on every progress event and `onResume`. Canonicalize preview paths under their project. Navigate in manifest order and show the original plus failure marker for preserved pages.
 
