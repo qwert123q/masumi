@@ -34,6 +34,7 @@ import java.time.Clock
 data class DetectionProgress(
     val projectId: String,
     val jobId: String,
+    val runArtifactKey: String,
     val status: DetectionJobStatus,
     val committedPageCount: Int,
     val preservedPageCount: Int,
@@ -470,6 +471,7 @@ class DetectionRunner(
     ): DetectionProgress = DetectionProgress(
         projectId = projectId,
         jobId = jobId,
+        runArtifactKey = runArtifactKey,
         status = status,
         committedPageCount = pages.count { it.state == DetectionPageState.COMMITTED },
         preservedPageCount = pages.count { it.state == DetectionPageState.PRESERVED_SOURCE },

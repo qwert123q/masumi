@@ -341,15 +341,15 @@ Expected: instrumentation reports `OK`; neither package is uninstalled.
 - Modify: `app/src/main/AndroidManifest.xml`
 - Test: `app/src/androidTest/java/rs/masumi/app/detection/DetectionStatusBroadcastTest.kt`
 
-- [ ] **Step 1: Test safe status contracts**
+- [x] **Step 1: Test safe status contracts**
 
 Broadcasts must be package-scoped and contain only project/job/run status, counts, page order, and stable error code—never paths, model URLs, exception text, or bitmap bytes.
 
-- [ ] **Step 2: Implement service and broadcast**
+- [x] **Step 2: Implement service and broadcast**
 
 Call `startForeground` immediately, own one single-thread executor, reject concurrent projects, and use `AtomicBoolean` for page-boundary cancellation. Return `START_REDELIVER_INTENT` while active. Update notification plus explicit package broadcast for progress/terminal states. `onDestroy` closes the executor without deleting checkpoints.
 
-- [ ] **Step 3: Compile and commit**
+- [x] **Step 3: Compile and commit**
 
 ```bash
 ./gradlew :app:compileDebugKotlin :app:assembleDebugAndroidTest

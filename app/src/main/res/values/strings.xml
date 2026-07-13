@@ -9,4 +9,17 @@
     <string name="import_status_success">导入完成：%1$d 页，%2$d 字节。报告：%3$s</string>
     <string name="import_status_failed">导入失败：%1$s。报告：%2$s</string>
     <string name="import_status_failed_unknown">导入失败：未能安全创建项目。</string>
+    <string name="detection_notification_channel">漫画页面分析</string>
+    <string name="detection_notification_title">Masumi 页面分析</string>
+    <string name="detection_notification_starting">正在准备分析任务…</string>
+    <string name="detection_notification_busy">已有页面分析任务正在运行</string>
+    <string name="detection_notification_cancelling">将在当前页面完成后取消…</string>
+    <string name="detection_notification_downloading">正在准备模型：%1$d / %2$d 字节</string>
+    <string name="detection_notification_progress">已处理 %1$d / %2$d 页</string>
+    <string name="detection_notification_succeeded">页面分析完成</string>
+    <string name="detection_notification_succeeded_preserved">页面分析完成，%1$d 页保留原图</string>
+    <string name="detection_notification_cancelled">页面分析已取消，可稍后继续</string>
+    <string name="detection_notification_failed">页面分析失败：%1$s</string>
+    <string name="detection_notification_failed_unknown">页面分析意外中止，可重新启动恢复</string>
+    <string name="cancel_detection">取消分析</string>
 </resources>
