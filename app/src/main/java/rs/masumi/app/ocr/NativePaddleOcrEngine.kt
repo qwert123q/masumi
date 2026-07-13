@@ -3,12 +3,22 @@ package rs.masumi.app.ocr
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import org.json.JSONObject
 
 internal interface NativeOcrBridge {
     fun create(modelPath: String, projectorPath: String): Long
 
-    fun recognize(handle: Long, requestJson: String, rgb: ByteArray): String
+    fun recognize(
+        handle: Long,
+        rgb: ByteArray,
+        width: Int,
+        height: Int,
+        prompt: String,
+        maximumGeneratedTokens: Int,
+        repetitionPenalty: Double,
+    ): String
 
     fun cancel(handle: Long)
 
@@ -22,7 +32,15 @@ private object JniNativeOcrBridge : NativeOcrBridge {
 
     override external fun create(modelPath: String, projectorPath: String): Long
 
-    override external fun recognize(handle: Long, requestJson: String, rgb: ByteArray): String
+    override external fun recognize(
+        handle: Long,
+        rgb: ByteArray,
+        width: Int,
+        height: Int,
+        prompt: String,
+        maximumGeneratedTokens: Int,
+        repetitionPenalty: Double,
+    ): String
 
     override external fun cancel(handle: Long)
 
@@ -34,25 +52,55 @@ class NativePaddleOcrEngine internal constructor(
     private val bridge: NativeOcrBridge,
 ) : OcrEngine {
     private val closed = AtomicBoolean(false)
+    private val inferenceLock = ReentrantLock()
 
     override fun recognize(
         request: OcrEngineRequest,
         cancellation: () -> Boolean,
-    ): OcrEngineResult {
+    ): OcrEngineResult = inferenceLock.withLock {
         ensureOpen()
         validateRequest(request)
         if (cancellation()) {
             cancel()
             throw OcrEngineException(OcrEngineErrorCode.CANCELLED)
         }
+        val monitoring = AtomicBoolean(true)
+        val cancellationMonitor = Thread {
+            while (monitoring.get()) {
+                if (cancellation()) {
+                    cancel()
+                    return@Thread
+                }
+                try {
+                    Thread.sleep(CANCELLATION_POLL_MILLIS)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+        }.apply {
+            name = "masumi-ocr-cancellation"
+            isDaemon = true
+            start()
+        }
         val response = try {
-            bridge.recognize(handle, request.toJson().toString(), request.rgb)
+            bridge.recognize(
+                handle = handle,
+                rgb = request.rgb,
+                width = request.width,
+                height = request.height,
+                prompt = request.prompt,
+                maximumGeneratedTokens = request.maximumGeneratedTokens,
+                repetitionPenalty = request.repetitionPenalty,
+            )
         } catch (failure: OcrEngineException) {
             throw failure
         } catch (failure: Throwable) {
             throw OcrEngineException(OcrEngineErrorCode.DECODE, failure)
+        } finally {
+            monitoring.set(false)
+            cancellationMonitor.interrupt()
         }
-        return parseResult(response)
+        parseResult(response)
     }
 
     override fun cancel() {
@@ -60,7 +108,10 @@ class NativePaddleOcrEngine internal constructor(
     }
 
     override fun close() {
-        if (closed.compareAndSet(false, true)) bridge.destroy(handle)
+        if (closed.compareAndSet(false, true)) {
+            bridge.cancel(handle)
+            inferenceLock.withLock { bridge.destroy(handle) }
+        }
     }
 
     private fun ensureOpen() {
@@ -79,13 +130,6 @@ class NativePaddleOcrEngine internal constructor(
             throw OcrEngineException(OcrEngineErrorCode.TOKENIZE)
         }
     }
-
-    private fun OcrEngineRequest.toJson(): JSONObject = JSONObject()
-        .put("width", width)
-        .put("height", height)
-        .put("prompt", prompt)
-        .put("maximumGeneratedTokens", maximumGeneratedTokens)
-        .put("repetitionPenalty", repetitionPenalty)
 
     private fun parseResult(content: String): OcrEngineResult {
         val json = try {
@@ -150,13 +194,20 @@ class NativePaddleOcrEngine internal constructor(
             when (handle) {
                 MODEL_LOAD_FAILURE -> throw OcrEngineException(OcrEngineErrorCode.MODEL_LOAD)
                 PROJECTOR_LOAD_FAILURE -> throw OcrEngineException(OcrEngineErrorCode.PROJECTOR_LOAD)
+                VISION_UNSUPPORTED_FAILURE -> {
+                    throw OcrEngineException(OcrEngineErrorCode.VISION_UNSUPPORTED)
+                }
+                TEMPLATE_FAILURE -> throw OcrEngineException(OcrEngineErrorCode.TOKENIZE)
             }
-            if (handle <= 0L) throw OcrEngineException(OcrEngineErrorCode.CONTEXT)
+            if (handle == 0L) throw OcrEngineException(OcrEngineErrorCode.CONTEXT)
             return NativePaddleOcrEngine(handle, bridge)
         }
 
         private const val RGB_CHANNEL_COUNT = 3L
         private const val MODEL_LOAD_FAILURE = -1L
         private const val PROJECTOR_LOAD_FAILURE = -2L
+        private const val VISION_UNSUPPORTED_FAILURE = -3L
+        private const val TEMPLATE_FAILURE = -4L
+        private const val CANCELLATION_POLL_MILLIS = 10L
     }
 }

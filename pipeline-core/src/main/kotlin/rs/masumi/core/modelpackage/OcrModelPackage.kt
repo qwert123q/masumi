@@ -145,7 +145,7 @@ object PinnedPaddleOcrVl {
             llamaCommit = "f454bd7eb8944629aabca163ea1c6e67e53fd77e",
             abi = "arm64-v8a",
             backend = "cpu",
-            buildContract = "mtmd-v1",
+            buildContract = "mtmd-cpu-t6-image16-v2",
         ),
     )
 }
