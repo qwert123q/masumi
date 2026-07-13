@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.gradle/
+.kotlin/
+build/
+**/build/
+local.properties
+*.jks
+*.keystore
+*.log
+/.private/
+
+models/
+local-models/
+outputs/
+workspaces/
