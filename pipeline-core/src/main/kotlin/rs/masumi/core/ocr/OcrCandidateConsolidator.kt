@@ -70,9 +70,7 @@ class OcrCandidateConsolidator(
         }
         val association = bestBubble(candidateBox, bubbles)
         return OcrCandidate(
-            ocrRegionId = listOf(page.pageId, page.pageArtifactKey, sourceIds.joinToString(","), semantic.name)
-                .joinToString(":")
-                .lowercase(),
+            ocrRegionId = OcrIdentity.regionId(page.pageId, page.pageArtifactKey, sourceIds, semantic),
             sourceRegionIds = sourceIds,
             representativeSourceRegionId = representative.regionId,
             sourceClass = sourceClass,
