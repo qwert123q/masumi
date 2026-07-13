@@ -7,6 +7,7 @@ import rs.masumi.core.detection.DetectionJobRecord
 import rs.masumi.core.detection.DetectionReport
 import rs.masumi.core.detection.DetectionRunArtifact
 import rs.masumi.core.detection.PageDetectionArtifact
+import rs.masumi.core.modelpackage.DetectorModelPackageMetadata
 
 class DetectionJson(
     private val json: Json = Json {
@@ -31,4 +32,10 @@ class DetectionJson(
     fun encodeReport(report: DetectionReport): String = json.encodeToString(report)
 
     fun decodeReport(content: String): DetectionReport = json.decodeFromString(content)
+
+    fun encodeModelPackageMetadata(metadata: DetectorModelPackageMetadata): String =
+        json.encodeToString(metadata)
+
+    fun decodeModelPackageMetadata(content: String): DetectorModelPackageMetadata =
+        json.decodeFromString(content)
 }
