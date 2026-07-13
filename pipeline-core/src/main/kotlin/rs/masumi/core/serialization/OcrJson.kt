@@ -8,6 +8,7 @@ import rs.masumi.core.ocr.OcrReport
 import rs.masumi.core.ocr.OcrRegionArtifact
 import rs.masumi.core.ocr.OcrRunArtifact
 import rs.masumi.core.ocr.PageOcrArtifact
+import rs.masumi.core.modelpackage.OcrModelPackageMetadata
 
 class OcrJson(
     private val json: Json = Json {
@@ -36,4 +37,10 @@ class OcrJson(
     fun encodeReport(report: OcrReport): String = json.encodeToString(report)
 
     fun decodeReport(content: String): OcrReport = json.decodeFromString(content)
+
+    fun encodeModelPackageMetadata(metadata: OcrModelPackageMetadata): String =
+        json.encodeToString(metadata)
+
+    fun decodeModelPackageMetadata(content: String): OcrModelPackageMetadata =
+        json.decodeFromString(content)
 }
