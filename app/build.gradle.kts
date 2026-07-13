@@ -37,6 +37,7 @@ kotlin {
 
 dependencies {
     implementation(project(":pipeline-core"))
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.27.0")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

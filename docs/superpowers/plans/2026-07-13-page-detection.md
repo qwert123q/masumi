@@ -273,11 +273,11 @@ git commit -m "feat: prepare pages and detection previews"
 - Create: `app/src/main/java/rs/masumi/app/detection/DetectorModelProvider.kt`
 - Test: `app/src/androidTest/java/rs/masumi/app/detection/DetectorModelProviderTest.kt`
 
-- [ ] **Step 1: Add runtime and platform declarations**
+- [x] **Step 1: Add runtime and platform declarations**
 
 Add `com.microsoft.onnxruntime:onnxruntime-android:1.27.0`; add Internet, notifications, foreground service, and data-sync foreground permissions; declare the later non-exported data-sync service.
 
-- [ ] **Step 2: Define detector boundaries and write fake-source tests**
+- [x] **Step 2: Define detector boundaries and write fake-source tests**
 
 ```kotlin
 interface ComicDetector : AutoCloseable {
@@ -291,11 +291,11 @@ fun interface DetectorModelProvider {
 
 Inject a `ModelStreamSource` and test correct bytes, failing streams, HTTP error mapping, and monotonic progress without network access.
 
-- [ ] **Step 3: Implement ONNX and HTTPS adapters**
+- [x] **Step 3: Implement ONNX and HTTPS adapters**
 
 Validate exact input/output names, types, ranks, and 300 aligned queries. Close tensors/results deterministically. Use 15-second connect and 120-second read timeouts, require HTTP 2xx, and delegate bytes to the core store. Do not log bodies or redirect URLs.
 
-- [ ] **Step 4: Compile and commit**
+- [x] **Step 4: Compile and commit**
 
 ```bash
 ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
