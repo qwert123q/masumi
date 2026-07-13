@@ -8,6 +8,7 @@ import java.nio.file.StandardOpenOption
 
 interface ProjectFileSystem {
     fun createDirectories(path: Path)
+    fun createDirectory(path: Path)
     fun newOutputStream(path: Path): OutputStream
     fun exists(path: Path): Boolean
     fun deleteIfExists(path: Path)
@@ -20,6 +21,10 @@ interface ProjectFileSystem {
 class NioProjectFileSystem : ProjectFileSystem {
     override fun createDirectories(path: Path) {
         Files.createDirectories(path)
+    }
+
+    override fun createDirectory(path: Path) {
+        Files.createDirectory(path)
     }
 
     override fun newOutputStream(path: Path): OutputStream = Files.newOutputStream(

@@ -102,6 +102,21 @@ class ProjectImporterTest {
         assertEquals(1, report.skippedCount)
     }
 
+    @Test
+    fun `project id collision preserves staging owned by another task`() {
+        val existingStaging = root.resolve("staging/project-1")
+        Files.createDirectories(existingStaging)
+        Files.writeString(existingStaging.resolve("owner.marker"), "other-task")
+        val importer = importer(ids = listOf("project-1", "job-1"))
+
+        val error = assertFailsWith<ProjectImportException> {
+            importer.importProject(listOf(bytes("1.jpg", "page")))
+        }
+
+        assertEquals(ImportErrorCode.PROJECT_ALREADY_EXISTS, error.code)
+        assertTrue(existingStaging.resolve("owner.marker").exists())
+    }
+
     private fun importer(ids: List<String>): ProjectImporter = ProjectImporter(
         workspaceRoot = root,
         clock = Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC),

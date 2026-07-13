@@ -40,6 +40,7 @@ class ProjectImporter(
         val stagingTemporary = stagingDirectory.resolve("tmp")
         var byteCount = 0L
         var importedCount = 0
+        var ownsStagingDirectory = false
 
         return try {
             if (selection.accepted.isEmpty()) {
@@ -55,6 +56,9 @@ class ProjectImporter(
                 )
             }
 
+            fileSystem.createDirectories(stagingDirectory.parent)
+            fileSystem.createDirectory(stagingDirectory)
+            ownsStagingDirectory = true
             fileSystem.createDirectories(stagingSources)
             fileSystem.createDirectories(stagingReports)
             fileSystem.createDirectories(stagingTemporary)
@@ -117,7 +121,9 @@ class ProjectImporter(
             )
         } catch (failure: Throwable) {
             val code = (failure as? ProjectImportException)?.code ?: ImportErrorCode.IMPORT_IO_FAILED
-            runCatching { fileSystem.deleteRecursively(stagingDirectory) }
+            if (ownsStagingDirectory) {
+                runCatching { fileSystem.deleteRecursively(stagingDirectory) }
+            }
             writeFailureReports(
                 jobId = jobId,
                 projectId = projectId,
