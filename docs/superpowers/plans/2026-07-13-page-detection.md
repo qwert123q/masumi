@@ -40,7 +40,7 @@ Android application:
 - Create: `pipeline-core/src/main/kotlin/rs/masumi/core/serialization/DetectionJson.kt`
 - Test: `pipeline-core/src/test/kotlin/rs/masumi/core/detection/DetectionJsonTest.kt`
 
-- [ ] **Step 1: Write failing round-trip tests**
+- [x] **Step 1: Write failing round-trip tests**
 
 Construct a `PageDetectionArtifact` with one raw query, one bubble, one in-bubble text region, and one protected free-text region. Assert encode/decode equality. Inject an unknown JSON field and assert strict decoding fails.
 
@@ -65,19 +65,19 @@ fun `free text protection survives json round trip`() {
 }
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `./gradlew :pipeline-core:test --tests '*DetectionJsonTest'`
 
 Expected: compilation fails because detection contracts and `DetectionJson` do not exist.
 
-- [ ] **Step 3: Implement contracts and strict codecs**
+- [x] **Step 3: Implement contracts and strict codecs**
 
 Define schema-version-1 serializable `DetectorClass`, `RawQueryValidation`, `RegionSemanticStatus`, `RegionProtectionPolicy`, `VisibleOrientation`, `PixelBox`, `DetectorModelRef`, `DetectionPreprocessingConfig`, `DetectionThresholdConfig`, `RawQueryRecord`, `DetectedRegion`, `PageDetectionArtifact`, `DetectionPageState`, `DetectionJobStatus`, `DetectionError`, `DetectionJobPage`, `DetectionJobRecord`, `DetectionRunEntry`, `DetectionRunArtifact`, and `DetectionReport`. Paths are project-relative; errors are stable code plus safe message.
 
 Use one private `Json` with `prettyPrint`, `encodeDefaults`, and `explicitNulls` enabled and `ignoreUnknownKeys = false`. Add named encode/decode pairs for page artifacts, jobs, runs, and reports.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 ./gradlew :pipeline-core:test --tests '*DetectionJsonTest'
