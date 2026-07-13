@@ -13,7 +13,11 @@ interface ProjectFileSystem {
     fun exists(path: Path): Boolean
     fun deleteIfExists(path: Path)
     fun moveFile(source: Path, target: Path)
+    fun replaceFile(source: Path, target: Path)
     fun writeUtf8(path: Path, content: String)
+    fun replaceUtf8(path: Path, content: String)
+    fun readUtf8(path: Path): String
+    fun list(path: Path): List<Path>
     fun publishDirectory(stagingDirectory: Path, projectDirectory: Path)
     fun deleteRecursively(path: Path)
 }
@@ -43,10 +47,40 @@ class NioProjectFileSystem : ProjectFileSystem {
         Files.move(source, target, StandardCopyOption.ATOMIC_MOVE)
     }
 
+    override fun replaceFile(source: Path, target: Path) {
+        Files.move(
+            source,
+            target,
+            StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING,
+        )
+    }
+
     override fun writeUtf8(path: Path, content: String) {
         newOutputStream(path).bufferedWriter(Charsets.UTF_8).use { writer ->
             writer.write(content)
         }
+    }
+
+    override fun replaceUtf8(path: Path, content: String) {
+        val temporary = path.resolveSibling("${path.fileName}.new")
+        deleteIfExists(temporary)
+        try {
+            writeUtf8(temporary, content)
+            replaceFile(temporary, path)
+        } catch (failure: Throwable) {
+            runCatching { deleteIfExists(temporary) }
+            throw failure
+        }
+    }
+
+    override fun readUtf8(path: Path): String = Files.newBufferedReader(path, Charsets.UTF_8).use { reader ->
+        reader.readText()
+    }
+
+    override fun list(path: Path): List<Path> {
+        if (!Files.exists(path)) return emptyList()
+        return Files.list(path).use { entries -> entries.toList() }
     }
 
     override fun publishDirectory(stagingDirectory: Path, projectDirectory: Path) {

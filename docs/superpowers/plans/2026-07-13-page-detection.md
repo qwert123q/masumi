@@ -158,19 +158,19 @@ git commit -m "feat: derive stable detection regions"
 - Test: `pipeline-core/src/test/kotlin/rs/masumi/core/detection/DetectionJobReducerTest.kt`
 - Test: `pipeline-core/src/test/kotlin/rs/masumi/core/detection/DetectionArtifactStoreTest.kt`
 
-- [ ] **Step 1: Write failing reducer and store tests**
+- [x] **Step 1: Write failing reducer and store tests**
 
 Cover `PENDING -> RUNNING -> COMMITTED`, first failure back to `PENDING`, second failure to `PRESERVED_SOURCE`, interrupted recovery, cancellation, terminal success, success with preserved pages, and illegal transitions.
 
 Assert job JSON atomic replacement, job-owned checkpoint paths, no final artifact before all pages terminate, committed checkpoint survival, interrupted-page cleanup, atomic final publication, foreign staging preservation, and referenced-file validation before cache reuse.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 ./gradlew :pipeline-core:test --tests '*DetectionJobReducerTest' --tests '*DetectionArtifactStoreTest'
 ```
 
-- [ ] **Step 3: Implement reducer, filesystem primitives, and store**
+- [x] **Step 3: Implement reducer, filesystem primitives, and store**
 
 Add `readUtf8`, `replaceUtf8`, and `replaceFile` to `ProjectFileSystem`. Atomic replacement writes a sibling `.new`, flushes, then moves with `ATOMIC_MOVE` and `REPLACE_EXISTING`.
 
@@ -199,7 +199,7 @@ fun publishRun(
 
 Validate IDs/relative paths before resolution. Checkpoint under `staging/detection/<job-id>/<run-key>` and atomically move the complete run to `artifacts/detection/<run-key>`.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 ./gradlew :pipeline-core:test --tests '*DetectionJobReducerTest' --tests '*DetectionArtifactStoreTest'
