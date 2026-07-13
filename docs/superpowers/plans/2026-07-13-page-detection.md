@@ -95,13 +95,13 @@ Expected: round-trip and unknown-field tests pass.
 - Test: `pipeline-core/src/test/kotlin/rs/masumi/core/detection/DetectionIdentityTest.kt`
 - Test: `pipeline-core/src/test/kotlin/rs/masumi/core/detection/DetectionPostProcessorTest.kt`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Assert page keys change for source SHA, schema, model revision/SHA, runtime revision, preprocessing, or thresholds. Region IDs change for class/query but not geometry/confidence. Run keys depend on ordered page keys and reject duplicate/non-contiguous orders.
 
 Create exactly 300 model queries. Cover reversed/clipped coordinates, below-threshold score, unknown label, non-finite score/box, and zero-area boxes. Assert all raw records remain, bubble/text lists are separate, and `TEXT_FREE` is protected.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 ./gradlew :pipeline-core:test --tests '*DetectionIdentityTest' --tests '*DetectionPostProcessorTest'
@@ -109,7 +109,7 @@ Create exactly 300 model queries. Cover reversed/clipped coordinates, below-thre
 
 Expected: compilation fails because identity and post-processing types do not exist.
 
-- [ ] **Step 3: Implement canonical hashing and processing**
+- [x] **Step 3: Implement canonical hashing and processing**
 
 Expose:
 
@@ -141,7 +141,7 @@ data class ModelQuery(
 
 Hash fixed-order UTF-8 fields and length-prefix strings. Require lowercase 64-character SHA values and contiguous indexes. Post-processing requires queries `0..299`, validates score before threshold, validates four coordinates, normalizes and clips boxes, maps labels `0/1/2` only, and never merges bubbles with text.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 ./gradlew :pipeline-core:test --tests '*DetectionIdentityTest' --tests '*DetectionPostProcessorTest'
