@@ -63,5 +63,14 @@ class MainActivityLayoutTest {
         assertEquals("蓝色：对白框候选", root.findViewById<TextView>(R.id.legendBubble).text.toString())
         assertEquals("绿色：框内文字", root.findViewById<TextView>(R.id.legendTextInBubble).text.toString())
         assertEquals("橙色：待分类游离文字", root.findViewById<TextView>(R.id.legendFreeText).text.toString())
+
+        val ocrButton = root.findViewById<Button>(R.id.ocrButton)
+        assertEquals("开始本地 OCR", ocrButton.text.toString())
+        assertEquals(false, ocrButton.isEnabled)
+        assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelOcrButton).visibility)
+        assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.ocrProgress).visibility)
+        assertEquals(View.GONE, root.findViewById<ImageView>(R.id.ocrPreviewImage).visibility)
+        assertEquals("尚无 OCR 结果", root.findViewById<TextView>(R.id.ocrPageIndicator).text.toString())
+        assertEquals("", root.findViewById<TextView>(R.id.ocrDetailText).text.toString())
     }
 }

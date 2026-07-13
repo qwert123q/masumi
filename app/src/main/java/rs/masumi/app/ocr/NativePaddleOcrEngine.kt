@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import org.json.JSONObject
+import rs.masumi.core.modelpackage.OcrModelCapabilities
+import rs.masumi.core.modelpackage.OcrModelCapabilityValidator
 
 internal interface NativeOcrBridge {
     fun create(modelPath: String, projectorPath: String): Long
@@ -209,5 +211,16 @@ class NativePaddleOcrEngine internal constructor(
         private const val VISION_UNSUPPORTED_FAILURE = -3L
         private const val TEMPLATE_FAILURE = -4L
         private const val CANCELLATION_POLL_MILLIS = 10L
+    }
+}
+
+class NativePaddleOcrCapabilityValidator : OcrModelCapabilityValidator {
+    override fun validate(model: Path, projector: Path): OcrModelCapabilities {
+        NativePaddleOcrEngine.open(model, projector).use { }
+        return OcrModelCapabilities(
+            vision = true,
+            embeddedChatTemplate = true,
+            projectorType = "paddleocr",
+        )
     }
 }

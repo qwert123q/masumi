@@ -6,7 +6,13 @@ import rs.masumi.core.detection.DetectionReport
 import rs.masumi.core.detection.DetectionRunArtifact
 import rs.masumi.core.detection.PageDetectionArtifact
 import rs.masumi.core.model.ProjectManifest
+import rs.masumi.core.ocr.OcrArtifactStore
+import rs.masumi.core.ocr.OcrPageState
+import rs.masumi.core.ocr.OcrReport
+import rs.masumi.core.ocr.OcrRunArtifact
+import rs.masumi.core.ocr.PageOcrArtifact
 import rs.masumi.core.serialization.DetectionJson
+import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,10 +28,17 @@ data class PublishedDetectionRun(
     val report: DetectionReport,
 )
 
+data class PublishedOcrRun(
+    val directory: Path,
+    val artifact: OcrRunArtifact,
+    val report: OcrReport,
+)
+
 class ProjectCatalog(
     workspaceRoot: Path,
     private val json: ProjectJson = ProjectJson(),
     private val detectionJson: DetectionJson = DetectionJson(),
+    private val ocrJson: OcrJson = OcrJson(),
 ) {
     private val projectsDirectory = workspaceRoot.toAbsolutePath().normalize().resolve("projects")
 
@@ -88,6 +101,44 @@ class ProjectCatalog(
             require(page.model == run.artifact.model)
             require(page.preprocessing == run.artifact.preprocessing)
             require(page.thresholds == run.artifact.thresholds)
+        }
+    }.getOrNull()
+
+    fun latestPublishedOcrRun(projectId: String): PublishedOcrRun? {
+        val project = openProject(projectId) ?: return null
+        val artifactRoot = project.directory.resolve("artifacts/ocr")
+        val store = OcrArtifactStore(project.directory)
+        return directDirectories(artifactRoot)
+            .mapNotNull { directory ->
+                val runKey = directory.fileName.toString()
+                if (!SHA256.matches(runKey)) return@mapNotNull null
+                val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
+                val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
+                if (artifact.projectId != projectId || report.projectId != projectId) {
+                    return@mapNotNull null
+                }
+                PublishedOcrRun(directory, artifact, report)
+            }
+            .maxWithOrNull(
+                compareBy<PublishedOcrRun> { it.artifact.createdAtEpochMillis }
+                    .thenBy { it.artifact.runArtifactKey },
+            )
+    }
+
+    fun readPublishedOcrPage(run: PublishedOcrRun, pageId: String): PageOcrArtifact? = runCatching {
+        require(SHA256.matches(pageId))
+        val entries = run.artifact.entries.filter { it.pageId == pageId }
+        require(entries.isNotEmpty() && entries.all { it.state == OcrPageState.COMMITTED })
+        val relativePaths = entries.map { requireNotNull(it.artifactPath) }.distinct()
+        require(relativePaths.size == 1)
+        val path = run.directory.resolve(relativePaths.single()).normalize()
+        require(path.startsWith(run.directory.normalize()) && Files.isRegularFile(path))
+        Files.newBufferedReader(path, Charsets.UTF_8).use { reader ->
+            ocrJson.decodePageArtifact(reader.readText())
+        }.also { page ->
+            require(page.pageId == pageId)
+            require(page.dependencies == run.artifact.dependencies)
+            require(entries.all { it.pageArtifactKey == page.pageArtifactKey })
         }
     }.getOrNull()
 
