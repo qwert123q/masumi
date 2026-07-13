@@ -20,6 +20,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import rs.masumi.app.detection.DetectionForegroundService
 import rs.masumi.app.detection.DetectionProgress
+import rs.masumi.app.detection.DetectionResumePolicy
 import rs.masumi.app.detection.DetectionStatusBroadcast
 import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.ProjectRef
@@ -56,6 +57,7 @@ class MainActivity : Activity() {
     private var currentPreviewIndex = 0
     private var displayedBitmap: Bitmap? = null
     private var pendingAnalysisProjectId: String? = null
+    private var resumeRequestedThisProcess = false
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -209,6 +211,7 @@ class MainActivity : Activity() {
 
     private fun startAnalysis(projectId: String) {
         val intent = DetectionForegroundService.startIntent(this, projectId)
+        resumeRequestedThisProcess = true
         startForegroundService(intent)
         setAnalysisActive(true)
         detectionStatus.setText(R.string.detection_status_starting)
@@ -247,6 +250,21 @@ class MainActivity : Activity() {
             ?: progressFromDurableState(project)
         if (durableProgress != null) {
             renderProgress(durableProgress)
+            if (
+                progressOverride == null &&
+                DetectionResumePolicy.shouldResume(
+                    durableProgress.status,
+                    resumeRequestedThisProcess,
+                )
+            ) {
+                resumeRequestedThisProcess = true
+                startForegroundService(
+                    DetectionForegroundService.startIntent(
+                        this,
+                        project.manifest.projectId,
+                    ),
+                )
+            }
         } else {
             setAnalysisActive(false)
             analysisButton.isEnabled = true
@@ -287,6 +305,7 @@ class MainActivity : Activity() {
     private fun renderProgress(progress: DetectionProgress) {
         val completed = progress.committedPageCount + progress.preservedPageCount
         val active = progress.status.isActive()
+        if (!active) resumeRequestedThisProcess = false
         setAnalysisActive(active)
         analysisButton.isEnabled = !active && currentProject != null
         detectionProgress.visibility = View.VISIBLE

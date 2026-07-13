@@ -57,4 +57,15 @@ class DetectionStatusBroadcastTest {
         val missingFields = android.content.Intent(DetectionStatusBroadcast.ACTION)
         assertNull(DetectionStatusBroadcast.parse(missingFields))
     }
+
+    @Test
+    fun onlyAnUnrequestedActiveJournalIsAutoResumed() {
+        assertTrue(DetectionResumePolicy.shouldResume(DetectionJobStatus.QUEUED, false))
+        assertTrue(DetectionResumePolicy.shouldResume(DetectionJobStatus.RUNNING, false))
+        assertTrue(DetectionResumePolicy.shouldResume(DetectionJobStatus.DOWNLOADING_MODEL, false))
+        assertFalse(DetectionResumePolicy.shouldResume(DetectionJobStatus.RUNNING, true))
+        assertFalse(DetectionResumePolicy.shouldResume(DetectionJobStatus.CANCELLED, false))
+        assertFalse(DetectionResumePolicy.shouldResume(DetectionJobStatus.FAILED, false))
+        assertFalse(DetectionResumePolicy.shouldResume(DetectionJobStatus.SUCCEEDED, false))
+    }
 }

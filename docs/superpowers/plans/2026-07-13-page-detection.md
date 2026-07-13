@@ -319,7 +319,7 @@ Create temporary imported projects from generated images. Cover duplicate-source
 
 Read strict manifests from direct project children and choose the newest valid project. Validate manifest/source SHA, compute keys, recover/create a job, acquire one model/session, and process unique page IDs sequentially. Journal `RUNNING`, decode/infer/post-process/render/checkpoint, then journal `COMMITTED`. Rebuild the session for one retry; preserve the source after the second page failure and continue. Publish the run before terminalizing the job. Recycle bitmaps and close the detector in `finally`.
 
-- [ ] **Step 3: Build, run direct instrumentation, and commit**
+- [x] **Step 3: Build, run direct instrumentation, and commit**
 
 ```bash
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
@@ -375,7 +375,7 @@ Assert disabled-until-project analysis, hidden cancel, determinate progress, sta
 
 Retain import controls. Discover latest project on launch, start/cancel the service, request notification permission immediately before first analysis on API 33+, register a non-exported receiver while started, and reload durable state on every progress event and `onResume`. Canonicalize preview paths under their project. Navigate in manifest order and show the original plus failure marker for preserved pages.
 
-- [ ] **Step 3: Build, instrument, and commit**
+- [x] **Step 3: Build, instrument, and commit**
 
 ```bash
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
@@ -394,7 +394,7 @@ git commit -m "feat: inspect page detection results"
 - Modify: `docs/architecture/foundation.md`
 - Do not commit: model binaries, device output, screenshots, logs, corpus identifiers/counts/images/hashes, or absolute paths.
 
-- [ ] **Step 1: Run complete gates**
+- [x] **Step 1: Run complete gates**
 
 ```bash
 ./gradlew :pipeline-core:test :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
@@ -402,7 +402,7 @@ git commit -m "feat: inspect page detection results"
 
 Expected: `BUILD SUCCESSFUL` with zero failed tests and lint errors.
 
-- [ ] **Step 2: Replace-install and launch**
+- [x] **Step 2: Replace-install and launch**
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -412,26 +412,26 @@ adb shell monkey -p rs.masumi.app.dev 1
 
 Expected: no uninstall; the existing imported project remains available.
 
-- [ ] **Step 3: Run real full-project acceptance**
+- [x] **Step 3: Run real full-project acceptance**
 
 Acquire and verify the pinned model, analyze every manifest entry, require `COMMITTED` or `PRESERVED_SOURCE`, require 300 raw queries and decodable preview for each committed page, and recompute every source SHA. Keep timing/class/confidence/retry/preservation measurements only in ignored private notes.
 
-- [ ] **Step 4: Prove restart, cancellation, and recall**
+- [x] **Step 4: Prove restart, cancellation, and recall**
 
 Terminate the app process mid-run without uninstall, reopen, and confirm committed pages are not inferred again. Cancel after a committed page and confirm no next page starts while the checkpoint remains. Navigate all previews and confirm dialogue/narration candidates are covered while orange free text remains protected.
 
-- [ ] **Step 5: Update public docs and run privacy checks**
+- [x] **Step 5: Update public docs and run privacy checks**
 
 ```bash
 git diff --check
 test -z "$(git ls-files | rg -i '\.(jpg|jpeg|png|webp|onnx|gguf|safetensors)$')"
-rg -n -i 'api[_ -]?key|bearer |signed_url' README.md docs app pipeline-core --glob '!**/build/**'
+rg -n -i 'api[_ -]?key|bearer |signed_url' README.md docs/architecture app pipeline-core --glob '!**/build/**'
 test -z "$(rg -n -F "$HOME" README.md docs app pipeline-core --glob '!**/build/**')"
 ```
 
 Expected: no corpus/model binary, secret, local path, hardware fact, or private identifier is tracked.
 
-- [ ] **Step 6: Request review, re-verify, and push**
+- [x] **Step 6: Request review, re-verify, and push**
 
 Use `superpowers:requesting-code-review`, fix concrete verified findings, then run:
 
