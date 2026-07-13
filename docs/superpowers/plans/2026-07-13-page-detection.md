@@ -245,17 +245,17 @@ git commit -m "feat: install pinned detector package"
 - Test: `app/src/androidTest/java/rs/masumi/app/detection/OnnxInputPreprocessorTest.kt`
 - Test: `app/src/androidTest/java/rs/masumi/app/detection/DetectionPreviewRendererTest.kt`
 
-- [ ] **Step 1: Write generated-image tests and run RED**
+- [x] **Step 1: Write generated-image tests and run RED**
 
 Assert normal/EXIF-rotated dimensions, exact CHW RGB `/255f` values and shape `[1,3,640,640]`, preview dimensions, approved colors, and unchanged source bytes.
 
 Run: `./gradlew :app:compileDebugAndroidTestKotlin`
 
-- [ ] **Step 2: Implement decode, preprocessing, and rendering**
+- [x] **Step 2: Implement decode, preprocessing, and rendering**
 
 Use platform `android.media.ExifInterface` for all eight orientations and never rewrite the source. Bilinearly resize to `640 x 640` and fill a native direct `FloatBuffer` in CHW order. Copy the visible bitmap before drawing `#1976D2`, `#2E7D32`, and `#EF6C00` boxes plus class/confidence/short-ID labels; encode PNG bytes without recycling the caller bitmap.
 
-- [ ] **Step 3: Build and commit**
+- [x] **Step 3: Build and commit**
 
 ```bash
 ./gradlew :app:assembleDebugAndroidTest
