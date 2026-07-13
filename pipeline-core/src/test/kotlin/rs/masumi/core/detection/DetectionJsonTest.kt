@@ -5,6 +5,7 @@ import rs.masumi.core.serialization.DetectionJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class DetectionJsonTest {
     @Test
@@ -85,6 +86,7 @@ class DetectionJsonTest {
         assertEquals(job, codec.decodeJob(codec.encodeJob(job)))
         assertEquals(run, codec.decodeRun(codec.encodeRun(run)))
         assertEquals(report, codec.decodeReport(codec.encodeReport(report)))
+        assertTrue(codec.encodeReport(report).contains("\"durationMillis\": 100"))
     }
 
     private fun fixturePageArtifact(): PageDetectionArtifact {

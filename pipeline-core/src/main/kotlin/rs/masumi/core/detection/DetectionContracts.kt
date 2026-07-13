@@ -217,7 +217,5 @@ data class DetectionReport(
     val confidenceBuckets: Map<String, Int> = emptyMap(),
     val preservedOrders: List<Int> = emptyList(),
     val error: DetectionError? = null,
-) {
-    val durationMillis: Long
-        get() = finishedAtEpochMillis - startedAtEpochMillis
-}
+    val durationMillis: Long = finishedAtEpochMillis - startedAtEpochMillis,
+)
