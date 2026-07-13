@@ -15,6 +15,7 @@ interface ProjectFileSystem {
     fun moveFile(source: Path, target: Path)
     fun writeUtf8(path: Path, content: String)
     fun publishDirectory(stagingDirectory: Path, projectDirectory: Path)
+    fun deleteRecursively(path: Path)
 }
 
 class NioProjectFileSystem : ProjectFileSystem {
@@ -50,5 +51,13 @@ class NioProjectFileSystem : ProjectFileSystem {
 
     override fun publishDirectory(stagingDirectory: Path, projectDirectory: Path) {
         Files.move(stagingDirectory, projectDirectory, StandardCopyOption.ATOMIC_MOVE)
+    }
+
+    override fun deleteRecursively(path: Path) {
+        if (!Files.exists(path)) return
+
+        Files.walk(path).use { entries ->
+            entries.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists)
+        }
     }
 }
