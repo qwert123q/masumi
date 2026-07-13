@@ -98,7 +98,13 @@ class DetectionArtifactStore(
         }
     }
 
-    fun validateCommittedPage(job: DetectionJobRecord, page: DetectionJobPage): Boolean = runCatching {
+    fun validateCommittedPage(job: DetectionJobRecord, page: DetectionJobPage): Boolean =
+        readCommittedPageArtifact(job, page) != null
+
+    fun readCommittedPageArtifact(
+        job: DetectionJobRecord,
+        page: DetectionJobPage,
+    ): PageDetectionArtifact? = runCatching {
         require(page.state == DetectionPageState.COMMITTED)
         val checkpoint = checkpointDirectory(job)
         val regions = resolveInside(checkpoint, requireNotNull(page.regionsPath))
@@ -114,7 +120,8 @@ class DetectionArtifactStore(
             job.preprocessing,
             job.thresholds,
         )
-    }.isSuccess
+        artifact
+    }.getOrNull()
 
     fun publishRun(
         job: DetectionJobRecord,
@@ -134,6 +141,10 @@ class DetectionArtifactStore(
                 "existing run artifact is invalid"
             }
             require(existing == artifact) { "existing run artifact has different content" }
+            val existingReport = requireNotNull(readPublishedReport(job.runArtifactKey)) {
+                "existing detection report is invalid"
+            }
+            require(existingReport == report) { "existing detection report has different content" }
             return target
         }
 
@@ -158,6 +169,18 @@ class DetectionArtifactStore(
             require(artifact.runArtifactKey == runArtifactKey)
             require(validateRunFiles(directory, artifact))
             artifact
+        }.getOrNull()
+    }
+
+    fun readPublishedReport(runArtifactKey: String): DetectionReport? {
+        requireSha256(runArtifactKey, "runArtifactKey")
+        val reportPath = publishedDirectory(runArtifactKey).resolve("report.json")
+        if (!fileSystem.exists(reportPath)) return null
+        return runCatching {
+            val report = json.decodeReport(fileSystem.readUtf8(reportPath))
+            require(report.runArtifactKey == runArtifactKey)
+            require(report.status.isSuccessful())
+            report
         }.getOrNull()
     }
 
@@ -255,11 +278,11 @@ class DetectionArtifactStore(
         DetectionJobStatus.QUEUED,
         DetectionJobStatus.DOWNLOADING_MODEL,
         DetectionJobStatus.RUNNING,
+        DetectionJobStatus.CANCELLED,
         -> true
 
         DetectionJobStatus.SUCCEEDED,
         DetectionJobStatus.SUCCEEDED_WITH_PRESERVED_PAGES,
-        DetectionJobStatus.CANCELLED,
         DetectionJobStatus.FAILED,
         -> false
     }

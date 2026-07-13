@@ -132,6 +132,19 @@ object DetectionJobReducer {
         )
     }
 
+    fun resumeCancelled(job: DetectionJobRecord, nowEpochMillis: Long): DetectionJobRecord {
+        require(job.status == DetectionJobStatus.CANCELLED) { "job must be cancelled" }
+        require(job.pages.none { it.state == DetectionPageState.RUNNING }) {
+            "cancelled job must be at a page boundary"
+        }
+        return job.copy(
+            status = DetectionJobStatus.QUEUED,
+            updatedAtEpochMillis = nowEpochMillis,
+            cancelRequested = false,
+            error = null,
+        )
+    }
+
     fun finish(job: DetectionJobRecord, nowEpochMillis: Long): DetectionJobRecord {
         require(job.status == DetectionJobStatus.RUNNING) { "job must be running" }
         require(!job.cancelRequested) { "cancelled job cannot finish successfully" }

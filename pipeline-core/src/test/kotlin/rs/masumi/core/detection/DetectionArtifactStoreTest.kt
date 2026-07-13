@@ -49,6 +49,7 @@ class DetectionArtifactStoreTest {
         )
         store.writeJob(job)
         assertTrue(store.validateCommittedPage(job, job.pages.single()))
+        assertEquals(PAGE_ID, store.readCommittedPageArtifact(job, job.pages.single())?.pageId)
         val finished = DetectionJobReducer.finish(job, 6)
         val published = store.publishRun(finished, runArtifact(finished), report(finished))
 
@@ -58,6 +59,7 @@ class DetectionArtifactStoreTest {
         assertTrue(published.resolve("previews/0000.png").exists())
         assertFalse(checkpoint.exists())
         assertEquals(finished.runArtifactKey, store.readPublishedRun(finished.runArtifactKey)?.runArtifactKey)
+        assertEquals(finished.jobId, store.readPublishedReport(finished.runArtifactKey)?.jobId)
     }
 
     @Test
@@ -78,7 +80,12 @@ class DetectionArtifactStoreTest {
     @Test
     fun `finds the most recently updated resumable job`() {
         val older = runningJob().copy(jobId = "job-older", updatedAtEpochMillis = 10)
-        val newer = runningJob().copy(jobId = "job-newer", updatedAtEpochMillis = 20)
+        val newer = runningJob().copy(
+            jobId = "job-newer",
+            updatedAtEpochMillis = 20,
+            status = DetectionJobStatus.CANCELLED,
+            cancelRequested = true,
+        )
         store.writeJob(older)
         store.writeJob(newer)
 
@@ -96,6 +103,28 @@ class DetectionArtifactStoreTest {
                 PREVIEW_BYTES,
                 listOf(0),
             )
+        }
+    }
+
+    @Test
+    fun `does not accept a published run with a missing report`() {
+        var job = runningJob()
+        store.commitPage(job, pageArtifact(), PREVIEW_BYTES, listOf(0))
+        job = DetectionJobReducer.commitPage(
+            job,
+            PAGE_ID,
+            "pages/$PAGE_ID/regions.json",
+            mapOf(0 to "previews/0000.png"),
+            5,
+        )
+        val finished = DetectionJobReducer.finish(job, 6)
+        val artifact = runArtifact(finished)
+        val report = report(finished)
+        val published = store.publishRun(finished, artifact, report)
+        Files.delete(published.resolve("report.json"))
+
+        assertFailsWith<IllegalArgumentException> {
+            store.publishRun(finished, artifact, report)
         }
     }
 

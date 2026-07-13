@@ -80,7 +80,7 @@ class NioProjectFileSystem : ProjectFileSystem {
 
     override fun list(path: Path): List<Path> {
         if (!Files.exists(path)) return emptyList()
-        return Files.list(path).use { entries -> entries.toList() }
+        return Files.list(path).use { entries -> entries.iterator().asSequence().toList() }
     }
 
     override fun publishDirectory(stagingDirectory: Path, projectDirectory: Path) {

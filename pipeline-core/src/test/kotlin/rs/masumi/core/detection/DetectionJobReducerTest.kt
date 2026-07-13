@@ -87,6 +87,31 @@ class DetectionJobReducerTest {
     }
 
     @Test
+    fun `cancelled job resumes with committed page states retained`() {
+        val running = DetectionJobReducer.startRunning(
+            DetectionJobReducer.startModelDownload(job(), 2),
+            3,
+        )
+        val committed = DetectionJobReducer.commitPage(
+            DetectionJobReducer.startPage(running, PAGE_ID, 4),
+            PAGE_ID,
+            "pages/$PAGE_ID/regions.json",
+            mapOf(0 to "previews/0000.png"),
+            5,
+        )
+        val cancelled = DetectionJobReducer.finishCancellation(
+            DetectionJobReducer.requestCancel(committed, 6),
+            7,
+        )
+
+        val resumed = DetectionJobReducer.resumeCancelled(cancelled, 8)
+
+        assertEquals(DetectionJobStatus.QUEUED, resumed.status)
+        assertFalse(resumed.cancelRequested)
+        assertEquals(DetectionPageState.COMMITTED, resumed.pages.single().state)
+    }
+
+    @Test
     fun `illegal transitions do not mutate job`() {
         val queued = job()
 

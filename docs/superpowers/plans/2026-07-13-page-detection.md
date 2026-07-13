@@ -311,11 +311,11 @@ git commit -m "feat: run pinned comic detector"
 - Create: `app/src/main/java/rs/masumi/app/detection/DetectionRunner.kt`
 - Test: `app/src/androidTest/java/rs/masumi/app/detection/DetectionRunnerTest.kt`
 
-- [ ] **Step 1: Write fake-detector runner tests**
+- [x] **Step 1: Write fake-detector runner tests**
 
 Create temporary imported projects from generated images. Cover duplicate-source reuse, previews per order, unchanged source hashes, 300 raw queries, rebuilt-session retry, second-failure preservation, committed checkpoint reuse, page-boundary cancellation, and fatal model/source/publication errors.
 
-- [ ] **Step 2: Implement discovery and synchronous runner**
+- [x] **Step 2: Implement discovery and synchronous runner**
 
 Read strict manifests from direct project children and choose the newest valid project. Validate manifest/source SHA, compute keys, recover/create a job, acquire one model/session, and process unique page IDs sequentially. Journal `RUNNING`, decode/infer/post-process/render/checkpoint, then journal `COMMITTED`. Rebuild the session for one retry; preserve the source after the second page failure and continue. Publish the run before terminalizing the job. Recycle bitmaps and close the detector in `finally`.
 
