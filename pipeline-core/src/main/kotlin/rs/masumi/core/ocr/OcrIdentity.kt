@@ -85,6 +85,7 @@ object OcrIdentity {
                     add("agreementSimilarityThreshold" to agreementSimilarityThreshold.toString())
                     add("primaryTokenProbabilityThreshold" to primaryTokenProbabilityThreshold.toString())
                     add("emptyConfirmationAttemptCount" to emptyConfirmationAttemptCount.toString())
+                    add("lowConfidenceFreeTextThreshold" to lowConfidenceFreeTextThreshold.toString())
                 }
                 with(dependencies.generation) {
                     add("prompt" to prompt)

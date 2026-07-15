@@ -3,6 +3,7 @@ package rs.masumi.core.ocr
 import java.text.Normalizer
 import kotlin.math.exp
 import kotlin.math.ln
+import rs.masumi.core.detection.DetectorClass
 
 data class OcrQualityDecision(
     val state: OcrRegionState,
@@ -23,6 +24,7 @@ class OcrQualityEvaluator(
 
     fun evaluate(
         detectorConfidence: Double,
+        sourceClass: DetectorClass,
         attempts: List<OcrAttemptArtifact>,
     ): OcrQualityDecision {
         require(attempts.isNotEmpty()) { "attempts must not be empty" }
@@ -54,10 +56,16 @@ class OcrQualityEvaluator(
         val primary = evaluated.first()
         val primaryPasses = primary.isValidNonEmpty() &&
             (primary.tokenProbability ?: Double.NEGATIVE_INFINITY) >= config.primaryTokenProbabilityThreshold
+        val selectedScriptCounts = scriptCounts(selected?.normalizedText.orEmpty())
+        val lowConfidenceFreeTextScriptMismatch = sourceClass == DetectorClass.TEXT_FREE &&
+            detectorConfidence < config.lowConfidenceFreeTextThreshold &&
+            selected != null &&
+            selectedScriptCounts.keys.none(JAPANESE_SCRIPTS::contains)
         val state = when {
             validNonEmpty.isEmpty() && cleanEmptyCount >= config.emptyConfirmationAttemptCount -> {
                 OcrRegionState.NO_TEXT_CONFIRMED
             }
+            lowConfidenceFreeTextScriptMismatch -> OcrRegionState.NEEDS_FALLBACK
             hasAgreement || primaryPasses -> OcrRegionState.RECOGNIZED
             else -> OcrRegionState.NEEDS_FALLBACK
         }
@@ -66,7 +74,7 @@ class OcrQualityEvaluator(
             geometricMeanTokenProbability = selected?.tokenProbability,
             detectorConfidence = detectorConfidence,
             maximumAttemptSimilarity = maximumSimilarity,
-            scriptCounts = scriptCounts(selected?.normalizedText.orEmpty()),
+            scriptCounts = selectedScriptCounts,
             emptyOutput = validNonEmpty.isEmpty(),
             repeatedUnit = evaluated.any(EvaluatedAttempt::repeated),
             forcedTruncation = evaluated.any { it.attempt.truncated },
@@ -75,6 +83,7 @@ class OcrQualityEvaluator(
             aggregateScore = selected?.tokenProbability ?: maximumSimilarity,
             decisionReason = when {
                 state == OcrRegionState.NO_TEXT_CONFIRMED -> "TWO_CLEAN_EMPTY_ATTEMPTS"
+                lowConfidenceFreeTextScriptMismatch -> "LOW_CONFIDENCE_FREE_TEXT_SCRIPT_MISMATCH"
                 hasAgreement -> "ATTEMPT_AGREEMENT"
                 primaryPasses -> "PRIMARY_TOKEN_PROBABILITY"
                 selectedForQuality.attempt.error != null -> "ATTEMPT_ERROR"
@@ -161,5 +170,6 @@ class OcrQualityEvaluator(
         const val MIN_REPETITION_CODE_POINTS = 8
         const val MAX_REPEATED_UNIT_CODE_POINTS = 8
         const val MIN_REPETITIONS = 4
+        val JAPANESE_SCRIPTS = setOf("HAN", "HIRAGANA", "KATAKANA")
     }
 }

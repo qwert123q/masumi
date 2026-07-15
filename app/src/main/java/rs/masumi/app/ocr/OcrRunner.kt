@@ -371,7 +371,11 @@ class OcrRunner(
             attempts += attempt
             val successfulAttempts = attempts.filter { it.error == null }
             if (successfulAttempts.isNotEmpty()) {
-                val decision = qualityEvaluator.evaluate(candidate.detectorConfidence, attempts)
+                val decision = qualityEvaluator.evaluate(
+                    candidate.detectorConfidence,
+                    candidate.sourceClass,
+                    attempts,
+                )
                 if (decision.state == OcrRegionState.RECOGNIZED ||
                     decision.state == OcrRegionState.NO_TEXT_CONFIRMED
                 ) {
@@ -396,7 +400,11 @@ class OcrRunner(
                 error = error,
             )
         }
-        val decision = qualityEvaluator.evaluate(candidate.detectorConfidence, attempts)
+        val decision = qualityEvaluator.evaluate(
+            candidate.detectorConfidence,
+            candidate.sourceClass,
+            attempts,
+        )
         return OcrRegionArtifact(
             candidate = candidate,
             attempts = attempts,

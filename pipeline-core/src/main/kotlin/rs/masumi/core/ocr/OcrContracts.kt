@@ -126,10 +126,11 @@ data class OcrNormalizationConfig(
 
 @Serializable
 data class OcrQualityConfig(
-    val revision: String = "paddle-vl-quality-v1",
+    val revision: String = "paddle-vl-quality-v2",
     val agreementSimilarityThreshold: Double = 0.90,
     val primaryTokenProbabilityThreshold: Double = 0.55,
     val emptyConfirmationAttemptCount: Int = 2,
+    val lowConfidenceFreeTextThreshold: Double = 0.50,
 )
 
 @Serializable

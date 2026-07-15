@@ -98,7 +98,7 @@ class OcrModelPackageStore(
             require(Files.size(projector) == descriptor.projector.byteLength)
             require(sha256(model) == descriptor.model.installedSha256)
             require(sha256(projector) == descriptor.projector.installedSha256)
-            json.decodeModelPackageMetadata(Files.readString(metadataPath)).also { metadata ->
+            json.decodeModelPackageMetadata(fileSystem.readUtf8(metadataPath)).also { metadata ->
                 requireCapabilities(metadata.capabilities)
             }
         }.getOrNull() ?: return null
