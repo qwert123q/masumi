@@ -31,4 +31,24 @@ class OnnxInputPreprocessorTest {
             bitmap.recycle()
         }
     }
+
+    @Test
+    fun passesEachNonSquarePageOriginalSizeAsWidthThenHeight() {
+        val portrait = Bitmap.createBitmap(321, 777, Bitmap.Config.ARGB_8888)
+        val landscape = Bitmap.createBitmap(913, 247, Bitmap.Config.ARGB_8888)
+
+        try {
+            assertArrayEquals(
+                longArrayOf(321, 777),
+                OnnxInputPreprocessor().prepare(portrait).originalSizeValues,
+            )
+            assertArrayEquals(
+                longArrayOf(913, 247),
+                OnnxInputPreprocessor().prepare(landscape).originalSizeValues,
+            )
+        } finally {
+            portrait.recycle()
+            landscape.recycle()
+        }
+    }
 }

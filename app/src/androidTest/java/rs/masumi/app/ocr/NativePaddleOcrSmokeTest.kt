@@ -40,7 +40,7 @@ class NativePaddleOcrSmokeTest {
             assertTrue(result.rawText.toByteArray(Charsets.UTF_8).isNotEmpty())
             assertTrue(result.tokenIds.isNotEmpty())
             assertEquals(result.tokenIds.size, result.tokenProbabilities.size)
-            assertTrue(result.visualTokenCount in 1..16)
+            assertTrue(result.visualTokenCount > 0)
             assertFalse(result.truncated)
             println(
                 "OCR_SMOKE_METRICS visualTokens=${result.visualTokenCount} " +

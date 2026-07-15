@@ -2,15 +2,23 @@
 
 Date: 2026-07-15
 
-Status: Approved
+Status: Approved, quality amendment accepted after first-page diagnosis
 
 ## Purpose
 
-The current Android PaddleOCR-VL runtime is a correct CPU safety baseline, but CPU inference cannot satisfy Masumi's page-level performance target. This slice keeps the existing model, detector output, candidate consolidation, three-crop quality policy, region checkpoints, and OCR artifact discipline while changing native execution to prefer Vulkan and fall back to CPU when Vulkan cannot be initialized.
+The current Android PaddleOCR-VL runtime is not yet a valid quality baseline: the detector passed `orig_size` as height-width instead of the model's width-height contract, and native OCR forced every crop into a 16-token visual budget. The detector defect displaces and clips boxes on every non-square page; the fixed OCR budget discards character detail regardless of crop shape. This slice first restores geometric and visual fidelity, then changes native execution to prefer Vulkan and fall back to CPU when Vulkan cannot be initialized.
 
 The target remains a complete page in at most 180 seconds on the reference Android device, without weakening source preservation or OCR quality gates. CPU fallback preserves availability; it is not considered performance acceptance.
 
-This slice does not change translation, cleanup, inpainting, typesetting, export, detector thresholds, crop geometry, page concurrency, or the maximum visual-token budget. It also does not introduce region micro-batching or whole-page OCR.
+This slice does not change translation, cleanup, inpainting, typesetting, export, detector thresholds, crop geometry, or page concurrency. It also does not introduce region micro-batching or whole-page OCR.
+
+## Input-shape and reading-mode invariants
+
+- Every detector invocation passes the current decoded page's actual `[width, height]`; pages in one title need not share dimensions or aspect ratio.
+- Every OCR invocation passes the current crop's actual width and height. The projector metadata dynamically chooses its bounded visual-token count; Masumi does not impose a global fixed token count.
+- Horizontal, vertical, square, panoramic, and long source pages use the same coordinate contract.
+- Webtoon scrolling is a reading and later composition choice. It does not rescale, merge, reorder, or otherwise influence per-page detection or OCR.
+- OCR artifacts continue to store each attempt's actual source dimensions and visual-token count for auditability.
 
 ## Selected approach
 
@@ -33,9 +41,9 @@ The build must fail clearly when the required Vulkan build tools are unavailable
 The native runtime dependency identity changes from a CPU-only backend to:
 
 - backend policy: `vulkan-preferred-cpu-fallback`;
-- build contract: `mtmd-vulkan-pref-t6-image16-v1`.
+- build contract: `mtmd-vulkan-pref-t6-image-default-v1`.
 
-This identity participates in OCR artifact keys and therefore invalidates CPU-only OCR cache entries safely. The existing thread count and 16 visual-token limit remain unchanged in this slice so performance differences can be attributed to the execution backend. Any later token-budget change requires a separate measured revision and a new build contract.
+This identity participates in OCR artifact keys and therefore invalidates CPU-only or fixed-16-token OCR cache entries safely. Detector preprocessing identity also records the `WIDTH_HEIGHT` original-size order, invalidating geometrically incorrect detection artifacts. The thread count remains unchanged; actual visual-token counts are measured per crop.
 
 ## Native backend selection
 
@@ -93,7 +101,8 @@ Implementation follows test-first development at each contract boundary:
 2. Add Kotlin bridge tests with a fake native bridge for Vulkan success, unavailable-device CPU selection, GPU-open failure followed by CPU success, double failure, and backend reporting.
 3. Add native lifecycle coverage where practical and compile the Vulkan and CPU paths in the Android build.
 4. Extend the opt-in real-native instrumentation smoke test with an expected-backend argument. In Vulkan acceptance mode it must assert `VULKAN`, produce Japanese OCR output, expose valid visual-token counts and token probabilities, and finish without a native crash.
-5. Run all portable tests, Android unit tests, lint, debug assembly, Android-test assembly, and the complete device instrumentation suite.
+5. Add a non-square-page regression test for detector `orig_size`, plus cache-identity coverage for the coordinate-order contract.
+6. Run all portable tests, Android unit tests, lint, debug assembly, Android-test assembly, and the complete device instrumentation suite.
 
 Performance evidence is collected outside the public repository from representative imported pages. The acceptance run must demonstrate:
 
@@ -101,6 +110,7 @@ Performance evidence is collected outside the public repository from representat
 - the source and detection inputs are unchanged;
 - no native crash or out-of-memory failure occurs;
 - a complete page finishes within 180 seconds;
+- all required first-page regions reach a terminal recognized or preserved state, with no pending regions hidden as success;
 - the existing three-crop quality and source-preservation policy remains active;
 - OCR output on the same representative crops is not materially worse than the CPU baseline.
 
@@ -108,15 +118,17 @@ Raw pages, recognized content, device identifiers, local paths, API credentials,
 
 ## Falsifier and deferred work
 
-If a representative page still exceeds 180 seconds on confirmed Vulkan execution, or the fixed 16-token visual budget cannot preserve acceptable small-text recognition, this design is falsified as the complete performance solution. The next step is a separate design for contact-sheet or true micro-batch inference, with explicit crop-to-result mapping and quality evaluation.
+If a representative page still exceeds 180 seconds on confirmed Vulkan execution while using the model-default dynamic visual budget, this design is falsified as the complete performance solution. The next step is a separate design for contact-sheet or true micro-batch inference, with explicit crop-to-result mapping and quality evaluation.
 
-Masumi will not respond to a failed Vulkan benchmark by increasing page concurrency. It will also not switch to whole-page OCR in this slice because whole-page output weakens deterministic region mapping, retry isolation, checkpoint recovery, and small-text quality. A higher visual-token budget may be tested later only when Vulkan leaves sufficient page-time headroom, and it must receive a new cache identity.
+Masumi will not respond to a failed Vulkan benchmark by increasing page concurrency. It will also not switch to whole-page OCR in this slice because whole-page output weakens deterministic region mapping, retry isolation, checkpoint recovery, and small-text quality. Any future explicit token override requires measured quality evidence and a new cache identity.
 
 ## Completion criteria
 
 This slice is complete only when:
 
 - the native library contains functional Vulkan and CPU backends;
+- non-square pages use their actual width-height order and old incorrect detection caches are not reusable;
+- each variable-sized OCR crop uses the projector's model-default dynamic visual budget;
 - real OCR prefers Vulkan and deterministically falls back only during engine initialization;
 - capability validation remains CPU-only and backend-neutral;
 - every OCR attempt records the actual selected backend;

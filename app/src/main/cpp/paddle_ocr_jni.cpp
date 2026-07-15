@@ -25,8 +25,6 @@ constexpr int kThreadCount = 6;
 constexpr uint32_t kContextSize = 8192;
 constexpr uint32_t kBatchSize = 512;
 constexpr int kMaximumGeneratedTokens = 256;
-constexpr int kMinimumImageTokens = 16;
-constexpr int kMaximumImageTokens = 16;
 
 void silent_log(enum ggml_log_level, const char *, void *) {}
 
@@ -433,8 +431,8 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
     vision_params.print_timings = false;
     vision_params.n_threads = kThreadCount;
     vision_params.warmup = false;
-    vision_params.image_min_tokens = kMinimumImageTokens;
-    vision_params.image_max_tokens = kMaximumImageTokens;
+    // Keep the mtmd defaults (-1). PaddleOCR-VL's projector metadata chooses a
+    // bounded visual-token count from each crop's own width and height.
     handle->vision = mtmd_init_from_file(projector, handle->model, vision_params);
     env->ReleaseStringUTFChars(projector_path, projector);
     if (handle->vision == nullptr) return -2;

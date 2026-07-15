@@ -2,15 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Masumi's on-device PaddleOCR-VL runtime prefer a statically linked Vulkan backend, fall back safely to CPU during engine initialization, record the backend actually used for every OCR attempt, and prove a representative page completes within 180 seconds.
+**Goal:** Correct non-square-page detection geometry, restore model-default crop-adaptive visual detail, make Masumi's on-device PaddleOCR-VL runtime prefer a statically linked Vulkan backend, and prove a complete representative page finishes within 180 seconds.
 
-**Architecture:** `pipeline-core` owns the serializable execution-backend enum and cache identity. Android Kotlin owns the testable open policy—one Vulkan attempt followed by one CPU attempt for accelerator-specific initialization failures—while each native attempt owns and fully releases its model/projector resources. The JNI layer builds both GGML Vulkan and CPU, fixes one backend for each engine handle, and exposes the selected backend to Kotlin; inference remains sequential and keeps the current crop and quality policy.
+**Architecture:** Detection passes each decoded page's actual `[width, height]` and records that order in cache identity. OCR passes each crop's actual dimensions and lets projector metadata select its visual-token budget. `pipeline-core` owns the serializable execution-backend enum and cache identity. Android Kotlin owns the testable Vulkan-to-CPU open policy, while each native attempt owns and releases its model/projector resources. Inference remains sequential and independent of final reading mode.
 
 **Tech Stack:** Kotlin 2.3, kotlinx.serialization, Android SDK 36, Android NDK 28.2, CMake 3.22, C++17/JNI, llama.cpp `b8935`, GGML Vulkan/CPU, mtmd, JUnit 4, Android instrumentation, ADB.
 
 ---
 
 ## File map
+
+### Quality baseline
+
+- Modify `pipeline-core/src/main/kotlin/rs/masumi/core/detection/DetectionContracts.kt`: declare the detector original-size order.
+- Modify `pipeline-core/src/main/kotlin/rs/masumi/core/detection/DetectionIdentity.kt`: make that order invalidate old detection artifacts.
+- Modify `app/src/main/java/rs/masumi/app/detection/OnnxInputPreprocessor.kt`: pass every current page as `[width, height]`.
+- Modify `app/src/main/cpp/CMakeLists.txt` and `paddle_ocr_jni.cpp`: remove the fixed 16-token override and use projector metadata per crop.
+- Modify non-square detector, runtime identity, and real-native smoke tests.
 
 ### Portable contracts and identity
 
@@ -19,7 +27,7 @@
 - Modify `pipeline-core/src/test/kotlin/rs/masumi/core/ocr/OcrFixtures.kt`: make fixtures use the new runtime policy and a concrete attempt backend.
 - Modify `pipeline-core/src/test/kotlin/rs/masumi/core/ocr/OcrJsonTest.kt`: prove the backend survives strict serialization.
 - Modify `pipeline-core/src/test/kotlin/rs/masumi/core/ocr/OcrIdentityTest.kt`: prove backend policy changes invalidate page identity.
-- Create `pipeline-core/src/test/kotlin/rs/masumi/core/ocr/OcrRuntimeContractTest.kt`: pin the public runtime identity and unchanged image-token budget contract.
+- Create `pipeline-core/src/test/kotlin/rs/masumi/core/ocr/OcrRuntimeContractTest.kt`: pin the public runtime identity and model-default dynamic image-budget contract.
 
 ### Android engine boundary
 
@@ -39,6 +47,26 @@
 - Modify `app/src/androidTest/java/rs/masumi/app/ocr/NativePaddleOcrSmokeTest.kt`: support an explicit CPU-only run and assert the expected real native backend.
 - Modify `README.md`: describe Vulkan-preferred local OCR and CPU fallback without device-specific claims.
 - Modify `docs/architecture/foundation.md`: document backend selection, audit field, sequential inference, and acceptance boundary.
+
+---
+
+### Task 0: Restore the OCR quality baseline
+
+**Files:**
+- Modify: `pipeline-core/src/main/kotlin/rs/masumi/core/detection/DetectionContracts.kt`
+- Modify: `pipeline-core/src/main/kotlin/rs/masumi/core/detection/DetectionIdentity.kt`
+- Modify: `app/src/main/java/rs/masumi/app/detection/OnnxInputPreprocessor.kt`
+- Modify: `app/src/main/cpp/CMakeLists.txt`
+- Modify: `app/src/main/cpp/paddle_ocr_jni.cpp`
+- Modify: `app/src/androidTest/java/rs/masumi/app/detection/OnnxInputPreprocessorTest.kt`
+- Modify: `app/src/androidTest/java/rs/masumi/app/ocr/NativePaddleOcrSmokeTest.kt`
+
+- [x] Add portrait and landscape regression cases that require `orig_size == [width, height]`.
+- [x] Add the original-size order to detection preprocessing identity so old displaced boxes cannot be reused.
+- [x] Remove global `image_min_tokens = 16` and `image_max_tokens = 16` overrides.
+- [x] Change the OCR runtime build contract to the model-default image-budget revision.
+- [x] Prove the portable tests, native build, and instrumentation assembly pass before implementing Vulkan.
+- [x] Keep final webtoon reading mode outside this per-page detection and OCR contract.
 
 ---
 
@@ -74,11 +102,11 @@ import rs.masumi.core.modelpackage.PinnedPaddleOcrVl
 
 class OcrRuntimeContractTest {
     @Test
-    fun `pinned runtime publishes Vulkan preferred cache identity`() {
+    fun `pinned runtime publishes Vulkan preferred dynamic image cache identity`() {
         val runtime = PinnedPaddleOcrVl.descriptor.runtime
 
         assertEquals("vulkan-preferred-cpu-fallback", runtime.backend)
-        assertEquals("mtmd-vulkan-pref-t6-image16-v1", runtime.buildContract)
+        assertEquals("mtmd-vulkan-pref-t6-image-default-v1", runtime.buildContract)
     }
 }
 ```
@@ -110,7 +138,7 @@ Update `OcrFixtures.dependencies()`:
 
 ```kotlin
 backend = "vulkan-preferred-cpu-fallback",
-buildContract = "mtmd-vulkan-pref-t6-image16-v1",
+buildContract = "mtmd-vulkan-pref-t6-image-default-v1",
 ```
 
 Update `PinnedPaddleOcrVl.descriptor.runtime` with the same two runtime strings. Do not change `packageSha256`, model descriptors, generation settings, crop policy, quality thresholds, or `OCR_SCHEMA_VERSION`.
@@ -478,8 +506,8 @@ vision_params.use_gpu = prefer_gpu;
 vision_params.print_timings = false;
 vision_params.n_threads = kThreadCount;
 vision_params.warmup = false;
-vision_params.image_min_tokens = kMinimumImageTokens;
-vision_params.image_max_tokens = kMaximumImageTokens;
+// Leave image_min_tokens/image_max_tokens at mtmd defaults so projector metadata
+// chooses a bounded visual-token count for each crop's actual width and height.
 ```
 
 Retain the existing safe return codes. Because the handle remains a `unique_ptr` until all checks pass, any GPU model, template, projector, or vision failure releases partial resources before Kotlin starts the CPU attempt.
@@ -671,7 +699,7 @@ Open through `openCpuOnly` only when `forceCpu` is true; otherwise use public `o
 assertEquals(expectedBackend, engine.executionBackend)
 ```
 
-Keep all current assertions for Japanese text, token/probability alignment, UTF-8, `visualTokenCount in 1..16`, and non-truncation. Print only aggregate timing and token counts; never print model paths, device identifiers, source text from imported pages, or project IDs.
+Keep all current assertions for Japanese text, token/probability alignment, UTF-8, positive `visualTokenCount`, and non-truncation. Print only aggregate timing and token counts; never print model paths, device identifiers, source text from imported pages, or project IDs.
 
 - [ ] **Step 2: Run the CPU-only native smoke as a safety proof**
 
@@ -710,7 +738,7 @@ adb shell am instrument -w -r \
   rs.masumi.app.dev.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Expected: `OK (1 test)`, selected backend `VULKAN`, valid Japanese output, 1–16 visual tokens, matching non-empty token/probability arrays, and no native crash or out-of-memory failure. A CPU fallback fails this acceptance step.
+Expected: `OK (1 test)`, selected backend `VULKAN`, valid Japanese output, a positive model-selected visual-token count, matching non-empty token/probability arrays, and no native crash or out-of-memory failure. A CPU fallback fails this acceptance step.
 
 - [ ] **Step 4: Update public documentation**
 
@@ -720,7 +748,7 @@ Change README and foundation architecture wording from “sequential arm64 CPU O
 - an engine backend is fixed after open;
 - each attempt artifact records `VULKAN` or `CPU`;
 - model files remain app-private and excluded from Git;
-- inference concurrency and the 16-token visual budget are unchanged;
+- inference remains sequential and the visual budget comes from model metadata per crop;
 - CPU fallback is an availability path, not the performance acceptance path.
 
 Do not add device models, local paths, imported corpus names, recognized page content, private project identifiers, or measured device logs.

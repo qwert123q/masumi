@@ -33,7 +33,9 @@ class OnnxInputPreprocessor {
             return PreparedOnnxInput(
                 imageBuffer = buffer,
                 imageShape = longArrayOf(1, CHANNEL_COUNT.toLong(), INPUT_HEIGHT.toLong(), INPUT_WIDTH.toLong()),
-                originalSizeValues = longArrayOf(bitmap.height.toLong(), bitmap.width.toLong()),
+                // detector-v4-s expects orig_size as [width, height]. This must use the
+                // current page dimensions; source pages are not required to share an aspect ratio.
+                originalSizeValues = longArrayOf(bitmap.width.toLong(), bitmap.height.toLong()),
                 originalSizeShape = longArrayOf(1, 2),
             )
         } finally {
