@@ -67,7 +67,7 @@ Source integrity, model-package, checkpoint-write, and final-publication failure
 ## OCR flow
 
 1. Strictly load the current published detection run and include its identity in every OCR cache key.
-2. Consolidate overlapping text proposals without proximity-only merging, retain their provenance, associate dialogue-box context, and assign deterministic reading order.
+2. Consolidate overlapping text proposals without proximity-only merging, retain their provenance, associate dialogue-box context, and assign deterministic reading order. Before inference, discard only low-confidence free-text candidates that are implausibly narrow for that page or touch a page edge; in-box text is never removed by this gate.
 3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify the canonical BF16 digests, deterministically normalize both files to F16 in unpublished staging, verify the installed digests, then validate the pair through the CPU native path before publication.
 4. Prefer one Vulkan engine for the job and retry initialization once with CPU when no usable accelerator can open. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
 5. Render padded, tight, and contextual crops at their actual dimensions. The projector selects a crop-adaptive workload within the pinned 64–2048 visual-token range. Record raw and normalized text, actual backend, token probabilities, dimensions, stop flags, timings, and sanitized errors for every attempt.
@@ -134,6 +134,7 @@ All paths stored in JSON are project-relative. The source manifest records the o
 
 - Only accepted in-box text and unresolved free-text regions become OCR candidates; dialogue boxes provide crop context but are not recognized directly.
 - Same-page duplicate proposals may consolidate only through explicit overlap/containment thresholds. Source region IDs remain attached to the OCR candidate.
+- The free-text prefilter uses fractions of each page's actual width rather than fixed pixels, so mixed page dimensions do not change its meaning.
 - Each attempt records enough bounded diagnostic data to reproduce the quality decision without storing crop images or absolute paths.
 - `RECOGNIZED` publishes the selected normalized text; `NO_TEXT_CONFIRMED` records a deliberate empty result.
 - `NEEDS_FALLBACK` and `PRESERVED_SOURCE` are successful protective outcomes: downstream image work must retain the corresponding source pixels.

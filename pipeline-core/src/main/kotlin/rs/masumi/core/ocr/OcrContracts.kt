@@ -97,11 +97,14 @@ data class OcrRuntimeRef(
 
 @Serializable
 data class OcrConsolidationConfig(
-    val revision: String = "ocr-consolidation-v1",
+    val revision: String = "ocr-consolidation-v2",
     val sameClassIouThreshold: Double = 0.75,
     val sameClassContainmentThreshold: Double = 0.90,
     val crossClassSmallerCoverageThreshold: Double = 0.70,
     val bubbleAssociationCoverageThreshold: Double = 0.50,
+    val lowConfidenceFreeTextThreshold: Double = 0.50,
+    val minimumFreeTextWidthFraction: Double = 0.05,
+    val pageEdgeMarginFraction: Double = 0.01,
 )
 
 @Serializable

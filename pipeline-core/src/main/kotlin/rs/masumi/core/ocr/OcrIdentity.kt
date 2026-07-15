@@ -69,6 +69,9 @@ object OcrIdentity {
                     add("sameClassContainmentThreshold" to sameClassContainmentThreshold.toString())
                     add("crossClassSmallerCoverageThreshold" to crossClassSmallerCoverageThreshold.toString())
                     add("bubbleAssociationCoverageThreshold" to bubbleAssociationCoverageThreshold.toString())
+                    add("consolidationLowConfidenceFreeTextThreshold" to lowConfidenceFreeTextThreshold.toString())
+                    add("minimumFreeTextWidthFraction" to minimumFreeTextWidthFraction.toString())
+                    add("pageEdgeMarginFraction" to pageEdgeMarginFraction.toString())
                 }
                 add("readingOrderRevision" to dependencies.readingOrder.revision)
                 add("verticalOverlapThreshold" to dependencies.readingOrder.verticalOverlapThreshold.toString())

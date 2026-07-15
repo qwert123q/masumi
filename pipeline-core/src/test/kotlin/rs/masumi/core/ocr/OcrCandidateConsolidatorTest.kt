@@ -103,14 +103,36 @@ class OcrCandidateConsolidatorTest {
         assertEquals(listOf(0, 1, 2), result.map { it.readingOrderRank })
     }
 
+    @Test
+    fun `only low-confidence narrow or edge free text is discarded using page-relative geometry`() {
+        val result = OcrCandidateConsolidator().consolidate(
+            page(
+                width = 1_000,
+                text = listOf(
+                    region("narrow-low", DetectorClass.TEXT_FREE, PixelBox(300.0, 10.0, 349.0, 90.0), 0.49),
+                    region("edge-low", DetectorClass.TEXT_FREE, PixelBox(0.0, 100.0, 80.0, 180.0), 0.49),
+                    region("narrow-high", DetectorClass.TEXT_FREE, PixelBox(300.0, 200.0, 340.0, 280.0), 0.50),
+                    region("interior-low", DetectorClass.TEXT_FREE, PixelBox(300.0, 300.0, 360.0, 380.0), 0.49),
+                    region("required", DetectorClass.TEXT_IN_BUBBLE, PixelBox(0.0, 400.0, 40.0, 480.0), 0.10),
+                ),
+            ),
+        )
+
+        assertEquals(
+            setOf("narrow-high", "interior-low", "required"),
+            result.map { it.sourceRegionIds.single() }.toSet(),
+        )
+    }
+
     private fun page(
         bubbles: List<DetectedRegion> = emptyList(),
         text: List<DetectedRegion> = emptyList(),
+        width: Int = 200,
     ) = PageDetectionArtifact(
         pageId = "page-1",
         sourceSha256 = "source-sha",
         pageArtifactKey = "detection-key",
-        visibleWidth = 200,
+        visibleWidth = width,
         visibleHeight = 300,
         orientation = VisibleOrientation.NORMAL,
         model = DetectorModelRef(

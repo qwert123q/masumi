@@ -22,10 +22,26 @@ class OcrCandidateConsolidator(
         val clusters = cluster(acceptedText) { first, second -> areDuplicate(first, second) }
         val candidates = clusters.map { members ->
             createCandidate(detectionPage, members, bubbles)
+        }.filterNot { candidate ->
+            isObviouslySpuriousFreeText(candidate, detectionPage.visibleWidth)
         }
         return orderForJapaneseReading(candidates).mapIndexed { rank, candidate ->
             candidate.copy(readingOrderRank = rank)
         }
+    }
+
+    private fun isObviouslySpuriousFreeText(candidate: OcrCandidate, pageWidth: Int): Boolean {
+        if (
+            candidate.sourceClass != DetectorClass.TEXT_FREE ||
+            candidate.detectorConfidence >= config.lowConfidenceFreeTextThreshold ||
+            pageWidth <= 0
+        ) {
+            return false
+        }
+        val widthFraction = (candidate.box.right - candidate.box.left).coerceAtLeast(0.0) / pageWidth
+        val edgeMargin = pageWidth * config.pageEdgeMarginFraction
+        val touchesPageEdge = candidate.box.left <= edgeMargin || candidate.box.right >= pageWidth - edgeMargin
+        return widthFraction < config.minimumFreeTextWidthFraction || touchesPageEdge
     }
 
     private fun areDuplicate(first: DetectedRegion, second: DetectedRegion): Boolean {

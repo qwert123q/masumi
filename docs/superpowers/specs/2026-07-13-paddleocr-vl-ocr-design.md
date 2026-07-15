@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 
-Status: Approved
+Status: Implemented and frozen
 
 ## Purpose
 
@@ -126,6 +126,7 @@ Consolidation is deterministic and produces an `OcrCandidate` for each retained 
 4. Select the representative geometry from the highest-confidence member; use the union only when no member contains every other cluster member.
 5. Associate a text candidate with the bubble having the greatest intersection-over-text-area when that coverage is at least `0.50`. Ties resolve by bubble confidence and then stable region ID.
 6. Never merge candidates solely because they are nearby. Separate non-overlapping text regions inside one bubble remain separate candidates.
+7. Before inference, discard a `TEXT_FREE` candidate only when its confidence is below `0.50` and it is either narrower than `5%` of that page's actual width or within `1%` of a page edge. This gate never removes `TEXT_IN_BUBBLE` candidates.
 
 The values above are schema-owned configuration and participate in artifact identity. They may be changed only by publishing a new OCR run key.
 
