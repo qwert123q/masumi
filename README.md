@@ -1,8 +1,8 @@
 # Masumi
 
-Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, and recognizes them locally with PaddleOCR-VL without modifying the source files.
+Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, and prepares trusted OCR results for structured translation without modifying the source files.
 
-This repository is at an early stage. Translation, artwork cleanup, typesetting, and final image export are not implemented yet; versioned OCR artifacts are now the verified input boundary for those later stages.
+This repository is at an early stage. Network translation, artwork cleanup, typesetting, and final image export are not implemented yet; versioned OCR artifacts and the strict OCR-to-translation input contract are now the verified boundary for those later stages.
 
 ## Current capability
 
@@ -27,12 +27,13 @@ This repository is at an early stage. Translation, artwork cleanup, typesetting,
 - Preserve the original artwork for uncertain or failed regions instead of publishing guessed text.
 - Checkpoint every terminal region, resume cancellation or interruption without repeating committed regions, and publish strict OCR JSON, previews, and a report atomically.
 - Review recognized text and protected regions page by page inside the app; no manual approval is required to finish a run.
+- Convert terminal OCR pages into strict, ordered translation inputs while carrying uncertain regions forward as protected artwork.
 - Keep debug and future release installations separate.
 
 ## Modules
 
 - `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, foreground execution, and the import/detection/OCR UI.
-- `:pipeline-core` contains portable import, detection, and OCR contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
+- `:pipeline-core` contains portable import, detection, OCR, and translation-boundary contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
 
 ## Build and test
 

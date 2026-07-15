@@ -32,6 +32,7 @@ The design has three goals:
 - deterministic detection/OCR page, run, candidate, and region identities;
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
+- the strict OCR-to-translation input boundary, translation policy identity, and structured model-response contracts;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
 - model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
@@ -140,6 +141,15 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - `NEEDS_FALLBACK` and `PRESERVED_SOURCE` are successful protective outcomes: downstream image work must retain the corresponding source pixels.
 - A successful run may therefore finish with protected regions and never requires interactive approval.
 
+## Translation foundation
+
+- Translation reads only terminal OCR page artifacts and never mutates them.
+- Trusted recognized regions become stable ID-addressed items in OCR reading order; uncertain OCR remains protected and confirmed-empty regions are omitted.
+- In-box text is a mandatory dialogue candidate. Free text is explicitly classified as narration, sound effect, or other text before policy is applied.
+- The default policy translates dialogue and narration, preserves sound effects, and completes without manual approval.
+- Structured responses are reconciled by stable ID. A missing or invalid item preserves its source pixels without discarding valid sibling results.
+- Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
+
 ## Invariants
 
 - Imported source objects are immutable and reverified before detection.
@@ -158,4 +168,4 @@ All paths stored in JSON are project-relative. The source manifest records the o
 
 ## Next slices
 
-Translation can consume recognized OCR text while keeping protected regions unchanged. Semantic classification, glossary/chapter context, artwork cleanup, typesetting, final visual quality checks, and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.
+Structured translation is now the active slice. Provider execution, semantic response validation, glossary/chapter windows, resumable translation artifacts, and usage reporting come next. Artwork cleanup, typesetting, final visual quality checks, and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.
