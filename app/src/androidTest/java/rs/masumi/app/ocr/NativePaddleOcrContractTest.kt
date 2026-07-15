@@ -6,6 +6,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,6 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
+import rs.masumi.core.ocr.OcrExecutionBackend
 
 @RunWith(AndroidJUnit4::class)
 class NativePaddleOcrContractTest {
@@ -37,7 +40,7 @@ class NativePaddleOcrContractTest {
     @Test
     fun malformedRgbLengthIsRejectedBeforeNativeDispatch() {
         val bridge = RecordingBridge()
-        val engine = NativePaddleOcrEngine(1L, bridge)
+        val engine = NativePaddleOcrEngine(1L, bridge, OcrExecutionBackend.CPU)
 
         val failure = try {
             engine.recognize(
@@ -58,7 +61,7 @@ class NativePaddleOcrContractTest {
     @Test
     fun cancellationRequestedDuringRecognitionReachesNativeBridge() {
         val bridge = BlockingBridge()
-        val engine = NativePaddleOcrEngine(1L, bridge)
+        val engine = NativePaddleOcrEngine(1L, bridge, OcrExecutionBackend.CPU)
         val cancellation = AtomicBoolean(false)
         val failure = AtomicReference<OcrEngineException?>()
         val worker = thread(start = true) {
@@ -82,10 +85,57 @@ class NativePaddleOcrContractTest {
         engine.close()
     }
 
+    @Test
+    fun VulkanSuccessKeepsOneBackendForEngineLifetime() = withModelFiles { model, projector ->
+        val bridge = PolicyBridge(gpuHandle = 11L, cpuHandle = 12L)
+
+        NativePaddleOcrEngine.openWithBridge(model, projector, bridge).use { engine ->
+            assertEquals(OcrExecutionBackend.VULKAN, engine.executionBackend)
+        }
+
+        assertEquals(listOf(true), bridge.createPreferences)
+        assertEquals(listOf(11L), bridge.destroyedHandles)
+    }
+
+    @Test
+    fun unavailableVulkanFallsBackOnceToCpu() = withModelFiles { model, projector ->
+        val bridge = PolicyBridge(gpuHandle = -5L, cpuHandle = 12L)
+
+        NativePaddleOcrEngine.openWithBridge(model, projector, bridge).use { engine ->
+            assertEquals(OcrExecutionBackend.CPU, engine.executionBackend)
+        }
+
+        assertEquals(listOf(true, false), bridge.createPreferences)
+    }
+
+    @Test
+    fun failedVulkanInitializationFallsBackToCpu() = withModelFiles { model, projector ->
+        val bridge = PolicyBridge(gpuHandle = -2L, cpuHandle = 12L)
+
+        NativePaddleOcrEngine.openWithBridge(model, projector, bridge).use { engine ->
+            assertEquals(OcrExecutionBackend.CPU, engine.executionBackend)
+        }
+
+        assertEquals(listOf(true, false), bridge.createPreferences)
+    }
+
+    @Test
+    fun cpuOnlyValidationNeverRequestsVulkan() = withModelFiles { model, projector ->
+        val bridge = PolicyBridge(gpuHandle = 11L, cpuHandle = 12L)
+
+        NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge).use { engine ->
+            assertEquals(OcrExecutionBackend.CPU, engine.executionBackend)
+        }
+
+        assertEquals(listOf(false), bridge.createPreferences)
+    }
+
     private class RecordingBridge : NativeOcrBridge {
         var recognizeCalls = 0
 
-        override fun create(modelPath: String, projectorPath: String): Long = 1L
+        override fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long = 1L
+
+        override fun executionBackend(handle: Long): String = OcrExecutionBackend.CPU.name
 
         override fun recognize(
             handle: Long,
@@ -109,7 +159,9 @@ class NativePaddleOcrContractTest {
         val recognitionStarted = CountDownLatch(1)
         val cancelCalled = CountDownLatch(1)
 
-        override fun create(modelPath: String, projectorPath: String): Long = 1L
+        override fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long = 1L
+
+        override fun executionBackend(handle: Long): String = OcrExecutionBackend.CPU.name
 
         override fun recognize(
             handle: Long,
@@ -130,5 +182,53 @@ class NativePaddleOcrContractTest {
         }
 
         override fun destroy(handle: Long) = Unit
+    }
+
+    private class PolicyBridge(
+        private val gpuHandle: Long,
+        private val cpuHandle: Long,
+    ) : NativeOcrBridge {
+        val createPreferences = mutableListOf<Boolean>()
+        val destroyedHandles = mutableListOf<Long>()
+
+        override fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long {
+            createPreferences += preferGpu
+            return if (preferGpu) gpuHandle else cpuHandle
+        }
+
+        override fun executionBackend(handle: Long): String = when (handle) {
+            gpuHandle -> OcrExecutionBackend.VULKAN.name
+            else -> OcrExecutionBackend.CPU.name
+        }
+
+        override fun recognize(
+            handle: Long,
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            prompt: String,
+            maximumGeneratedTokens: Int,
+            repetitionPenalty: Double,
+        ): String = error("not used")
+
+        override fun cancel(handle: Long) = Unit
+
+        override fun destroy(handle: Long) {
+            destroyedHandles += handle
+        }
+    }
+
+    private fun withModelFiles(block: (Path, Path) -> Unit) {
+        val root = Files.createTempDirectory(
+            InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.toPath(),
+            "native-policy-",
+        )
+        try {
+            val model = root.resolve("model.gguf").also { Files.write(it, byteArrayOf(1)) }
+            val projector = root.resolve("projector.gguf").also { Files.write(it, byteArrayOf(2)) }
+            block(model, projector)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
     }
 }

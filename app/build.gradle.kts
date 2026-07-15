@@ -10,7 +10,8 @@ android {
 
     defaultConfig {
         applicationId = "rs.masumi.app"
-        minSdk = 26
+        // Vulkan OCR uses Vulkan 1.1 core entry points exposed by Android API 28+.
+        minSdk = 28
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"

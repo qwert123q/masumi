@@ -17,6 +17,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import rs.masumi.core.ocr.OcrExecutionBackend
 import rs.masumi.app.detection.ComicDetector
 import rs.masumi.app.detection.ComicDetectorFactory
 import rs.masumi.app.detection.DecodedPage
@@ -92,6 +93,11 @@ class OcrRunnerTest {
                 Files.newBufferedReader(pagePath).use { it.readText() },
             )
             assertEquals(3, page.regions.single().attempts.size)
+            assertTrue(
+                page.regions.single().attempts.all {
+                    it.executionBackend == OcrExecutionBackend.VULKAN
+                },
+            )
             assertEquals(OcrRegionState.RECOGNIZED, page.regions.single().state)
         }
     }
@@ -142,6 +148,8 @@ class OcrRunnerTest {
             },
             engineFactory = OcrEngineFactory { _, _ ->
                 object : OcrEngine {
+                    override val executionBackend = OcrExecutionBackend.VULKAN
+
                     override fun recognize(
                         request: OcrEngineRequest,
                         cancellation: () -> Boolean,

@@ -9,13 +9,21 @@ import rs.masumi.core.ocr.OcrModelPackageRef
 import rs.masumi.core.ocr.OcrRuntimeRef
 
 @Serializable
+enum class OcrModelFileNormalization {
+    NONE,
+    GGUF_BF16_TO_F16,
+}
+
+@Serializable
 data class OcrModelFileDescriptor(
     val fileName: String,
     val byteLength: Long,
     val sha256: String,
     val downloadUrl: String,
+    val installedSha256: String = sha256,
+    val normalization: OcrModelFileNormalization = OcrModelFileNormalization.NONE,
 ) {
-    fun toRef(): OcrModelFileRef = OcrModelFileRef(fileName, byteLength, sha256)
+    fun toRef(): OcrModelFileRef = OcrModelFileRef(fileName, byteLength, installedSha256)
 }
 
 @Serializable
@@ -130,22 +138,26 @@ object PinnedPaddleOcrVl {
             byteLength = 935_769_056L,
             sha256 = "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8",
             downloadUrl = "$BASE_URL/PaddleOCR-VL-1.6-GGUF.gguf",
+            installedSha256 = "8d13cb7c4f685e891f411584263db03b038701c110023e6cc6557901f83ab97e",
+            normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
         ),
         projector = OcrModelFileDescriptor(
             fileName = "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
             byteLength = 881_770_560L,
             sha256 = "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a",
             downloadUrl = "$BASE_URL/PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
+            installedSha256 = "d7e99b91293e706525a2ea68c84507705bc9352d630d5cfb5f6e7b0be25a72a8",
+            normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
         ),
-        packageSha256 = "e4d7af6fe70b4d00cdb00ca75972df9fa6445b5860193c6800b14aab65b4c31a",
+        packageSha256 = "7f09a652e09641b5f594218eca04017ca38da6dbe84d0cbf26e309313480b40e",
         license = "Apache-2.0",
         prompt = "OCR:",
         runtime = OcrNativeRuntimeDescriptor(
             llamaTag = "b8935",
             llamaCommit = "f454bd7eb8944629aabca163ea1c6e67e53fd77e",
             abi = "arm64-v8a",
-            backend = "cpu",
-            buildContract = "mtmd-cpu-t6-image-default-v3",
+            backend = "vulkan-preferred-cpu-fallback",
+            buildContract = "mtmd-vulkan-safe-f16-t6-image-adaptive-v1",
         ),
     )
 }

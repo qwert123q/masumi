@@ -57,6 +57,12 @@ enum class OcrCropStrategy {
 }
 
 @Serializable
+enum class OcrExecutionBackend {
+    VULKAN,
+    CPU,
+}
+
+@Serializable
 data class OcrError(
     val code: String,
     val message: String,
@@ -170,6 +176,7 @@ data class OcrCropDescriptor(
 
 @Serializable
 data class OcrAttemptArtifact(
+    val executionBackend: OcrExecutionBackend,
     val strategy: OcrCropStrategy,
     val cropBox: PixelBox,
     val rawText: String,

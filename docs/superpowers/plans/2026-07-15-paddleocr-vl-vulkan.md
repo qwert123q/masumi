@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Correct non-square-page detection geometry, restore model-default crop-adaptive visual detail, make Masumi's on-device PaddleOCR-VL runtime prefer a statically linked Vulkan backend, and prove a complete representative page finishes within 180 seconds.
+**Goal:** Correct non-square-page detection geometry, restore crop-adaptive visual detail, make Masumi's complete on-device PaddleOCR-VL runtime prefer a statically linked Vulkan backend, and prove a complete representative page finishes within 180 seconds.
 
-**Architecture:** Detection passes each decoded page's actual `[width, height]` and records that order in cache identity. OCR passes each crop's actual dimensions and lets projector metadata select its visual-token budget. `pipeline-core` owns the serializable execution-backend enum and cache identity. Android Kotlin owns the testable Vulkan-to-CPU open policy, while each native attempt owns and releases its model/projector resources. Inference remains sequential and independent of final reading mode.
+**Architecture:** Detection passes each decoded page's actual `[width, height]` and records that order in cache identity. OCR passes each crop's actual dimensions and lets the projector select within a pinned 64–2048 visual-token range. Canonical BF16 downloads are deterministically normalized to verified F16 installed files before publication. `pipeline-core` owns model integrity, the serializable execution-backend enum, and cache identity. Android Kotlin owns the testable Vulkan-to-CPU open policy, while native inference remains sequential and independent of final reading mode.
+
+**Implementation update:** Geometry correction and quality-baseline work are complete. Device verification exposed vendor-driver crashes in BF16 pipeline compilation and F16 compute; the accepted implementation keeps the full model, adds deterministic BF16→F16 package normalization, serializes Vulkan pipeline compilation, uses portable Vulkan kernels, and records the actual backend. Final representative-page acceptance remains pending a connected device run.
 
 **Tech Stack:** Kotlin 2.3, kotlinx.serialization, Android SDK 36, Android NDK 28.2, CMake 3.22, C++17/JNI, llama.cpp `b8935`, GGML Vulkan/CPU, mtmd, JUnit 4, Android instrumentation, ADB.
 

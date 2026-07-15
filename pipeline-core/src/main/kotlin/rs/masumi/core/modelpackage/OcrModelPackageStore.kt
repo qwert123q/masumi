@@ -54,6 +54,8 @@ class OcrModelPackageStore(
                 packageTotal = totalLength,
                 onProgress = onProgress,
             )
+            normalizeVerifiedFile(descriptor.model, modelPart)
+            normalizeVerifiedFile(descriptor.projector, projectorPart)
             val capabilities = validateCapabilities(modelPart, projectorPart, capabilityValidator)
             val model = staging.resolve(descriptor.model.fileName)
             val projector = staging.resolve(descriptor.projector.fileName)
@@ -94,8 +96,8 @@ class OcrModelPackageStore(
         val metadata = runCatching {
             require(Files.size(model) == descriptor.model.byteLength)
             require(Files.size(projector) == descriptor.projector.byteLength)
-            require(sha256(model) == descriptor.model.sha256)
-            require(sha256(projector) == descriptor.projector.sha256)
+            require(sha256(model) == descriptor.model.installedSha256)
+            require(sha256(projector) == descriptor.projector.installedSha256)
             json.decodeModelPackageMetadata(Files.readString(metadataPath)).also { metadata ->
                 requireCapabilities(metadata.capabilities)
             }
@@ -103,7 +105,6 @@ class OcrModelPackageStore(
         if (
             metadata.schemaVersion != 1 ||
             metadata.modelPackage != descriptor.toRef() ||
-            metadata.runtime != descriptor.runtime.toRef() ||
             metadata.prompt != descriptor.prompt
         ) {
             return null
@@ -117,7 +118,18 @@ class OcrModelPackageStore(
         if (actualCapabilities != metadata.capabilities) {
             throw OcrModelPackageException(OcrModelPackageErrorCode.CAPABILITY_MISMATCH)
         }
-        return InstalledOcrModelPackage(model, projector, metadata)
+        val currentMetadata = if (metadata.runtime == descriptor.runtime.toRef()) {
+            metadata
+        } else {
+            metadata.copy(runtime = descriptor.runtime.toRef()).also { upgraded ->
+                try {
+                    fileSystem.replaceUtf8(metadataPath, json.encodeModelPackageMetadata(upgraded))
+                } catch (failure: Throwable) {
+                    throw OcrModelPackageException(OcrModelPackageErrorCode.INSTALL_IO, failure)
+                }
+            }
+        }
+        return InstalledOcrModelPackage(model, projector, currentMetadata)
     }
 
     private fun downloadVerifiedFile(
@@ -184,6 +196,31 @@ class OcrModelPackageStore(
         }
     }
 
+    private fun normalizeVerifiedFile(descriptor: OcrModelFileDescriptor, part: Path) {
+        if (descriptor.normalization == OcrModelFileNormalization.NONE) {
+            require(descriptor.installedSha256 == descriptor.sha256)
+            return
+        }
+        try {
+            when (descriptor.normalization) {
+                OcrModelFileNormalization.NONE -> Unit
+                OcrModelFileNormalization.GGUF_BF16_TO_F16 ->
+                    GgufBf16ToF16Converter.convertInPlace(part)
+            }
+            if (
+                Files.size(part) != descriptor.byteLength ||
+                sha256(part) != descriptor.installedSha256
+            ) {
+                Files.deleteIfExists(part)
+                throw OcrModelPackageException(OcrModelPackageErrorCode.HASH_MISMATCH)
+            }
+        } catch (failure: Throwable) {
+            runCatching { Files.deleteIfExists(part) }
+            if (failure is OcrModelPackageException) throw failure
+            throw OcrModelPackageException(OcrModelPackageErrorCode.INSTALL_IO, failure)
+        }
+    }
+
     private fun copyResponse(
         response: OcrRangeResponse,
         target: Path,
@@ -246,7 +283,13 @@ class OcrModelPackageStore(
             require(SAFE_FILE_NAME.matches(file.fileName)) { "model fileName is unsafe" }
             require(file.byteLength > 0L) { "model byteLength must be positive" }
             require(SHA256.matches(file.sha256)) { "model SHA-256 is invalid" }
+            require(SHA256.matches(file.installedSha256)) { "installed model SHA-256 is invalid" }
             require(file.downloadUrl.startsWith("https://")) { "model URL must use HTTPS" }
+            if (file.normalization == OcrModelFileNormalization.NONE) {
+                require(file.installedSha256 == file.sha256) {
+                    "unnormalized model digest must equal its source digest"
+                }
+            }
         }
         require(descriptor.model.fileName != descriptor.projector.fileName) {
             "model and projector file names must differ"

@@ -33,7 +33,7 @@ The design has three goals:
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
-- model-package length, hash, signature, and metadata checks;
+- model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
 
 No Android class is referenced by `pipeline-core`.
@@ -68,15 +68,15 @@ Source integrity, model-package, checkpoint-write, and final-publication failure
 
 1. Strictly load the current published detection run and include its identity in every OCR cache key.
 2. Consolidate overlapping text proposals without proximity-only merging, retain their provenance, associate dialogue-box context, and assign deterministic reading order.
-3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify both lengths and SHA-256 digests, then validate the pair through the native runtime before publication.
-4. Load one CPU engine for the job. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
-5. Render fixed padded, tight, and contextual crops as needed. Record raw and normalized text, token probabilities, dimensions, stop flags, timings, and sanitized errors for every attempt.
+3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify the canonical BF16 digests, deterministically normalize both files to F16 in unpublished staging, verify the installed digests, then validate the pair through the CPU native path before publication.
+4. Prefer one Vulkan engine for the job and retry initialization once with CPU when no usable accelerator can open. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
+5. Render padded, tight, and contextual crops at their actual dimensions. The projector selects a crop-adaptive workload within the pinned 64–2048 visual-token range. Record raw and normalized text, actual backend, token probabilities, dimensions, stop flags, timings, and sanitized errors for every attempt.
 6. Accept a result only when the quality policy has sufficient token probability or agreement between attempts. Confirmed empty regions are explicit; uncertain and failed regions retain the source artwork.
 7. Atomically checkpoint each terminal region before starting the next one, then commit page JSON and preview only after every candidate is terminal.
 8. Cancellation releases the active native inference and retains earlier checkpoints. Process loss returns only the interrupted region to pending.
 9. Publish the complete OCR run directory atomically before reporting success or success-with-preserved-regions.
 
-The pinned OCR package is about 1.82 GB combined. It is downloaded on first use, remains in app-private storage, and is not included in the APK or repository. The initial native runtime targets arm64 CPU execution and intentionally runs one crop at a time to bound memory use.
+The pinned OCR package is about 1.82 GB combined. It is downloaded on first use, normalized in staging, remains in app-private storage, and is not included in the APK or repository. The native runtime contains arm64 Vulkan and CPU backends and intentionally runs one crop at a time to bound memory use.
 
 ## Project artifacts
 
@@ -152,6 +152,7 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - OCR identity also includes the detection dependency, model/projector package, native runtime build contract, consolidation, reading-order, crop, normalization, quality, and generation policy.
 - A committed OCR region has a validated terminal checkpoint; a committed OCR page has validated page JSON and ordered previews.
 - At most one OCR engine and one crop inference are active. Cancellation and recovery never discard earlier terminal regions.
+- Per-page detection and OCR always use each source page and crop's real dimensions; a later webtoon reading mode cannot alter OCR geometry or cache identity.
 - Unknown OCR JSON fields are rejected, and all stored paths remain inside the project or model-package roots.
 
 ## Next slices

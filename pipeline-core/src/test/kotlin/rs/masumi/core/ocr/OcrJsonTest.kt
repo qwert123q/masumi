@@ -18,6 +18,7 @@ class OcrJsonTest {
         val encoded = OcrJson().encodePageArtifact(artifact)
 
         assertEquals(artifact, OcrJson().decodePageArtifact(encoded))
+        assertEquals(true, encoded.contains("\"executionBackend\": \"VULKAN\""))
         assertFailsWith<SerializationException> {
             OcrJson().decodePageArtifact(encoded.dropLast(2) + ",\"unexpected\":true\n}")
         }

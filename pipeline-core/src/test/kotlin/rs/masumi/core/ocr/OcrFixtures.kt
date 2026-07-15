@@ -21,8 +21,8 @@ internal object OcrFixtures {
             llamaTag = "b8935",
             llamaCommit = "runtime-commit",
             abi = "arm64-v8a",
-            backend = "cpu",
-            buildContract = "mtmd-v1",
+            backend = "vulkan-preferred-cpu-fallback",
+            buildContract = "mtmd-vulkan-pref-t6-image-default-v1",
         ),
     )
 
@@ -44,6 +44,7 @@ internal object OcrFixtures {
         rawText: String = "縦書きです",
         normalizedText: String = rawText,
     ) = OcrAttemptArtifact(
+        executionBackend = OcrExecutionBackend.VULKAN,
         strategy = OcrCropStrategy.PADDED_TEXT,
         cropBox = PixelBox(6.0, 12.0, 74.0, 108.0),
         rawText = rawText,

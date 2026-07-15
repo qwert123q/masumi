@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include "llama.h"
+#include "ggml-backend.h"
 #include "mtmd-helper.h"
 #include "mtmd.h"
 
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -25,12 +27,20 @@ constexpr int kThreadCount = 6;
 constexpr uint32_t kContextSize = 8192;
 constexpr uint32_t kBatchSize = 512;
 constexpr int kMaximumGeneratedTokens = 256;
+constexpr int kImageMinTokens = 64;
+constexpr int kImageMaxTokens = 2048;
 
 void silent_log(enum ggml_log_level, const char *, void *) {}
+
+enum class ExecutionBackend {
+    Vulkan,
+    Cpu,
+};
 
 struct EngineHandle {
     llama_model * model = nullptr;
     mtmd_context * vision = nullptr;
+    ExecutionBackend backend = ExecutionBackend::Cpu;
     std::atomic<bool> cancelled{false};
     std::mutex inference_mutex;
 
@@ -76,6 +86,17 @@ struct InferenceResult {
 
 EngineHandle * from_handle(jlong value) {
     return reinterpret_cast<EngineHandle *>(value);
+}
+
+bool has_accelerator_device() {
+    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
+        const auto type = ggml_backend_dev_type(ggml_backend_dev_get(index));
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU ||
+            type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool abort_requested(void * user_data) {
@@ -258,7 +279,7 @@ const char * run_inference(
     context_params.n_seq_max = 1;
     context_params.n_threads = kThreadCount;
     context_params.n_threads_batch = kThreadCount;
-    context_params.offload_kqv = false;
+    context_params.offload_kqv = handle->backend == ExecutionBackend::Vulkan;
     context_params.abort_callback = abort_requested;
     context_params.abort_callback_data = handle;
     ContextPtr context(llama_init_from_model(handle->model, context_params));
@@ -402,42 +423,71 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
     JNIEnv * env,
     jobject,
     jstring model_path,
-    jstring projector_path) {
+    jstring projector_path,
+    jboolean prefer_gpu_value) {
     if (model_path == nullptr || projector_path == nullptr) return -1;
     const char * model = env->GetStringUTFChars(model_path, nullptr);
     const char * projector = env->GetStringUTFChars(projector_path, nullptr);
+    if (model == nullptr || projector == nullptr) {
+        if (model != nullptr) env->ReleaseStringUTFChars(model_path, model);
+        if (projector != nullptr) env->ReleaseStringUTFChars(projector_path, projector);
+        return -1;
+    }
+    const std::string model_file(model);
+    const std::string projector_file(projector);
+    env->ReleaseStringUTFChars(model_path, model);
+    env->ReleaseStringUTFChars(projector_path, projector);
     static std::once_flag backend_once;
     std::call_once(backend_once, []() {
+        // Some Android Adreno drivers advertise BF16 shader support but crash
+        // inside the vendor compiler when ggml creates its BF16 mat-vec pipeline.
+        // Prefer the portable Vulkan kernels over a process-level driver crash.
+        setenv("GGML_VK_DISABLE_BFLOAT16", "1", 0);
+        setenv("GGML_VK_DISABLE_F16", "1", 0);
+        setenv("GGML_VK_DISABLE_ASYNC", "1", 0);
         llama_log_set(silent_log, nullptr);
         mtmd_log_set(silent_log, nullptr);
         llama_backend_init();
     });
+    const bool prefer_gpu = prefer_gpu_value == JNI_TRUE;
+    if (prefer_gpu && !has_accelerator_device()) return -5;
     auto handle = std::make_unique<EngineHandle>();
+    handle->backend = prefer_gpu ? ExecutionBackend::Vulkan : ExecutionBackend::Cpu;
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    model_params.n_gpu_layers = prefer_gpu ? 1000 : 0;
     model_params.use_mmap = true;
-    handle->model = llama_model_load_from_file(model, model_params);
-    env->ReleaseStringUTFChars(model_path, model);
+    handle->model = llama_model_load_from_file(model_file.c_str(), model_params);
     if (handle->model == nullptr) {
-        env->ReleaseStringUTFChars(projector_path, projector);
         return -1;
     }
     if (llama_model_chat_template(handle->model, nullptr) == nullptr) {
-        env->ReleaseStringUTFChars(projector_path, projector);
         return -4;
     }
     mtmd_context_params vision_params = mtmd_context_params_default();
-    vision_params.use_gpu = false;
+    vision_params.use_gpu = prefer_gpu;
     vision_params.print_timings = false;
     vision_params.n_threads = kThreadCount;
     vision_params.warmup = false;
-    // Keep the mtmd defaults (-1). PaddleOCR-VL's projector metadata chooses a
-    // bounded visual-token count from each crop's own width and height.
-    handle->vision = mtmd_init_from_file(projector, handle->model, vision_params);
-    env->ReleaseStringUTFChars(projector_path, projector);
+    // Preserve crop-adaptive preprocessing while avoiding the projector's
+    // full-page minimum (576 input patches) for small text boxes. The actual
+    // token count still follows each crop's own width, height, and aspect ratio.
+    vision_params.image_min_tokens = kImageMinTokens;
+    vision_params.image_max_tokens = kImageMaxTokens;
+    handle->vision = mtmd_init_from_file(projector_file.c_str(), handle->model, vision_params);
     if (handle->vision == nullptr) return -2;
     if (!mtmd_support_vision(handle->vision)) return -3;
     return reinterpret_cast<jlong>(handle.release());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_rs_masumi_app_ocr_JniNativeOcrBridge_executionBackend(
+    JNIEnv * env,
+    jobject,
+    jlong handle_value) {
+    const EngineHandle * handle = from_handle(handle_value);
+    if (handle == nullptr) return env->NewStringUTF("");
+    return env->NewStringUTF(
+        handle->backend == ExecutionBackend::Vulkan ? "VULKAN" : "CPU");
 }
 
 extern "C" JNIEXPORT jstring JNICALL

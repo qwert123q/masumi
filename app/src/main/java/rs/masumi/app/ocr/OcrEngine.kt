@@ -1,6 +1,7 @@
 package rs.masumi.app.ocr
 
 import java.nio.file.Path
+import rs.masumi.core.ocr.OcrExecutionBackend
 
 data class OcrEngineRequest(
     val rgb: ByteArray,
@@ -29,6 +30,8 @@ data class OcrEngineResult(
 )
 
 interface OcrEngine : AutoCloseable {
+    val executionBackend: OcrExecutionBackend
+
     fun recognize(request: OcrEngineRequest, cancellation: () -> Boolean): OcrEngineResult
 
     fun cancel()
@@ -45,6 +48,7 @@ enum class OcrEngineErrorCode(val safeMessage: String) {
     IMAGE_INVALID("OCR crop pixels were invalid"),
     TOKENIZE("OCR prompt could not be tokenized"),
     CONTEXT("OCR inference context could not be created"),
+    ACCELERATOR_UNAVAILABLE("OCR accelerator was unavailable"),
     DECODE("OCR inference could not decode the crop"),
     UTF8("OCR output was not valid UTF-8"),
     CANCELLED("OCR inference was cancelled"),

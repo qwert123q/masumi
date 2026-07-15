@@ -28,6 +28,7 @@ import rs.masumi.core.ocr.OcrCropDescriptor
 import rs.masumi.core.ocr.OcrCropPolicy
 import rs.masumi.core.ocr.OcrDependencies
 import rs.masumi.core.ocr.OcrError
+import rs.masumi.core.ocr.OcrExecutionBackend
 import rs.masumi.core.ocr.OcrGenerationConfig
 import rs.masumi.core.ocr.OcrIdentity
 import rs.masumi.core.ocr.OcrJobPage
@@ -354,14 +355,18 @@ class OcrRunner(
                     ),
                     cancellation,
                 )
-                result.toAttempt(descriptor, qualityEvaluator.normalize(result.rawText))
+                result.toAttempt(
+                    descriptor,
+                    qualityEvaluator.normalize(result.rawText),
+                    engine.executionBackend,
+                )
             } catch (failure: Throwable) {
                 if (cancellation() ||
                     (failure is OcrEngineException && failure.code == OcrEngineErrorCode.CANCELLED)
                 ) {
                     throw OcrCancellationSignal()
                 }
-                failure.toFailedAttempt(descriptor, rendered)
+                failure.toFailedAttempt(descriptor, rendered, engine.executionBackend)
             }
             attempts += attempt
             val successfulAttempts = attempts.filter { it.error == null }
@@ -404,7 +409,9 @@ class OcrRunner(
     private fun OcrEngineResult.toAttempt(
         descriptor: OcrCropDescriptor,
         normalizedText: String,
+        executionBackend: OcrExecutionBackend,
     ): OcrAttemptArtifact = OcrAttemptArtifact(
+        executionBackend = executionBackend,
         strategy = descriptor.strategy,
         cropBox = descriptor.box,
         rawText = rawText,
@@ -428,7 +435,9 @@ class OcrRunner(
     private fun Throwable.toFailedAttempt(
         descriptor: OcrCropDescriptor,
         crop: RenderedOcrCrop?,
+        executionBackend: OcrExecutionBackend,
     ): OcrAttemptArtifact = OcrAttemptArtifact(
+        executionBackend = executionBackend,
         strategy = descriptor.strategy,
         cropBox = descriptor.box,
         rawText = "",

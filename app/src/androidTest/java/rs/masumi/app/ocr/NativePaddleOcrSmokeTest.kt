@@ -13,6 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import rs.masumi.core.ocr.OcrExecutionBackend
 
 @RunWith(AndroidJUnit4::class)
 class NativePaddleOcrSmokeTest {
@@ -21,11 +22,21 @@ class NativePaddleOcrSmokeTest {
         val arguments = InstrumentationRegistry.getArguments()
         val modelPath = arguments.getString("ocrModelPath")
         val projectorPath = arguments.getString("ocrProjectorPath")
+        val expectedBackend = arguments.getString("nativeOcrExpectedBackend")
+            ?.let(OcrExecutionBackend::valueOf)
+            ?: OcrExecutionBackend.VULKAN
+        val forceCpu = arguments.getString("nativeOcrForceCpu").toBoolean()
         assumeTrue(!modelPath.isNullOrBlank() && !projectorPath.isNullOrBlank())
         val (rgb, dimensions) = japaneseCrop()
 
-        NativePaddleOcrEngine.open(Path.of(modelPath), Path.of(projectorPath)).use { engine ->
-            val result = engine.recognize(
+        val engine = if (forceCpu) {
+            NativePaddleOcrEngine.openCpuOnly(Path.of(modelPath), Path.of(projectorPath))
+        } else {
+            NativePaddleOcrEngine.open(Path.of(modelPath), Path.of(projectorPath))
+        }
+        engine.use {
+            assertEquals(expectedBackend, it.executionBackend)
+            val result = it.recognize(
                 OcrEngineRequest(
                     rgb = rgb,
                     width = dimensions.first,

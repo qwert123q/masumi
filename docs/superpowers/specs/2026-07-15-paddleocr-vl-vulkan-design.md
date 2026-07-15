@@ -2,7 +2,7 @@
 
 Date: 2026-07-15
 
-Status: Approved, quality amendment accepted after first-page diagnosis
+Status: Approved, driver-compatibility and crop-budget amendments accepted during device verification
 
 ## Purpose
 
@@ -15,7 +15,7 @@ This slice does not change translation, cleanup, inpainting, typesetting, export
 ## Input-shape and reading-mode invariants
 
 - Every detector invocation passes the current decoded page's actual `[width, height]`; pages in one title need not share dimensions or aspect ratio.
-- Every OCR invocation passes the current crop's actual width and height. The projector metadata dynamically chooses its bounded visual-token count; Masumi does not impose a global fixed token count.
+- Every OCR invocation passes the current crop's actual width and height. The projector dynamically chooses within a pinned 64–2048 visual-token range; this preserves shape-dependent scaling without reusing the broken fixed 16-token budget or the projector's oversized full-page minimum for every crop.
 - Horizontal, vertical, square, panoramic, and long source pages use the same coordinate contract.
 - Webtoon scrolling is a reading and later composition choice. It does not rescale, merge, reorder, or otherwise influence per-page detection or OCR.
 - OCR artifacts continue to store each attempt's actual source dimensions and visual-token count for auditability.
@@ -41,9 +41,13 @@ The build must fail clearly when the required Vulkan build tools are unavailable
 The native runtime dependency identity changes from a CPU-only backend to:
 
 - backend policy: `vulkan-preferred-cpu-fallback`;
-- build contract: `mtmd-vulkan-pref-t6-image-default-v1`.
+- build contract: `mtmd-vulkan-safe-f16-t6-image-adaptive-v1`.
 
 This identity participates in OCR artifact keys and therefore invalidates CPU-only or fixed-16-token OCR cache entries safely. Detector preprocessing identity also records the `WIDTH_HEIGHT` original-size order, invalidating geometrically incorrect detection artifacts. The thread count remains unchanged; actual visual-token counts are measured per crop.
+
+The immutable upstream BF16 files remain the download trust root. During unpublished installation staging, Masumi deterministically rewrites BF16 tensor payloads and tensor types to F16 without changing lengths or offsets, verifies separate installed hashes, and only then publishes the package. This avoids Android vendor-driver BF16 compiler crashes while retaining the complete model rather than substituting a smaller OCR engine.
+
+Android Vulkan initialization also serializes compute-pipeline compilation, disables unsafe subgroup DMMV/F16-compute paths, and uses the portable kernels. These are runtime compatibility constraints, not device-name checks; the public cache identity records the resulting build contract rather than hardware details.
 
 ## Native backend selection
 
@@ -118,7 +122,7 @@ Raw pages, recognized content, device identifiers, local paths, API credentials,
 
 ## Falsifier and deferred work
 
-If a representative page still exceeds 180 seconds on confirmed Vulkan execution while using the model-default dynamic visual budget, this design is falsified as the complete performance solution. The next step is a separate design for contact-sheet or true micro-batch inference, with explicit crop-to-result mapping and quality evaluation.
+If a representative page still exceeds 180 seconds on confirmed Vulkan execution while using the crop-adaptive 64–2048 budget, this design is falsified as the complete performance solution. The next step is a separate design for contact-sheet or true micro-batch inference, with explicit crop-to-result mapping and quality evaluation.
 
 Masumi will not respond to a failed Vulkan benchmark by increasing page concurrency. It will also not switch to whole-page OCR in this slice because whole-page output weakens deterministic region mapping, retry isolation, checkpoint recovery, and small-text quality. Any future explicit token override requires measured quality evidence and a new cache identity.
 
@@ -128,7 +132,7 @@ This slice is complete only when:
 
 - the native library contains functional Vulkan and CPU backends;
 - non-square pages use their actual width-height order and old incorrect detection caches are not reusable;
-- each variable-sized OCR crop uses the projector's model-default dynamic visual budget;
+- each variable-sized OCR crop uses its actual dimensions and the pinned adaptive visual budget;
 - real OCR prefers Vulkan and deterministically falls back only during engine initialization;
 - capability validation remains CPU-only and backend-neutral;
 - every OCR attempt records the actual selected backend;

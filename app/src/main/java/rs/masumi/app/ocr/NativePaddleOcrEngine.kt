@@ -8,9 +8,12 @@ import kotlin.concurrent.withLock
 import org.json.JSONObject
 import rs.masumi.core.modelpackage.OcrModelCapabilities
 import rs.masumi.core.modelpackage.OcrModelCapabilityValidator
+import rs.masumi.core.ocr.OcrExecutionBackend
 
 internal interface NativeOcrBridge {
-    fun create(modelPath: String, projectorPath: String): Long
+    fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long
+
+    fun executionBackend(handle: Long): String
 
     fun recognize(
         handle: Long,
@@ -32,7 +35,9 @@ private object JniNativeOcrBridge : NativeOcrBridge {
         System.loadLibrary("masumi_ocr")
     }
 
-    override external fun create(modelPath: String, projectorPath: String): Long
+    override external fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long
+
+    override external fun executionBackend(handle: Long): String
 
     override external fun recognize(
         handle: Long,
@@ -52,6 +57,7 @@ private object JniNativeOcrBridge : NativeOcrBridge {
 class NativePaddleOcrEngine internal constructor(
     private val handle: Long,
     private val bridge: NativeOcrBridge,
+    override val executionBackend: OcrExecutionBackend,
 ) : OcrEngine {
     private val closed = AtomicBoolean(false)
     private val inferenceLock = ReentrantLock()
@@ -179,6 +185,16 @@ class NativePaddleOcrEngine internal constructor(
             projector: Path,
         ): NativePaddleOcrEngine = openWithBridge(model, projector, JniNativeOcrBridge)
 
+        internal fun openCpuOnly(
+            model: Path,
+            projector: Path,
+        ): NativePaddleOcrEngine = openSingle(
+            model,
+            projector,
+            JniNativeOcrBridge,
+            OcrExecutionBackend.CPU,
+        )
+
         internal fun openWithBridge(
             model: Path,
             projector: Path,
@@ -188,8 +204,37 @@ class NativePaddleOcrEngine internal constructor(
             if (!Files.isRegularFile(projector)) {
                 throw OcrEngineException(OcrEngineErrorCode.PROJECTOR_LOAD)
             }
+            return try {
+                openSingle(model, projector, bridge, OcrExecutionBackend.VULKAN)
+            } catch (_: OcrEngineException) {
+                openSingle(model, projector, bridge, OcrExecutionBackend.CPU)
+            }
+        }
+
+        internal fun openCpuOnlyWithBridge(
+            model: Path,
+            projector: Path,
+            bridge: NativeOcrBridge,
+        ): NativePaddleOcrEngine {
+            if (!Files.isRegularFile(model)) throw OcrEngineException(OcrEngineErrorCode.MODEL_LOAD)
+            if (!Files.isRegularFile(projector)) {
+                throw OcrEngineException(OcrEngineErrorCode.PROJECTOR_LOAD)
+            }
+            return openSingle(model, projector, bridge, OcrExecutionBackend.CPU)
+        }
+
+        private fun openSingle(
+            model: Path,
+            projector: Path,
+            bridge: NativeOcrBridge,
+            requestedBackend: OcrExecutionBackend,
+        ): NativePaddleOcrEngine {
             val handle = try {
-                bridge.create(model.toString(), projector.toString())
+                bridge.create(
+                    model.toString(),
+                    projector.toString(),
+                    requestedBackend == OcrExecutionBackend.VULKAN,
+                )
             } catch (failure: Throwable) {
                 throw OcrEngineException(OcrEngineErrorCode.MODEL_LOAD, failure)
             }
@@ -200,9 +245,22 @@ class NativePaddleOcrEngine internal constructor(
                     throw OcrEngineException(OcrEngineErrorCode.VISION_UNSUPPORTED)
                 }
                 TEMPLATE_FAILURE -> throw OcrEngineException(OcrEngineErrorCode.TOKENIZE)
+                ACCELERATOR_UNAVAILABLE_FAILURE -> {
+                    throw OcrEngineException(OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE)
+                }
             }
             if (handle == 0L) throw OcrEngineException(OcrEngineErrorCode.CONTEXT)
-            return NativePaddleOcrEngine(handle, bridge)
+            val actualBackend = try {
+                OcrExecutionBackend.valueOf(bridge.executionBackend(handle))
+            } catch (failure: Throwable) {
+                bridge.destroy(handle)
+                throw OcrEngineException(OcrEngineErrorCode.CONTEXT, failure)
+            }
+            if (actualBackend != requestedBackend) {
+                bridge.destroy(handle)
+                throw OcrEngineException(OcrEngineErrorCode.CONTEXT)
+            }
+            return NativePaddleOcrEngine(handle, bridge, actualBackend)
         }
 
         private const val RGB_CHANNEL_COUNT = 3L
@@ -210,13 +268,14 @@ class NativePaddleOcrEngine internal constructor(
         private const val PROJECTOR_LOAD_FAILURE = -2L
         private const val VISION_UNSUPPORTED_FAILURE = -3L
         private const val TEMPLATE_FAILURE = -4L
+        private const val ACCELERATOR_UNAVAILABLE_FAILURE = -5L
         private const val CANCELLATION_POLL_MILLIS = 10L
     }
 }
 
 class NativePaddleOcrCapabilityValidator : OcrModelCapabilityValidator {
     override fun validate(model: Path, projector: Path): OcrModelCapabilities {
-        NativePaddleOcrEngine.open(model, projector).use { }
+        NativePaddleOcrEngine.openCpuOnly(model, projector).use { }
         return OcrModelCapabilities(
             vision = true,
             embeddedChatTemplate = true,

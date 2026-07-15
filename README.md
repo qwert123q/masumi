@@ -20,7 +20,8 @@ This repository is at an early stage. Translation, artwork cleanup, typesetting,
 - Navigate completed previews in manifest order inside the app.
 - Acquire and verify the pinned PaddleOCR-VL 1.6 GGUF model and multimodal projector (about 1.82 GB combined).
 - Consolidate overlapping text proposals, associate bubble context, and assign deterministic Japanese reading order.
-- Run sequential arm64 CPU OCR through a pinned llama.cpp `mtmd` runtime in an independent foreground service.
+- Normalize canonical BF16 GGUF files to verified F16 during installation, then run sequential arm64 Vulkan-preferred OCR with deterministic CPU fallback.
+- Size the vision workload from each real crop's width, height, and aspect ratio within a quality-tested adaptive range instead of forcing one fixed text-box size.
 - Try up to three deterministic crops per region and accept text only when token quality or cross-crop agreement passes the recorded policy.
 - Preserve the original artwork for uncertain or failed regions instead of publishing guessed text.
 - Checkpoint every terminal region, resume cancellation or interruption without repeating committed regions, and publish strict OCR JSON, previews, and a report atomically.
