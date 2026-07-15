@@ -2,7 +2,7 @@
 
 Date: 2026-07-15
 
-Status: Proposed for written review
+Status: Approved
 
 ## Purpose
 
@@ -17,7 +17,7 @@ This slice does not change translation, cleanup, inpainting, typesetting, export
 Masumi will compile both Vulkan and CPU GGML backends into the `arm64-v8a` native library. Each OCR engine open follows one deterministic policy:
 
 1. Initialize llama.cpp and inspect its registered backend devices.
-2. If a Vulkan GPU device is available, attempt a complete GPU engine initialization.
+2. If a Vulkan GPU or integrated-GPU device is available, attempt a complete GPU engine initialization.
 3. If GPU model, context, or multimodal-projector initialization fails, release every partially created native resource and retry once with the CPU configuration.
 4. If CPU initialization also fails, return the existing sanitized model, projector, or context error.
 5. Once an engine has opened, keep its selected backend fixed for its lifetime.
@@ -53,7 +53,7 @@ The fallback CPU configuration is:
 - multimodal projector `use_gpu = false`;
 - context `offload_kqv = false`.
 
-GPU availability is established through the llama.cpp backend-device API and a device whose reported type is GPU. Successful device discovery alone is insufficient: the GPU path is selected only after the language model, context, and projector all initialize successfully.
+GPU availability is established through the llama.cpp backend-device API and a device whose reported type is `GPU` or `IGPU`. Successful device discovery alone is insufficient: the GPU path is selected only after the language model, context, and projector all initialize successfully.
 
 Every failed GPU-open path must free the context, projector, model, backend-owned resources, and temporary error state before CPU initialization begins. The engine handle records the backend that actually opened and exposes it through JNI.
 
