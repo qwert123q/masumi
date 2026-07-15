@@ -91,21 +91,33 @@ class OcrModelPackageStore(
         val projector = directory.resolve(descriptor.projector.fileName)
         val metadataPath = directory.resolve("package.json")
         if (!Files.exists(model) || !Files.exists(projector) || !Files.exists(metadataPath)) return null
-        return runCatching {
+        val metadata = runCatching {
             require(Files.size(model) == descriptor.model.byteLength)
             require(Files.size(projector) == descriptor.projector.byteLength)
             require(sha256(model) == descriptor.model.sha256)
             require(sha256(projector) == descriptor.projector.sha256)
-            val metadata = json.decodeModelPackageMetadata(Files.readString(metadataPath))
-            require(metadata.schemaVersion == 1)
-            require(metadata.modelPackage == descriptor.toRef())
-            require(metadata.runtime == descriptor.runtime.toRef())
-            require(metadata.prompt == descriptor.prompt)
-            val actualCapabilities = capabilityValidator.validate(model, projector)
-            requireCapabilities(actualCapabilities)
-            require(actualCapabilities == metadata.capabilities)
-            InstalledOcrModelPackage(model, projector, metadata)
-        }.getOrNull()
+            json.decodeModelPackageMetadata(Files.readString(metadataPath)).also { metadata ->
+                requireCapabilities(metadata.capabilities)
+            }
+        }.getOrNull() ?: return null
+        if (
+            metadata.schemaVersion != 1 ||
+            metadata.modelPackage != descriptor.toRef() ||
+            metadata.runtime != descriptor.runtime.toRef() ||
+            metadata.prompt != descriptor.prompt
+        ) {
+            return null
+        }
+        val actualCapabilities = try {
+            capabilityValidator.validate(model, projector).also(::requireCapabilities)
+        } catch (failure: Throwable) {
+            if (failure is OcrModelPackageException) throw failure
+            throw OcrModelPackageException(OcrModelPackageErrorCode.CAPABILITY_MISMATCH, failure)
+        }
+        if (actualCapabilities != metadata.capabilities) {
+            throw OcrModelPackageException(OcrModelPackageErrorCode.CAPABILITY_MISMATCH)
+        }
+        return InstalledOcrModelPackage(model, projector, metadata)
     }
 
     private fun downloadVerifiedFile(

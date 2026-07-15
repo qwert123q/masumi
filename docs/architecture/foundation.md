@@ -2,12 +2,12 @@
 
 ## Scope
 
-The foundation slice imports an immutable manga chapter and analyzes every page with a pinned local comic detector. It produces strict region JSON, derived annotated previews, resumable job state, and a terminal report. It does not yet perform OCR, translation, cleanup, typesetting, or final export.
+The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, and recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files. Detection and OCR each produce strict JSON, derived previews, resumable job state, and a terminal report. Translation, cleanup, typesetting, and final export are not implemented yet.
 
 The design has three goals:
 
-1. Every later stage reads stable, hash-verified sources and versioned detection artifacts.
-2. Cancellation, process loss, or one bad page never requires reimporting or repeating committed pages.
+1. Every later stage reads stable, hash-verified sources and versioned detection/OCR artifacts.
+2. Cancellation, process loss, or one bad region never requires reimporting or repeating committed work.
 3. Source images, credentials, filesystem details, and raw exception text never enter public artifacts or status broadcasts.
 
 ## Module boundary
@@ -20,18 +20,21 @@ The design has three goals:
 - exact RGB/CHW detector tensor preparation;
 - ONNX Runtime session validation and inference;
 - revision-pinned HTTPS model acquisition;
+- resumable acquisition and capability validation of the two-file OCR model package;
+- source crop rendering and an arm64 llama.cpp `mtmd` JNI runtime;
 - foreground execution, cancellation, notifications, and package-scoped status broadcasts;
-- progress display and safe preview navigation.
+- progress display, safe preview navigation, and recognized-text details.
 
 `pipeline-core` owns portable behavior:
 
 - media selection, natural ordering, streaming copy, and SHA-256 hashing;
-- strict import and detection JSON contracts;
-- deterministic page, run, and region identities;
+- strict import, detection, and OCR JSON contracts;
+- deterministic detection/OCR page, run, candidate, and region identities;
 - raw-query validation, thresholding, clipping, and class separation;
-- legal job/page transitions, retry, cancellation, and interruption recovery;
+- OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
+- legal job/page/region transitions, retry, cancellation, and interruption recovery;
 - model-package length, hash, signature, and metadata checks;
-- job journals, page checkpoints, reports, and atomic publication.
+- job journals, region/page checkpoints, reports, and atomic publication.
 
 No Android class is referenced by `pipeline-core`.
 
@@ -61,13 +64,31 @@ If a source read or storage operation fails, staging is removed and no project d
 
 Source integrity, model-package, checkpoint-write, and final-publication failures are fatal to the run. Page decode, inference, output, and preview failures use the one-retry preservation policy.
 
+## OCR flow
+
+1. Strictly load the current published detection run and include its identity in every OCR cache key.
+2. Consolidate overlapping text proposals without proximity-only merging, retain their provenance, associate dialogue-box context, and assign deterministic reading order.
+3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify both lengths and SHA-256 digests, then validate the pair through the native runtime before publication.
+4. Load one CPU engine for the job. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
+5. Render fixed padded, tight, and contextual crops as needed. Record raw and normalized text, token probabilities, dimensions, stop flags, timings, and sanitized errors for every attempt.
+6. Accept a result only when the quality policy has sufficient token probability or agreement between attempts. Confirmed empty regions are explicit; uncertain and failed regions retain the source artwork.
+7. Atomically checkpoint each terminal region before starting the next one, then commit page JSON and preview only after every candidate is terminal.
+8. Cancellation releases the active native inference and retains earlier checkpoints. Process loss returns only the interrupted region to pending.
+9. Publish the complete OCR run directory atomically before reporting success or success-with-preserved-regions.
+
+The pinned OCR package is about 1.82 GB combined. It is downloaded on first use, remains in app-private storage, and is not included in the APK or repository. The initial native runtime targets arm64 CPU execution and intentionally runs one crop at a time to bound memory use.
+
 ## Project artifacts
 
 ```text
 workspace/
 ├── models/
-│   └── <model-package>/<sha256>/
-│       ├── model.onnx
+│   ├── <detector-package>/<sha256>/
+│   │   ├── model.onnx
+│   │   └── package.json
+│   └── <ocr-package>/<package-sha256>/
+│       ├── PaddleOCR-VL-1.6-GGUF.gguf
+│       ├── PaddleOCR-VL-1.6-GGUF-mmproj.gguf
 │       └── package.json
 ├── projects/
 │   └── <project-id>/
@@ -78,14 +99,20 @@ workspace/
 │       │   ├── <import-job-id>.json
 │       │   └── <import-job-id>.txt
 │       ├── jobs/
-│       │   └── <detection-job-id>.json
-│       ├── staging/detection/
-│       │   └── <detection-job-id>/<run-key>/
-│       └── artifacts/detection/
-│           └── <run-key>/
+│       │   └── <detection-or-ocr-job-id>.json
+│       ├── staging/
+│       │   ├── detection/<detection-job-id>/<run-key>/
+│       │   └── ocr/<ocr-job-id>/<run-key>/
+│       └── artifacts/
+│           ├── detection/<run-key>/
+│           │   ├── artifact.json
+│           │   ├── report.json
+│           │   ├── pages/<page-id>/regions.json
+│           │   └── previews/<order>.png
+│           └── ocr/<run-key>/
 │               ├── artifact.json
 │               ├── report.json
-│               ├── pages/<page-id>/regions.json
+│               ├── pages/<page-id>/ocr.json
 │               └── previews/<order>.png
 ├── staging/
 └── failed-reports/
@@ -103,6 +130,15 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Accepted regions are never merged across detector classes.
 - Every raw query remains in the page artifact with its validation outcome.
 
+## OCR semantics
+
+- Only accepted in-box text and unresolved free-text regions become OCR candidates; dialogue boxes provide crop context but are not recognized directly.
+- Same-page duplicate proposals may consolidate only through explicit overlap/containment thresholds. Source region IDs remain attached to the OCR candidate.
+- Each attempt records enough bounded diagnostic data to reproduce the quality decision without storing crop images or absolute paths.
+- `RECOGNIZED` publishes the selected normalized text; `NO_TEXT_CONFIRMED` records a deliberate empty result.
+- `NEEDS_FALLBACK` and `PRESERVED_SOURCE` are successful protective outcomes: downstream image work must retain the corresponding source pixels.
+- A successful run may therefore finish with protected regions and never requires interactive approval.
+
 ## Invariants
 
 - Imported source objects are immutable and reverified before detection.
@@ -113,7 +149,11 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - A preserved page retains its source and stable error code and never fabricates regions.
 - Unknown JSON fields are rejected so schema drift is explicit.
 - Model identity, runtime revision, preprocessing, and thresholds participate in cache identity.
+- OCR identity also includes the detection dependency, model/projector package, native runtime build contract, consolidation, reading-order, crop, normalization, quality, and generation policy.
+- A committed OCR region has a validated terminal checkpoint; a committed OCR page has validated page JSON and ordered previews.
+- At most one OCR engine and one crop inference are active. Cancellation and recovery never discard earlier terminal regions.
+- Unknown OCR JSON fields are rejected, and all stored paths remain inside the project or model-package roots.
 
 ## Next slices
 
-OCR and semantic classification can consume protected detection regions without changing this contract. Translation, artwork cleanup, typesetting, quality scoring, and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.
+Translation can consume recognized OCR text while keeping protected regions unchanged. Semantic classification, glossary/chapter context, artwork cleanup, typesetting, final visual quality checks, and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.

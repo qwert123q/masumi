@@ -47,6 +47,10 @@ The model store uses one package directory containing both files and metadata:
 ```text
 workspace/
 └── models/
+    ├── .staging/
+    │   └── <package-sha256>/
+    │       ├── PaddleOCR-VL-1.6-GGUF.gguf.part
+    │       └── PaddleOCR-VL-1.6-GGUF-mmproj.gguf.part
     └── paddlepaddle--paddleocr-vl-1.6-gguf/
         └── <package-sha256>/
             ├── PaddleOCR-VL-1.6-GGUF.gguf
@@ -58,14 +62,15 @@ workspace/
 
 ### Resumable installation
 
-Each model file has an app-owned `*.part` file and sidecar record containing the expected URL, revision, length, digest, and downloaded byte count. Installation follows these rules:
+Each model file has an app-owned `*.part` file under a stable package-keyed staging directory, so a new OCR job can resume a download started by an earlier job. The expected URL, revision, length, and digest come from the pinned descriptor in code; the actual partial length is the durable downloaded-byte checkpoint. Installation follows these rules:
 
-1. Reuse a partial file only when its sidecar exactly matches the pinned descriptor and its actual length matches the checkpoint.
+1. Reuse a partial file only from the current package-keyed staging directory and only when its actual length does not exceed the pinned file length.
 2. Resume with an HTTP `Range` request and require a compatible `206` response. If the server returns a full `200`, truncate the partial file and restart from byte zero.
 3. Stream bytes while updating progress. After completion, recompute SHA-256 from the complete file instead of trusting incremental state.
 4. Reject a length or digest mismatch, remove the invalid partial file, and retry once from byte zero.
 5. Open both files through the native runtime and verify that the model has a decoder, the projector advertises vision support, and the embedded chat template can render the required image marker.
 6. Atomically publish the complete package directory. Consumers never open staging files.
+7. A transient native capability-load failure reports a safe error but never deletes files whose length, digest, and metadata have already passed integrity validation.
 
 ## Module boundaries
 
@@ -331,7 +336,7 @@ Native host or connected tests cover:
 
 ### Connected-device acceptance
 
-A private representative chapter and private evaluation notes remain outside the repository. Acceptance demonstrates:
+An external representative chapter and its evaluation notes remain outside the repository. Acceptance demonstrates:
 
 - every eligible candidate reaches a defined terminal state;
 - source and detection digests remain unchanged;
@@ -344,7 +349,7 @@ A private representative chapter and private evaluation notes remain outside the
 
 ## Public repository constraints
 
-Committed source, tests, fixtures, logs, screenshots, plans, and documentation must not contain user, account, host, device, private-corpus, or private-evaluation identifiers. Tests use generated images and synthetic OCR outputs. Model binaries, private pages, OCR dumps from private pages, and device-specific measurements are never committed.
+Committed source, tests, fixtures, logs, screenshots, plans, and documentation must not contain user, account, host, device, corpus, or evaluation identifiers. Tests use generated images and synthetic OCR outputs. Model binaries, evaluation pages, OCR dumps from evaluation pages, and device-specific measurements are never committed.
 
 ## Deferred work
 

@@ -21,6 +21,7 @@ class OcrForegroundService : Service() {
     private lateinit var executor: ExecutorService
     private lateinit var notificationManager: NotificationManager
     private val cancellation = AtomicBoolean(false)
+    private val progressThrottle = OcrProgressThrottle()
 
     @Volatile
     private var runner: OcrRunner? = null
@@ -105,6 +106,7 @@ class OcrForegroundService : Service() {
     }
 
     private fun publishProgress(progress: OcrProgress) {
+        if (!progressThrottle.shouldPublish(progress)) return
         sendBroadcast(OcrStatusBroadcast.create(packageName, progress), internalStatusPermission())
         notificationManager.notify(NOTIFICATION_ID, progressNotification(progress))
     }

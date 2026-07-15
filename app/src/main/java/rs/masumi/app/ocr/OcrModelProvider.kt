@@ -37,7 +37,7 @@ class DefaultOcrModelProvider(
         installId: String,
         progress: (downloaded: Long, total: Long) -> Unit,
     ): InstalledOcrModelPackage = store.ensureInstalled(
-        installId = installId,
+        installId = descriptor.packageSha256,
         descriptor = descriptor,
         source = rangeSource,
         capabilityValidator = capabilityValidator,

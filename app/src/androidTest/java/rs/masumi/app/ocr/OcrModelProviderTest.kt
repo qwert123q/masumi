@@ -3,6 +3,7 @@ package rs.masumi.app.ocr
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.time.Clock
@@ -60,6 +61,38 @@ class OcrModelProviderTest {
             assertEquals(progress.sorted(), progress)
             assertEquals(files.values.sumOf { it.size }.toLong(), progress.last())
             assertEquals(100L, installed.metadata.acquiredAtEpochMillis)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun resumesPackageStagingAcrossDifferentOcrJobIds() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val workspace = Files.createTempDirectory(context.cacheDir.toPath(), "ocr-provider-resume-")
+        val files = mapOf(
+            "model.gguf" to "model-data".encodeToByteArray(),
+            "projector.gguf" to "projector-data".encodeToByteArray(),
+        )
+        val descriptor = descriptor(files)
+        val staging = workspace.resolve("models/.staging/${descriptor.packageSha256}")
+        Files.createDirectories(staging)
+        Files.write(staging.resolve("model.gguf.part"), files.getValue("model.gguf"))
+        Files.write(staging.resolve("projector.gguf.part"), files.getValue("projector.gguf"))
+        val provider = DefaultOcrModelProvider(
+            workspaceRoot = workspace,
+            descriptor = descriptor,
+            rangeSource = OcrRangeSource { _, _ -> throw IOException("download must not restart") },
+            capabilityValidator = OcrModelCapabilityValidator { _, _ ->
+                OcrModelCapabilities(true, true, "paddleocr-vl")
+            },
+        )
+
+        try {
+            val installed = provider.acquire("a-different-job-id") { _, _ -> }
+
+            assertTrue(Files.exists(installed.model))
+            assertTrue(Files.exists(installed.projector))
         } finally {
             workspace.toFile().deleteRecursively()
         }

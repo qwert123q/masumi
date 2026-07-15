@@ -637,9 +637,9 @@ adb shell am instrument -w rs.masumi.app.dev.test/androidx.test.runner.AndroidJU
 
 Expected: all tests pass without uninstalling the debug app.
 
-- [ ] **Step 3: Acquire the pinned model and run private chapter OCR**
+- [ ] **Step 3: Acquire the pinned model and run representative chapter OCR**
 
-Use the app's model installer, verify both on-device file lengths/digests through the package metadata, run the current imported private chapter, and require every eligible region to reach a terminal state. Keep the terminal report and measurements outside the repository.
+Use the app's model installer, verify both on-device file lengths/digests through the package metadata, run a representative imported chapter, and require every eligible region to reach a terminal state. Keep the terminal report and measurements outside the repository.
 
 - [ ] **Step 4: Verify interruption and cancellation on real inference**
 
@@ -659,7 +659,7 @@ Run:
 
 ```bash
 ./gradlew :pipeline-core:test :app:assembleDebug :app:lint
-rg -n '/Users/|Xiaomi|device model|private chapter|api[_-]?key|Bearer ' . \
+rg -n 'absolute user path|device-specific identifier|corpus identifier|api[_-]?key|Bearer ' . \
   -g '!build/**' -g '!.git/**' || true
 git status --short
 git diff --check

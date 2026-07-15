@@ -133,6 +133,35 @@ class OcrModelPackageStoreTest {
         assertEquals("paddleocr-vl", installed.metadata.capabilities.projectorType)
     }
 
+    @Test
+    fun `transient capability failure never deletes an integrity verified package`() {
+        val files = files()
+        val descriptor = descriptor(files)
+        val store = OcrModelPackageStore(workspace)
+        val installed = store.ensureInstalled(
+            "install",
+            descriptor,
+            FakeRangeSource(files),
+            validator(files),
+        ) { _, _ -> }
+        val failingValidator = OcrModelCapabilityValidator { _, _ ->
+            throw IllegalStateException("temporary native load failure")
+        }
+
+        val failure = assertFailsWith<OcrModelPackageException> {
+            store.ensureInstalled(
+                "another-install",
+                descriptor,
+                OcrRangeSource { _, _ -> throw IOException("must not redownload") },
+                failingValidator,
+            ) { _, _ -> }
+        }
+
+        assertEquals(OcrModelPackageErrorCode.CAPABILITY_MISMATCH, failure.code)
+        assertTrue(installed.model.exists())
+        assertTrue(installed.projector.exists())
+    }
+
     private fun validator(files: Map<String, ByteArray>) = OcrModelCapabilityValidator { model, projector ->
         assertContentEquals(files.getValue("model.gguf"), Files.readAllBytes(model))
         assertContentEquals(files.getValue("projector.gguf"), Files.readAllBytes(projector))

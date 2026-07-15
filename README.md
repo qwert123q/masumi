@@ -1,8 +1,8 @@
 # Masumi
 
-Masumi is an Android-first manga localization project. The current foundation imports a chapter and runs resumable on-device page detection without modifying the source files.
+Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, and recognizes them locally with PaddleOCR-VL without modifying the source files.
 
-This repository is at an early stage. OCR, translation, artwork cleanup, typesetting, and final image export are not implemented yet; detection artifacts are the verified input boundary for those later stages.
+This repository is at an early stage. Translation, artwork cleanup, typesetting, and final image export are not implemented yet; versioned OCR artifacts are now the verified input boundary for those later stages.
 
 ## Current capability
 
@@ -18,18 +18,26 @@ This repository is at an early stage. OCR, translation, artwork cleanup, typeset
 - Resume cancelled or interrupted work from committed page checkpoints.
 - Publish versioned region JSON, annotated PNG previews, and a terminal report atomically.
 - Navigate completed previews in manifest order inside the app.
+- Acquire and verify the pinned PaddleOCR-VL 1.6 GGUF model and multimodal projector (about 1.82 GB combined).
+- Consolidate overlapping text proposals, associate bubble context, and assign deterministic Japanese reading order.
+- Run sequential arm64 CPU OCR through a pinned llama.cpp `mtmd` runtime in an independent foreground service.
+- Try up to three deterministic crops per region and accept text only when token quality or cross-crop agreement passes the recorded policy.
+- Preserve the original artwork for uncertain or failed regions instead of publishing guessed text.
+- Checkpoint every terminal region, resume cancellation or interruption without repeating committed regions, and publish strict OCR JSON, previews, and a report atomically.
+- Review recognized text and protected regions page by page inside the app; no manual approval is required to finish a run.
 - Keep debug and future release installations separate.
 
 ## Modules
 
-- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, foreground execution, and the import/progress/preview UI.
-- `:pipeline-core` contains portable import and detection contracts, deterministic identities, post-processing, state transitions, model-package integrity, reporting, and atomic publication.
+- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, foreground execution, and the import/detection/OCR UI.
+- `:pipeline-core` contains portable import, detection, and OCR contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
 
 ## Build and test
 
-Requirements: JDK 17 and an Android SDK with platform and build tools 36.
+Requirements: JDK 17, an Android SDK with platform and build tools 36, the Android NDK, CMake, and Git submodules initialized. The OCR native build currently targets `arm64-v8a`.
 
 ```bash
+git submodule update --init --recursive
 ./gradlew :pipeline-core:test
 ./gradlew :app:assembleDebug
 ```
