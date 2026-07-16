@@ -6,7 +6,7 @@ import kotlin.test.assertNotEquals
 
 class ExportIdentityTest {
     @Test
-    fun `identity binds destination exact typesetting run and visible naming policy`() {
+    fun `identity binds destination exact typesetting and quality runs and visible naming policy`() {
         val firstDestination = ExportIdentity.destinationKey("content://provider/tree/first")
         val secondDestination = ExportIdentity.destinationKey("content://provider/tree/second")
         val dependencies = ExportFixtures.dependencies
@@ -18,6 +18,13 @@ class ExportIdentityTest {
             ExportIdentity.exportKey(
                 firstDestination,
                 dependencies.copy(typesettingRunArtifactKey = "9".repeat(64)),
+            ),
+        )
+        assertNotEquals(
+            baseline,
+            ExportIdentity.exportKey(
+                firstDestination,
+                dependencies.copy(qualityRunArtifactKey = "8".repeat(64)),
             ),
         )
         assertNotEquals(

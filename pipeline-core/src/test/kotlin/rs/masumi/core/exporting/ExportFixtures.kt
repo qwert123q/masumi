@@ -1,7 +1,10 @@
 package rs.masumi.core.exporting
 
 object ExportFixtures {
-    val dependencies = ExportDependencies(typesettingRunArtifactKey = "1".repeat(64))
+    val dependencies = ExportDependencies(
+        typesettingRunArtifactKey = "1".repeat(64),
+        qualityRunArtifactKey = "2".repeat(64),
+    )
     const val destinationUri = "content://provider/tree/folder"
     val destinationKey = ExportIdentity.destinationKey(destinationUri)
     val exportKey = ExportIdentity.exportKey(destinationKey, dependencies)

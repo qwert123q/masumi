@@ -12,11 +12,13 @@ object ExportIdentity {
     fun exportKey(destinationKey: String, dependencies: ExportDependencies): String {
         requireSha256(destinationKey)
         requireSha256(dependencies.typesettingRunArtifactKey)
+        requireSha256(dependencies.qualityRunArtifactKey)
         return hash(
             listOf(
                 "schemaVersion" to dependencies.schemaVersion.toString(),
                 "destinationKey" to destinationKey,
                 "typesettingRunArtifactKey" to dependencies.typesettingRunArtifactKey,
+                "qualityRunArtifactKey" to dependencies.qualityRunArtifactKey,
                 "policyRevision" to dependencies.policy.revision,
                 "minimumPageNumberDigits" to dependencies.policy.minimumPageNumberDigits.toString(),
                 "imageMediaType" to dependencies.policy.imageMediaType,

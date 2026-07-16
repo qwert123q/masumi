@@ -35,6 +35,7 @@ class ExportArtifactStoreTest {
             exportKey = job.exportKey,
             destinationKey = job.destinationKey,
             typesettingRunArtifactKey = job.dependencies.typesettingRunArtifactKey,
+            qualityRunArtifactKey = job.dependencies.qualityRunArtifactKey,
             startedAtEpochMillis = job.startedAtEpochMillis,
             finishedAtEpochMillis = 5L,
             status = job.status,

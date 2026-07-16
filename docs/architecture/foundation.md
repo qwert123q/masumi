@@ -2,7 +2,7 @@
 
 ## Scope
 
-The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, removes source glyphs from accepted translation regions, lays accepted Chinese text onto flattened pages, and exports the complete ordered page set to a user-selected folder. Every stage has strict JSON, resumable job state, and a terminal report.
+The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, removes source glyphs from accepted translation regions, lays accepted Chinese text onto flattened pages, automatically validates those pages, and exports the complete ordered page set to a user-selected folder. Every stage has strict JSON, resumable job state, and a terminal report.
 
 The design has three goals:
 
@@ -26,6 +26,7 @@ The design has three goals:
 - the cancellable OpenAI-compatible translation provider, transient retry policy, safe error mapping, and usage parsing;
 - conservative adaptive glyph masking, bubble fill, and free-text boundary inpainting;
 - horizontal and vertical Chinese layout, deterministic maximum-readable-size fitting, and adaptive free-text contrast;
+- deterministic cleanup-to-flattened pixel auditing and Android quality-task execution;
 - Android document-tree write permission, staged page replacement, and final destination read-back verification;
 - progress display, safe preview navigation, and recognized-text details.
 
@@ -37,7 +38,7 @@ The design has three goals:
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
 - the strict OCR-to-translation input boundary, translation policy identity, and structured model-response contracts;
-- cleanup, typesetting, and folder-export dependency, policy, job/report, identity, and recovery contracts;
+- cleanup, typesetting, automatic-quality, and folder-export dependency, policy, job/report, identity, and recovery contracts;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
 - model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
@@ -106,11 +107,20 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 ## Folder export flow
 
 1. Select a writable Android document tree. The selected tree is the final output directory; no archive or additional directory is created.
-2. Bind the job to the exact published typesetting run and a one-way destination key. The private job journal retains the URI only for recovery.
+2. Bind the job to the exact published typesetting run, its passed or warning-only quality run, and a one-way destination key. The private job journal retains the URI only for recovery.
 3. Name pages by manifest order as zero-padded PNG files. Prefer the flattened page, then a committed cleanup fallback, then a PNG-normalized immutable source.
 4. Reuse an existing final name only after its length and SHA-256 match. Otherwise write and verify a job-scoped temporary document before replacing matching final names.
 5. Read the promoted final document back and verify it before checkpointing the page. After the whole expected set is valid, remove stale numeric PNG page names outside the current range while leaving non-page files untouched.
 6. Recover cancellation or process loss at the active page, revalidate earlier outputs, then write a sanitized internal report with source-kind and reuse counts.
+
+## Automatic quality flow
+
+1. Bind the job to one exact published typesetting run and resolve its immutable cleanup dependency.
+2. Compare the committed cleanup and flattened PNG dimensions and pixels without invoking any upstream model.
+3. Verify that every declared typeset region changed at least one pixel inside its layout box and that layout geometry remains inside the visible page.
+4. Count changes outside the union of declared layout boxes. Changes beyond the versioned anti-aliasing tolerance are blocking defects.
+5. Record OCR-protected or deliberately preserved artwork as warnings. Warning-only pages pass without human approval; deterministic pixel or geometry defects block export.
+6. Checkpoint strict quality JSON per page, recover only the interrupted page, and atomically publish the run and terminal issue report.
 
 ## Project artifacts
 
@@ -134,14 +144,15 @@ workspace/
 │       │   ├── <import-job-id>.txt
 │       │   └── export/<export-job-id>.json
 │       ├── jobs/
-│       │   ├── <detection-ocr-translation-cleanup-or-typesetting-job-id>.json
+│       │   ├── <detection-ocr-translation-cleanup-typesetting-or-quality-job-id>.json
 │       │   └── export/<export-job-id>.json
 │       ├── staging/
 │       │   ├── detection/<detection-job-id>/<run-key>/
 │       │   ├── ocr/<ocr-job-id>/<run-key>/
 │       │   ├── translation/<translation-job-id>/<run-key>/
 │       │   ├── cleanup/<cleanup-job-id>/<run-key>/
-│       │   └── typesetting/<typesetting-job-id>/<run-key>/
+│       │   ├── typesetting/<typesetting-job-id>/<run-key>/
+│       │   └── quality/<quality-job-id>/<run-key>/
 │       └── artifacts/
 │           ├── detection/<run-key>/
 │           │   ├── artifact.json
@@ -165,12 +176,16 @@ workspace/
 │           │   └── pages/<order>-<page-id>/
 │           │       ├── cleanup.json
 │           │       └── cleaned.png
-│           └── typesetting/<run-key>/
+│           ├── typesetting/<run-key>/
 │               ├── artifact.json
 │               ├── report.json
 │               └── pages/<order>-<page-id>/
 │                   ├── typesetting.json
 │                   └── flattened.png
+│           └── quality/<run-key>/
+│               ├── artifact.json
+│               ├── report.json
+│               └── pages/<order>-<page-id>/quality.json
 ├── staging/
 └── failed-reports/
 ```
@@ -233,10 +248,14 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Typesetting changes only regions with accepted translation and committed cleanup. A layout below the readability floor preserves its cleaned pixels.
 - Typesetting identity includes the exact cleanup, translation, and OCR dependencies plus every layout policy field. A committed page has validated JSON and a digest-verified flattened PNG.
 - Typesetting cancellation and process recovery discard only the active page and never repeat cleanup or any earlier stage.
+- Automatic quality identity includes the exact typesetting run, rendered page digests, and every policy field. It compares only immutable published inputs.
+- Protected artwork produces warning-only quality results; proven geometry, dimension, missing-pixel, or outside-layout defects block export without requesting manual review.
+- Quality cancellation and recovery discard only the active audit page and never repeat typesetting or any earlier stage.
 - Folder export publishes exactly one verified PNG per manifest page. Its report contains a destination digest, never the document-tree URI.
+- Folder export requires the exact quality run recorded in its dependency identity and rejects blocked reports.
 - Export may overwrite deterministic page names after a verified temporary write and removes stale numeric PNG pages only after the current complete set is valid; other destination documents are never deleted.
 - Export cancellation and recovery revalidate committed external outputs and never repeat any localization stage.
 
 ## Next slices
 
-The full import-to-folder-export path is now represented by independently resumable stages. The next slice is automated visual quality analysis and targeted retry of OCR, cleanup, translation, or layout defects without mutating source pages or repeating unrelated valid work.
+The full import-to-folder-export path is now represented by independently resumable stages, including a deterministic automatic quality gate. The next slice is targeted automatic retry of OCR, cleanup, translation, or layout defects without mutating source pages or repeating unrelated valid work.

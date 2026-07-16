@@ -81,6 +81,7 @@ class ExportArtifactStore(
         requireSha256(job.exportKey)
         requireSha256(job.destinationKey)
         requireSha256(job.dependencies.typesettingRunArtifactKey)
+        requireSha256(job.dependencies.qualityRunArtifactKey)
         require(job.destinationUri.isNotBlank())
         require(job.destinationKey == ExportIdentity.destinationKey(job.destinationUri))
         require(job.exportKey == ExportIdentity.exportKey(job.destinationKey, job.dependencies))
@@ -110,6 +111,7 @@ class ExportArtifactStore(
         requireSha256(report.exportKey)
         requireSha256(report.destinationKey)
         requireSha256(report.typesettingRunArtifactKey)
+        requireSha256(report.qualityRunArtifactKey)
         require(report.status == ExportJobStatus.SUCCEEDED && report.error == null)
         require(report.totalPageCount > 0 && report.exportedPageCount == report.totalPageCount)
         require(
@@ -126,6 +128,7 @@ class ExportArtifactStore(
         require(report.exportKey == job.exportKey)
         require(report.destinationKey == job.destinationKey)
         require(report.typesettingRunArtifactKey == job.dependencies.typesettingRunArtifactKey)
+        require(report.qualityRunArtifactKey == job.dependencies.qualityRunArtifactKey)
         require(report.totalPageCount == job.pages.size)
         require(report.exportedPageCount == job.pages.count { it.state == ExportPageState.COMMITTED })
         require(report.flattenedPageCount == job.pages.count { it.source == ExportPageSource.FLATTENED })

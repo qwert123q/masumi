@@ -10,11 +10,12 @@ Export every page of the current manga project directly into a user-selected And
 
 ## Input and fallback boundary
 
-- A published typesetting run is the exact dependency of an export job.
+- A published typesetting run and its passed or warning-only automatic quality run are exact dependencies of an export job.
 - A committed flattened page is always preferred.
 - If a complete page was preserved by typesetting, export the committed cleanup page. If that is unavailable, normalize the immutable source page to PNG.
 - Region-level preservation inside an otherwise committed flattened page remains visible and is already recorded by the typesetting report.
-- Export never repeats detection, OCR, translation, cleanup, or typesetting.
+- A blocked quality report prevents export for that typesetting run.
+- Export never repeats detection, OCR, translation, cleanup, typesetting, or quality analysis.
 
 ## Destination contract
 

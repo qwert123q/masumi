@@ -21,6 +21,7 @@ data class ExportPolicy(
 data class ExportDependencies(
     val schemaVersion: Int = EXPORT_SCHEMA_VERSION,
     val typesettingRunArtifactKey: String,
+    val qualityRunArtifactKey: String,
     val policy: ExportPolicy = ExportPolicy(),
 )
 
@@ -77,6 +78,7 @@ data class ExportReport(
     val exportKey: String,
     val destinationKey: String,
     val typesettingRunArtifactKey: String,
+    val qualityRunArtifactKey: String,
     val startedAtEpochMillis: Long,
     val finishedAtEpochMillis: Long,
     val status: ExportJobStatus,

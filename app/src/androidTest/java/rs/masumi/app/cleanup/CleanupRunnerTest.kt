@@ -21,7 +21,9 @@ import rs.masumi.app.exporting.DestinationWriteResult
 import rs.masumi.app.exporting.ExportCancellationSignal
 import rs.masumi.app.exporting.ExportRunner
 import rs.masumi.app.exporting.FolderExportDestination
+import rs.masumi.app.quality.QualityRunner
 import rs.masumi.core.exporting.ExportJobStatus
+import rs.masumi.core.quality.QualityJobStatus
 import rs.masumi.core.typesetting.TypesettingJobStatus
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.model.PageRecord
@@ -119,6 +121,26 @@ class CleanupRunnerTest {
             val cachedTypesetting = typesetter.run(PROJECT_ID, { false }) { }
             assertEquals(completedTypesetting.runArtifact, cachedTypesetting.runArtifact)
             assertEquals(completedTypesetting.report, cachedTypesetting.report)
+
+            val quality = QualityRunner(
+                workspaceRoot = workspace,
+                idSource = IdSource { "quality-job" },
+            )
+            cancel.set(false)
+            val cancelledQuality = quality.run(PROJECT_ID, cancel::get) { progress ->
+                if (progress.currentPageOrder != null) cancel.set(true)
+            }
+            assertEquals(QualityJobStatus.CANCELLED, cancelledQuality.job.status)
+
+            val completedQuality = quality.run(PROJECT_ID, { false }) { }
+            assertEquals(QualityJobStatus.SUCCEEDED, completedQuality.job.status)
+            assertEquals(1, completedQuality.report?.passedPageCount)
+            assertEquals(0, completedQuality.report?.blockingCount)
+            assertNotNull(completedQuality.publishedDirectory)
+
+            val cachedQuality = quality.run(PROJECT_ID, { false }) { }
+            assertEquals(completedQuality.runArtifact, cachedQuality.runArtifact)
+            assertEquals(completedQuality.report, cachedQuality.report)
 
             val destination = InMemoryExportDestination()
             val exportIds = AtomicInteger()
