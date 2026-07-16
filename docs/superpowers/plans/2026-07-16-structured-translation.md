@@ -27,10 +27,10 @@
 
 ## Task 4: Add resumable artifacts and orchestration
 
-- [ ] Define page, run, job, glossary, checkpoint, and terminal-report contracts.
-- [ ] Include OCR, policy, prompt, sanitized model, generation, and glossary dependencies in cache identity.
-- [ ] Checkpoint successful windows and pages atomically; recover only the active uncommitted window.
-- [ ] Finish with protected results rather than requiring manual approval.
+- [x] Define page, run, job, glossary, checkpoint, and terminal-report contracts.
+- [x] Include OCR, policy, prompt, sanitized model, generation, and glossary dependencies in cache identity.
+- [x] Checkpoint successful windows and pages atomically; recover only the active uncommitted window.
+- [x] Finish with protected results rather than requiring manual approval.
 
 ## Task 5: Add Android execution and UI
 

@@ -30,6 +30,7 @@ This repository is at an early stage. Network translation, artwork cleanup, type
 - Convert terminal OCR pages into strict, ordered translation inputs while carrying uncertain regions forward as protected artwork.
 - Build deterministic chapter translation windows with bounded context and validate structured model output by stable region ID so one malformed item cannot discard valid siblings.
 - Call OpenAI-compatible translation endpoints through a cancellable OkHttp boundary with bounded transient retries, strict structured-response parsing, safe errors, and token-usage capture.
+- Checkpoint translation windows and pages atomically, recover only an interrupted active window, and publish strict page results, final glossary, usage totals, and protection report as one versioned run.
 - Keep debug and future release installations separate.
 
 ## Modules

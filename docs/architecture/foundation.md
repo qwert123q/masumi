@@ -101,21 +101,28 @@ workspace/
 │       │   ├── <import-job-id>.json
 │       │   └── <import-job-id>.txt
 │       ├── jobs/
-│       │   └── <detection-or-ocr-job-id>.json
+│       │   └── <detection-ocr-or-translation-job-id>.json
 │       ├── staging/
 │       │   ├── detection/<detection-job-id>/<run-key>/
-│       │   └── ocr/<ocr-job-id>/<run-key>/
+│       │   ├── ocr/<ocr-job-id>/<run-key>/
+│       │   └── translation/<translation-job-id>/<run-key>/
 │       └── artifacts/
 │           ├── detection/<run-key>/
 │           │   ├── artifact.json
 │           │   ├── report.json
 │           │   ├── pages/<page-id>/regions.json
 │           │   └── previews/<order>.png
-│           └── ocr/<run-key>/
+│           ├── ocr/<run-key>/
+│           │   ├── artifact.json
+│           │   ├── report.json
+│           │   ├── pages/<page-id>/ocr.json
+│           │   └── previews/<order>.png
+│           └── translation/<run-key>/
 │               ├── artifact.json
 │               ├── report.json
-│               ├── pages/<page-id>/ocr.json
-│               └── previews/<order>.png
+│               ├── glossary.json
+│               ├── windows/<window>.json
+│               └── pages/<page-id>/translation.json
 ├── staging/
 └── failed-reports/
 ```
@@ -153,6 +160,8 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Prompt context IDs are read-only. Only IDs from the current item array may appear in a response, exactly once each.
 - Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
 - Translation network calls use bounded OkHttp timeouts, retry only network/timeout/`408`/`429`/`5xx` failures, and expose no raw response or underlying exception text on failure.
+- Translation windows are checkpointed before their job journal advances; recovery discards only an unjournaled active window and retains all earlier committed results and token usage.
+- A published translation run atomically contains strict page artifacts, its final normalized glossary, dependency record, and terminal usage/protection report.
 
 ## Invariants
 

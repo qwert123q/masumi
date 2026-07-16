@@ -46,6 +46,8 @@ enum class TranslationPreserveReason {
     DUPLICATE_RESPONSE,
     INVALID_ROLE,
     BLANK_TRANSLATION,
+    PROVIDER_FAILURE,
+    OVERSIZED_INPUT,
 }
 
 @Serializable

@@ -77,6 +77,10 @@ Translation checkpoints at the window and page boundaries. Process loss repeats 
 
 A provider failure may retry and switch to a configured fallback later, but it never fabricates a translation. Exhausted items retain source artwork and allow the fully automatic pipeline to finish with a protected-result status.
 
+Each window checkpoint atomically stores its validated item outcomes, input and output glossary digests, complete normalized output glossary, safe provider metadata, token usage, attempt count, and duration before the job journal advances. The next window accepts only the previous terminal checkpoint's output glossary digest. A crash can therefore leave at most one unjournaled active-window file, which recovery removes before returning only that window to pending.
+
+Page artifacts join terminal window outcomes back to the original page and carry OCR-protected regions separately. After every page is committed, the run publisher atomically exposes `artifact.json`, page translation JSON, the final `glossary.json`, and `report.json`. Cache identity covers the OCR run/page keys, explicit policy and prompt fields, batching limits, protocol, sanitized model, generation settings, initial glossary digest, stable item source text, and role hints; endpoint and credentials remain excluded.
+
 ## Acceptance boundary
 
 This module is complete when it can consume a published OCR run, produce strict and resumable page/run translation artifacts, translate all trusted dialogue and narration, preserve configured sound effects and all uncertain OCR, keep chapter terminology coherent, report usage, and finish without manual review.
