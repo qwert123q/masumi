@@ -23,6 +23,7 @@ The design has three goals:
 - resumable acquisition and capability validation of the two-file OCR model package;
 - source crop rendering and an arm64 llama.cpp `mtmd` JNI runtime;
 - foreground execution, cancellation, notifications, and package-scoped status broadcasts;
+- the cancellable OpenAI-compatible translation provider, transient retry policy, safe error mapping, and usage parsing;
 - progress display, safe preview navigation, and recognized-text details.
 
 `pipeline-core` owns portable behavior:
@@ -151,6 +152,7 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Chapter windows are greedily filled under a versioned estimated-token budget, carry only bounded preceding context, and never truncate one oversized source item.
 - Prompt context IDs are read-only. Only IDs from the current item array may appear in a response, exactly once each.
 - Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
+- Translation network calls use bounded OkHttp timeouts, retry only network/timeout/`408`/`429`/`5xx` failures, and expose no raw response or underlying exception text on failure.
 
 ## Invariants
 

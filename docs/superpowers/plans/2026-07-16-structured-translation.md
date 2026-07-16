@@ -20,10 +20,10 @@
 
 ## Task 3: Implement the provider boundary
 
-- [ ] Add an OpenAI-compatible provider interface and OkHttp implementation.
-- [ ] Keep endpoint and credentials out of artifacts and logs.
-- [ ] Add cancellation, bounded timeouts, transient-only retries, sanitized errors, and usage capture.
-- [ ] Add deterministic fake-provider tests for success, malformed JSON, partial output, timeout, and cancellation.
+- [x] Add an OpenAI-compatible provider interface and OkHttp implementation.
+- [x] Keep endpoint and credentials out of artifacts and logs.
+- [x] Add cancellation, bounded timeouts, transient-only retries, sanitized errors, and usage capture.
+- [x] Add deterministic fake-provider tests for success, malformed JSON, partial output, timeout, and cancellation.
 
 ## Task 4: Add resumable artifacts and orchestration
 

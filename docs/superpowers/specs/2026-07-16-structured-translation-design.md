@@ -67,6 +67,10 @@ The first network implementation targets an OpenAI-compatible chat-completions A
 
 The client must use bounded timeouts, cancellation, retry only transient failures, redact credentials from errors, and record prompt/completion token usage when the provider returns it. Batching and cache reuse are the primary cost controls; correctness does not depend on a particular commercial provider.
 
+The first provider implementation uses OkHttp and accepts either an API base path or a complete `/chat/completions` endpoint. It appends only `/chat/completions`; it never guesses or inserts `/v1`. Requests use bearer authentication, two chat messages, configurable JSON-object response format, bounded output tokens, and deterministic sampling settings. Runtime settings redact the endpoint, key, and model from `toString()`.
+
+Network failures, timeouts, HTTP `408`, `429`, and `5xx` responses are retryable under a bounded fixed-delay policy. Other HTTP failures and structurally invalid successful responses fail immediately. Cancellation closes the active OkHttp call and interrupts retry waiting. Public exceptions contain only a safe code, optional HTTP status, retryability, and attempt count; response bodies, URLs, credentials, and underlying exception messages are deliberately not retained.
+
 ## Recovery and reporting
 
 Translation checkpoints at the window and page boundaries. Process loss repeats only the active uncommitted window. A terminal report records translated, sound-effect-preserved, OCR-protected, missing-response, invalid-response, and provider-failure counts plus sanitized usage and duration totals.
