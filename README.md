@@ -28,6 +28,7 @@ This repository is at an early stage. Network translation, artwork cleanup, type
 - Checkpoint every terminal region, resume cancellation or interruption without repeating committed regions, and publish strict OCR JSON, previews, and a report atomically.
 - Review recognized text and protected regions page by page inside the app; no manual approval is required to finish a run.
 - Convert terminal OCR pages into strict, ordered translation inputs while carrying uncertain regions forward as protected artwork.
+- Build deterministic chapter translation windows with bounded context and validate structured model output by stable region ID so one malformed item cannot discard valid siblings.
 - Keep debug and future release installations separate.
 
 ## Modules

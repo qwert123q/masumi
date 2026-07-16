@@ -55,4 +55,34 @@ class TranslationJsonTest {
         assertNotEquals(baseline, soundEffects)
         assertNotEquals(baseline, prompt)
     }
+
+    @Test
+    fun `batch windows and validated responses round trip strictly`() {
+        val window = TranslationFixtures.window(listOf(TranslationFixtures.input("id", 0)))
+        val validation = TranslationResponseValidation(
+            items = listOf(
+                ValidatedTranslationItem(
+                    translationRegionId = "id",
+                    ocrRegionId = "ocr-id",
+                    role = TranslationRole.DIALOGUE,
+                    translatedText = "译文",
+                    state = TranslationResultState.TRANSLATED,
+                ),
+            ),
+            ignoredResponseIds = emptyList(),
+            glossaryUpdates = emptyList(),
+            discardedGlossaryEntryCount = 0,
+        )
+        val codec = TranslationJson()
+
+        assertEquals(window, codec.decodeBatchWindow(codec.encodeBatchWindow(window)))
+        assertEquals(validation, codec.decodeResponseValidation(codec.encodeResponseValidation(validation)))
+    }
+
+    @Test
+    fun `mandatory dialogue narration and automatic approval cannot be disabled`() {
+        assertFailsWith<IllegalArgumentException> { TranslationPolicy(translateDialogue = false) }
+        assertFailsWith<IllegalArgumentException> { TranslationPolicy(translateNarration = false) }
+        assertFailsWith<IllegalArgumentException> { TranslationPolicy(automaticApproval = false) }
+    }
 }

@@ -12,11 +12,11 @@
 
 ## Task 2: Add deterministic batching and response validation
 
-- [ ] Define chapter context windows and token-budget accounting.
-- [ ] Build the versioned system/user prompt from stable items and a glossary snapshot.
-- [ ] Join responses by ID, discard extras, and isolate duplicate, missing, invalid-role, or blank results.
-- [ ] Preserve sound effects according to policy and require translations for dialogue/narration.
-- [ ] Produce validated per-item outcomes without aborting valid siblings.
+- [x] Define chapter context windows and token-budget accounting.
+- [x] Build the versioned system/user prompt from stable items and a glossary snapshot.
+- [x] Join responses by ID, discard extras, and isolate duplicate, missing, invalid-role, or blank results.
+- [x] Preserve sound effects according to policy and require translations for dialogue/narration.
+- [x] Produce validated per-item outcomes without aborting valid siblings.
 
 ## Task 3: Implement the provider boundary
 

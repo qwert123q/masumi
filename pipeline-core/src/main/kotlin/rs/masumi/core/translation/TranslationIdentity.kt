@@ -22,6 +22,7 @@ object TranslationIdentity {
                 "translateDialogue" to policy.translateDialogue.toString(),
                 "translateNarration" to policy.translateNarration.toString(),
                 "translateSoundEffects" to policy.translateSoundEffects.toString(),
+                "translateOtherText" to policy.translateOtherText.toString(),
                 "automaticApproval" to policy.automaticApproval.toString(),
                 "promptRevision" to prompt.revision,
                 "responseSchemaRevision" to prompt.responseSchemaRevision,

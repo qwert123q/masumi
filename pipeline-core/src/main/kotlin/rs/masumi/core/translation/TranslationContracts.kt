@@ -34,6 +34,21 @@ enum class TranslationProtectionReason {
 }
 
 @Serializable
+enum class TranslationResultState {
+    TRANSLATED,
+    PRESERVED_SOURCE,
+}
+
+@Serializable
+enum class TranslationPreserveReason {
+    POLICY_PRESERVED,
+    MISSING_RESPONSE,
+    DUPLICATE_RESPONSE,
+    INVALID_ROLE,
+    BLANK_TRANSLATION,
+}
+
+@Serializable
 data class TranslationPolicy(
     val revision: String = "ja-zh-hans-v1",
     val sourceLanguage: TranslationSourceLanguage = TranslationSourceLanguage.JA,
@@ -41,8 +56,15 @@ data class TranslationPolicy(
     val translateDialogue: Boolean = true,
     val translateNarration: Boolean = true,
     val translateSoundEffects: Boolean = false,
+    val translateOtherText: Boolean = true,
     val automaticApproval: Boolean = true,
-)
+) {
+    init {
+        require(translateDialogue) { "dialogue translation is mandatory" }
+        require(translateNarration) { "narration translation is mandatory" }
+        require(automaticApproval) { "manual approval is not supported" }
+    }
+}
 
 @Serializable
 data class TranslationPromptRef(
@@ -89,4 +111,67 @@ data class TranslationModelItem(
 data class TranslationModelResponse(
     val items: List<TranslationModelItem>,
     val glossaryUpdates: Map<String, String> = emptyMap(),
+)
+
+@Serializable
+data class TranslationBatchingConfig(
+    val revision: String = "chapter-window-v1",
+    val maximumEstimatedInputTokens: Int = 6_000,
+    val maximumContextItems: Int = 24,
+) {
+    init {
+        require(maximumEstimatedInputTokens > 0) { "maximumEstimatedInputTokens must be positive" }
+        require(maximumContextItems >= 0) { "maximumContextItems must not be negative" }
+    }
+}
+
+@Serializable
+data class TranslationGlossaryEntry(
+    val source: String,
+    val translation: String,
+)
+
+@Serializable
+data class TranslationBatchItem(
+    val pageId: String,
+    val pageOrder: Int,
+    val ocrPageArtifactKey: String,
+    val input: TranslationInputItem,
+)
+
+@Serializable
+data class TranslationBatchWindow(
+    val windowIndex: Int,
+    val policy: TranslationPolicy,
+    val prompt: TranslationPromptRef,
+    val batching: TranslationBatchingConfig,
+    val glossary: List<TranslationGlossaryEntry>,
+    val contextItems: List<TranslationBatchItem>,
+    val items: List<TranslationBatchItem>,
+    val estimatedInputTokens: Int,
+    val exceedsBudget: Boolean,
+)
+
+@Serializable
+data class TranslationPromptMessages(
+    val system: String,
+    val user: String,
+)
+
+@Serializable
+data class ValidatedTranslationItem(
+    val translationRegionId: String,
+    val ocrRegionId: String,
+    val role: TranslationRole? = null,
+    val translatedText: String? = null,
+    val state: TranslationResultState,
+    val preserveReason: TranslationPreserveReason? = null,
+)
+
+@Serializable
+data class TranslationResponseValidation(
+    val items: List<ValidatedTranslationItem>,
+    val ignoredResponseIds: List<String>,
+    val glossaryUpdates: List<TranslationGlossaryEntry>,
+    val discardedGlossaryEntryCount: Int,
 )

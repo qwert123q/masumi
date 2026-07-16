@@ -148,6 +148,8 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - In-box text is a mandatory dialogue candidate. Free text is explicitly classified as narration, sound effect, or other text before policy is applied.
 - The default policy translates dialogue and narration, preserves sound effects, and completes without manual approval.
 - Structured responses are reconciled by stable ID. A missing or invalid item preserves its source pixels without discarding valid sibling results.
+- Chapter windows are greedily filled under a versioned estimated-token budget, carry only bounded preceding context, and never truncate one oversized source item.
+- Prompt context IDs are read-only. Only IDs from the current item array may appear in a response, exactly once each.
 - Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
 
 ## Invariants
