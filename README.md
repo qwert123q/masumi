@@ -1,8 +1,8 @@
 # Masumi
 
-Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, translates trusted Japanese text into Simplified Chinese, removes accepted source glyphs, and lays out translated text onto flattened page images without modifying the source files.
+Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, translates trusted Japanese text into Simplified Chinese, removes accepted source glyphs, lays out translated text, and exports a complete folder of flattened PNG pages without modifying the source files.
 
-This repository is at an early stage. Conservative source-text cleanup and Chinese typesetting are implemented; final chapter export is not implemented yet. Versioned flattened-page artifacts are now the verified boundary for export.
+This repository is at an early stage. Conservative source-text cleanup, Chinese typesetting, and direct folder export are implemented. Automated visual quality improvement remains active work.
 
 ## Current capability
 
@@ -39,12 +39,15 @@ This repository is at an early stage. Conservative source-text cleanup and Chine
 - Lay out accepted Simplified Chinese translations in centered horizontal lines or right-to-left vertical columns according to each region's real geometry.
 - Fit text with a deterministic maximum-readable-size search, preserve regions that cannot meet the absolute readability floor, and use adaptive outlined text for free-text artwork.
 - Checkpoint flattened PNG and strict page JSON together, resume interrupted pages without repeating upstream stages, and preview the published result page by page in the app.
+- Select an Android folder and export every page directly as deterministic `0001.png`, `0002.png`, and later files without creating an archive or wrapper directory.
+- Prefer flattened pages, fall back to verified cleanup or normalized source pages when a complete page was preserved, and record fallback counts without blocking the chapter.
+- Stage, hash, promote, and read back every destination file; resume interrupted exports and reuse only byte-identical existing outputs.
 - Keep debug and future release installations separate.
 
 ## Modules
 
-- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, cleanup and typesetting pixels, foreground execution, and the import/detection/OCR/translation/cleanup/typesetting UI.
-- `:pipeline-core` contains portable import, detection, OCR, translation, cleanup, and typesetting contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
+- `:app` contains Android document access and folder publication, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, cleanup and typesetting pixels, foreground execution, and the complete pipeline UI.
+- `:pipeline-core` contains portable import, detection, OCR, translation, cleanup, typesetting, and export contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
 
 ## Build and test
 

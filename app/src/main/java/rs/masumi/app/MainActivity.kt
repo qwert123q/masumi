@@ -34,6 +34,10 @@ import rs.masumi.app.detection.PublishedDetectionRun
 import rs.masumi.app.detection.PublishedOcrRun
 import rs.masumi.app.detection.PublishedCleanupRun
 import rs.masumi.app.detection.PublishedTranslationRun
+import rs.masumi.app.exporting.ExportForegroundService
+import rs.masumi.app.exporting.ExportProgress
+import rs.masumi.app.exporting.ExportResumePolicy
+import rs.masumi.app.exporting.ExportStatusBroadcast
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
@@ -58,6 +62,10 @@ import rs.masumi.core.detection.DetectionArtifactStore
 import rs.masumi.core.detection.DetectionJobStatus
 import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.detection.DetectionRunEntry
+import rs.masumi.core.exporting.ExportArtifactStore
+import rs.masumi.core.exporting.ExportJobStatus
+import rs.masumi.core.exporting.ExportPageSource
+import rs.masumi.core.exporting.ExportPageState
 import rs.masumi.core.importer.ProjectImportException
 import rs.masumi.core.importer.ProjectImporter
 import rs.masumi.core.ocr.OcrArtifactStore
@@ -131,6 +139,10 @@ class MainActivity : Activity() {
     private lateinit var previousTypesettingPageButton: Button
     private lateinit var nextTypesettingPageButton: Button
     private lateinit var typesettingDetailText: TextView
+    private lateinit var exportButton: Button
+    private lateinit var cancelExportButton: Button
+    private lateinit var exportProgress: ProgressBar
+    private lateinit var exportStatus: TextView
     private lateinit var catalog: ProjectCatalog
     private lateinit var translationSettingsStore: TranslationSettingsStore
 
@@ -140,11 +152,13 @@ class MainActivity : Activity() {
     private var translationActive = false
     private var cleanupActive = false
     private var typesettingActive = false
+    private var exportActive = false
     private var receiverRegistered = false
     private var ocrReceiverRegistered = false
     private var translationReceiverRegistered = false
     private var cleanupReceiverRegistered = false
     private var typesettingReceiverRegistered = false
+    private var exportReceiverRegistered = false
     private var currentProject: ProjectRef? = null
     private var currentRun: PublishedDetectionRun? = null
     private var currentPreviewIndex = 0
@@ -169,6 +183,7 @@ class MainActivity : Activity() {
     private var translationResumeRequestedThisProcess = false
     private var cleanupResumeRequestedThisProcess = false
     private var typesettingResumeRequestedThisProcess = false
+    private var exportResumeRequestedThisProcess = false
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -202,6 +217,13 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TypesettingStatusBroadcast::parse) ?: return
             refreshTypesettingDurableState(progress)
+        }
+    }
+
+    private val exportReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val progress = intent?.let(ExportStatusBroadcast::parse) ?: return
+            refreshExportDurableState(progress)
         }
     }
 
@@ -259,6 +281,10 @@ class MainActivity : Activity() {
         previousTypesettingPageButton = findViewById(R.id.previousTypesettingPageButton)
         nextTypesettingPageButton = findViewById(R.id.nextTypesettingPageButton)
         typesettingDetailText = findViewById(R.id.typesettingDetailText)
+        exportButton = findViewById(R.id.exportButton)
+        cancelExportButton = findViewById(R.id.cancelExportButton)
+        exportProgress = findViewById(R.id.exportProgress)
+        exportStatus = findViewById(R.id.exportStatus)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
         translationSettingsStore.loadSaved()?.let { saved ->
@@ -291,6 +317,8 @@ class MainActivity : Activity() {
         nextTypesettingPageButton.setOnClickListener {
             showTypesettingPreview(currentTypesettingPreviewIndex + 1)
         }
+        exportButton.setOnClickListener { openExportFolder() }
+        cancelExportButton.setOnClickListener { cancelExport() }
     }
 
     override fun onStart() {
@@ -300,6 +328,7 @@ class MainActivity : Activity() {
         registerTranslationReceiver()
         registerCleanupReceiver()
         registerTypesettingReceiver()
+        registerExportReceiver()
     }
 
     override fun onResume() {
@@ -328,6 +357,10 @@ class MainActivity : Activity() {
             unregisterReceiver(typesettingReceiver)
             typesettingReceiverRegistered = false
         }
+        if (exportReceiverRegistered) {
+            unregisterReceiver(exportReceiver)
+            exportReceiverRegistered = false
+        }
         super.onStop()
     }
 
@@ -342,11 +375,18 @@ class MainActivity : Activity() {
     @Deprecated("Uses the platform result API to keep the foundation dependency-free")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_OPEN_CHAPTER || resultCode != RESULT_OK) return
-
+        if (resultCode != RESULT_OK) return
         val treeUri = data?.data ?: return
-        retainReadPermission(treeUri, data.flags)
-        importChapter(treeUri)
+        when (requestCode) {
+            REQUEST_OPEN_CHAPTER -> {
+                retainReadPermission(treeUri, data.flags)
+                importChapter(treeUri)
+            }
+            REQUEST_EXPORT_FOLDER -> {
+                retainReadWritePermission(treeUri, data.flags)
+                startExport(treeUri)
+            }
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -369,7 +409,10 @@ class MainActivity : Activity() {
     }
 
     private fun openChapterFolder() {
-        if (importRunning || analysisActive || ocrActive || translationActive || cleanupActive || typesettingActive) return
+        if (
+            importRunning || analysisActive || ocrActive || translationActive || cleanupActive ||
+            typesettingActive || exportActive
+        ) return
 
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -384,6 +427,46 @@ class MainActivity : Activity() {
         runCatching {
             contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+    }
+
+    private fun openExportFolder() {
+        if (
+            currentTypesettingRun == null || importRunning || analysisActive || ocrActive ||
+            translationActive || cleanupActive || typesettingActive || exportActive
+        ) return
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        }
+        startActivityForResult(intent, REQUEST_EXPORT_FOLDER)
+    }
+
+    private fun retainReadWritePermission(treeUri: Uri, resultFlags: Int) {
+        val requested = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val granted = resultFlags and requested
+        if (granted == 0) return
+        runCatching { contentResolver.takePersistableUriPermission(treeUri, granted) }
+    }
+
+    private fun startExport(treeUri: Uri) {
+        val projectId = currentProject?.manifest?.projectId ?: return
+        exportResumeRequestedThisProcess = true
+        startForegroundService(ExportForegroundService.startIntent(this, projectId, treeUri))
+        setExportActive(true)
+        exportStatus.setText(R.string.export_status_starting)
+        exportProgress.visibility = View.VISIBLE
+        exportProgress.isIndeterminate = false
+        exportProgress.max = currentProject?.manifest?.pages?.size?.coerceAtLeast(1) ?: 1
+        exportProgress.progress = 0
+    }
+
+    private fun cancelExport() {
+        if (!exportActive) return
+        startService(ExportForegroundService.cancelIntent(this))
+        cancelExportButton.isEnabled = false
+        exportStatus.setText(R.string.export_notification_cancelling)
     }
 
     private fun importChapter(treeUri: Uri) {
@@ -425,7 +508,7 @@ class MainActivity : Activity() {
 
     private fun requestAnalysisStart() {
         val projectId = currentProject?.manifest?.projectId ?: return
-        if (analysisActive || ocrActive || translationActive || cleanupActive || typesettingActive) return
+        if (analysisActive || ocrActive || translationActive || cleanupActive || typesettingActive || exportActive) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
@@ -465,7 +548,7 @@ class MainActivity : Activity() {
         val projectId = currentProject?.manifest?.projectId ?: return
         if (
             currentRun == null || importRunning || analysisActive || ocrActive || translationActive ||
-            cleanupActive || typesettingActive
+            cleanupActive || typesettingActive || exportActive
         ) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -523,7 +606,7 @@ class MainActivity : Activity() {
         val projectId = currentProject?.manifest?.projectId ?: return
         if (
             currentOcrRun == null || importRunning || analysisActive || ocrActive || translationActive ||
-            cleanupActive || typesettingActive
+            cleanupActive || typesettingActive || exportActive
         ) return
         if (translationSettingsStore.loadProviderSettings() == null) {
             translationStatus.setText(R.string.translation_status_settings_missing)
@@ -567,7 +650,7 @@ class MainActivity : Activity() {
         val projectId = currentProject?.manifest?.projectId ?: return
         if (
             currentTranslationRun == null || importRunning || analysisActive || ocrActive ||
-            translationActive || cleanupActive || typesettingActive
+            translationActive || cleanupActive || typesettingActive || exportActive
         ) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -607,7 +690,7 @@ class MainActivity : Activity() {
         val projectId = currentProject?.manifest?.projectId ?: return
         if (
             currentCleanupRun == null || importRunning || analysisActive || ocrActive ||
-            translationActive || cleanupActive || typesettingActive
+            translationActive || cleanupActive || typesettingActive || exportActive
         ) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -870,6 +953,65 @@ class MainActivity : Activity() {
             typesettingStatus.setText(R.string.typesetting_status_ready)
         }
         showTypesettingPreview(currentTypesettingPreviewIndex)
+        refreshExportDurableState()
+    }
+
+    private fun refreshExportDurableState(progressOverride: ExportProgress? = null) {
+        val project = currentProject
+        val typesettingRun = currentTypesettingRun
+        if (project == null || typesettingRun == null) {
+            resetExportState()
+            return
+        }
+        val job = ExportArtifactStore(project.directory).findLatestJob()?.takeIf {
+            it.projectId == project.manifest.projectId &&
+                it.dependencies.typesettingRunArtifactKey == typesettingRun.artifact.runArtifactKey
+        }
+        val durableProgress = progressOverride
+            ?.takeIf { progress ->
+                progress.projectId == project.manifest.projectId &&
+                    job?.jobId == progress.jobId &&
+                    job.exportKey == progress.exportKey
+            }
+            ?: job?.let { exportJob ->
+                val committed = exportJob.pages.filter { it.state == ExportPageState.COMMITTED }
+                ExportProgress(
+                    projectId = exportJob.projectId,
+                    jobId = exportJob.jobId,
+                    exportKey = exportJob.exportKey,
+                    status = exportJob.status,
+                    terminalPageCount = committed.size,
+                    totalPageCount = exportJob.pages.size,
+                    flattenedPageCount = committed.count { it.source == ExportPageSource.FLATTENED },
+                    cleanedFallbackPageCount = committed.count { it.source == ExportPageSource.CLEANED_FALLBACK },
+                    sourceFallbackPageCount = committed.count { it.source == ExportPageSource.SOURCE_FALLBACK },
+                    reusedPageCount = committed.count { it.reusedExisting },
+                    currentPageOrder = exportJob.pages.firstOrNull { it.state == ExportPageState.RUNNING }?.pageOrder,
+                    errorCode = exportJob.error?.code,
+                )
+            }
+        if (durableProgress != null) {
+            renderExportProgress(durableProgress)
+            if (
+                progressOverride == null &&
+                !ExportForegroundService.isTaskActive() &&
+                ExportResumePolicy.shouldResume(
+                    durableProgress.status,
+                    exportResumeRequestedThisProcess,
+                )
+            ) {
+                exportResumeRequestedThisProcess = true
+                startForegroundService(
+                    ExportForegroundService.resumeIntent(this, project.manifest.projectId),
+                )
+            }
+        } else {
+            setExportActive(false)
+            exportButton.isEnabled = !importRunning && !analysisActive && !ocrActive &&
+                !translationActive && !cleanupActive && !typesettingActive
+            exportProgress.visibility = View.GONE
+            exportStatus.setText(R.string.export_status_ready)
+        }
     }
 
     private fun typesettingProgressMatchesCleanup(
@@ -1402,6 +1544,38 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun renderExportProgress(progress: ExportProgress) {
+        val active = progress.status.isActive()
+        if (!active) exportResumeRequestedThisProcess = false
+        setExportActive(active)
+        exportButton.isEnabled = !active && currentTypesettingRun != null &&
+            !importRunning && !analysisActive && !ocrActive && !translationActive &&
+            !cleanupActive && !typesettingActive
+        exportProgress.visibility = View.VISIBLE
+        exportProgress.isIndeterminate = false
+        exportProgress.max = progress.totalPageCount.coerceAtLeast(1)
+        exportProgress.progress = progress.terminalPageCount.coerceIn(0, exportProgress.max)
+        exportStatus.text = when (progress.status) {
+            ExportJobStatus.QUEUED -> getString(R.string.export_status_starting)
+            ExportJobStatus.RUNNING -> getString(
+                R.string.export_status_progress,
+                progress.terminalPageCount,
+                progress.totalPageCount,
+            )
+            ExportJobStatus.SUCCEEDED -> getString(
+                R.string.export_status_succeeded,
+                progress.totalPageCount,
+                progress.cleanedFallbackPageCount + progress.sourceFallbackPageCount,
+                progress.reusedPageCount,
+            )
+            ExportJobStatus.CANCELLED -> getString(R.string.export_status_cancelled)
+            ExportJobStatus.FAILED -> getString(
+                R.string.export_status_failed,
+                progress.errorCode.orEmpty(),
+            )
+        }
+    }
+
     private fun showTypesettingPreview(requestedIndex: Int) {
         val run = currentTypesettingRun
         val project = currentProject
@@ -1686,6 +1860,14 @@ class MainActivity : Activity() {
         typesettingProgress.visibility = View.GONE
         typesettingStatus.setText(R.string.typesetting_status_no_cleanup)
         clearTypesettingPreview()
+        resetExportState()
+    }
+
+    private fun resetExportState() {
+        setExportActive(false)
+        exportButton.isEnabled = false
+        exportProgress.visibility = View.GONE
+        exportStatus.setText(R.string.export_status_no_typesetting)
     }
 
     private fun OcrRegionState.displayLabel(): String = when (this) {
@@ -1851,6 +2033,30 @@ class MainActivity : Activity() {
         saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive && !active
         cancelTypesettingButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelTypesettingButton.isEnabled = active
+        exportButton.isEnabled = currentTypesettingRun != null && !importRunning && !analysisActive &&
+            !ocrActive && !translationActive && !cleanupActive && !active && !exportActive
+    }
+
+    private fun setExportActive(active: Boolean) {
+        exportActive = active
+        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive &&
+            !cleanupActive && !typesettingActive && !active
+        analysisButton.isEnabled = currentProject != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !cleanupActive && !typesettingActive && !active
+        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !cleanupActive && !typesettingActive && !active
+        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !cleanupActive && !typesettingActive && !active &&
+            translationSettingsStore.loadProviderSettings() != null
+        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !cleanupActive && !typesettingActive && !active
+        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !cleanupActive && !typesettingActive && !active
+        exportButton.isEnabled = currentTypesettingRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !cleanupActive && !typesettingActive && !active
+        saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive && !typesettingActive && !active
+        cancelExportButton.visibility = if (active) View.VISIBLE else View.GONE
+        cancelExportButton.isEnabled = active
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -1948,6 +2154,25 @@ class MainActivity : Activity() {
         typesettingReceiverRegistered = true
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerExportReceiver() {
+        if (exportReceiverRegistered) return
+        val filter = IntentFilter(ExportStatusBroadcast.ACTION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                exportReceiver,
+                filter,
+                internalExportStatusPermission(),
+                null,
+                RECEIVER_NOT_EXPORTED,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(exportReceiver, filter, internalExportStatusPermission(), null)
+        }
+        exportReceiverRegistered = true
+    }
+
     private fun internalStatusPermission(): String =
         "$packageName.permission.INTERNAL_DETECTION_STATUS"
 
@@ -1962,6 +2187,9 @@ class MainActivity : Activity() {
 
     private fun internalTypesettingStatusPermission(): String =
         "$packageName.permission.INTERNAL_TYPESETTING_STATUS"
+
+    private fun internalExportStatusPermission(): String =
+        "$packageName.permission.INTERNAL_EXPORT_STATUS"
 
     private fun notificationPermissionWasRequested(): Boolean = getPreferences(MODE_PRIVATE)
         .getBoolean(PREF_NOTIFICATION_REQUESTED, false)
@@ -2004,6 +2232,9 @@ class MainActivity : Activity() {
     private fun TypesettingJobStatus.isActive(): Boolean =
         this == TypesettingJobStatus.QUEUED || this == TypesettingJobStatus.RUNNING
 
+    private fun ExportJobStatus.isActive(): Boolean =
+        this == ExportJobStatus.QUEUED || this == ExportJobStatus.RUNNING
+
     private fun OcrRegionState.isOcrTerminal(): Boolean = when (this) {
         OcrRegionState.RECOGNIZED,
         OcrRegionState.NEEDS_FALLBACK,
@@ -2018,6 +2249,7 @@ class MainActivity : Activity() {
     private companion object {
         const val REQUEST_OPEN_CHAPTER = 1001
         const val REQUEST_NOTIFICATION_PERMISSION = 1002
+        const val REQUEST_EXPORT_FOLDER = 1003
         const val IMPORT_THREAD_NAME = "masumi-import"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
     }

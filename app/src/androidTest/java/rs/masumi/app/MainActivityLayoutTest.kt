@@ -95,5 +95,11 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<ImageView>(R.id.typesettingPreviewImage).visibility)
         assertEquals("尚无嵌字结果", root.findViewById<TextView>(R.id.typesettingPageIndicator).text.toString())
         assertEquals("完成原文清理后可生成中文嵌字页面", root.findViewById<TextView>(R.id.typesettingStatus).text.toString())
+
+        assertEquals("选择文件夹并导出全部页面", root.findViewById<Button>(R.id.exportButton).text.toString())
+        assertEquals(false, root.findViewById<Button>(R.id.exportButton).isEnabled)
+        assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelExportButton).visibility)
+        assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.exportProgress).visibility)
+        assertEquals("完成中文嵌字后可导出全部 PNG 页面", root.findViewById<TextView>(R.id.exportStatus).text.toString())
     }
 }

@@ -15,12 +15,16 @@
     <permission
         android:name="${applicationId}.permission.INTERNAL_TYPESETTING_STATUS"
         android:protectionLevel="signature" />
+    <permission
+        android:name="${applicationId}.permission.INTERNAL_EXPORT_STATUS"
+        android:protectionLevel="signature" />
 
     <uses-permission android:name="${applicationId}.permission.INTERNAL_DETECTION_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_OCR_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_TRANSLATION_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_CLEANUP_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_TYPESETTING_STATUS" />
+    <uses-permission android:name="${applicationId}.permission.INTERNAL_EXPORT_STATUS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -61,6 +65,11 @@
             android:stopWithTask="false" />
         <service
             android:name=".typesetting.TypesettingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+        <service
+            android:name=".exporting.ExportForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />

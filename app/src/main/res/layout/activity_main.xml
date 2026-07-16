@@ -563,8 +563,52 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:layout_marginBottom="32dp"
+            android:layout_marginBottom="12dp"
             android:text=""
+            android:textAppearance="?android:attr/textAppearanceMedium" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/export_section_title"
+            android:textAppearance="?android:attr/textAppearanceLarge"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/exportButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:enabled="false"
+            android:text="@string/start_export" />
+
+        <Button
+            android:id="@+id/cancelExportButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/cancel_export"
+            android:visibility="gone" />
+
+        <ProgressBar
+            android:id="@+id/exportProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:indeterminate="false"
+            android:max="1"
+            android:progress="0"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/exportStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="32dp"
+            android:text="@string/export_status_no_typesetting"
             android:textAppearance="?android:attr/textAppearanceMedium" />
     </LinearLayout>
 </ScrollView>

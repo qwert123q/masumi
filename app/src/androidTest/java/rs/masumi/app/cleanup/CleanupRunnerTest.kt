@@ -8,6 +8,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -16,6 +17,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.app.typesetting.TypesettingRunner
+import rs.masumi.app.exporting.DestinationWriteResult
+import rs.masumi.app.exporting.ExportCancellationSignal
+import rs.masumi.app.exporting.ExportRunner
+import rs.masumi.app.exporting.FolderExportDestination
+import rs.masumi.core.exporting.ExportJobStatus
 import rs.masumi.core.typesetting.TypesettingJobStatus
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.model.PageRecord
@@ -113,6 +119,32 @@ class CleanupRunnerTest {
             val cachedTypesetting = typesetter.run(PROJECT_ID, { false }) { }
             assertEquals(completedTypesetting.runArtifact, cachedTypesetting.runArtifact)
             assertEquals(completedTypesetting.report, cachedTypesetting.report)
+
+            val destination = InMemoryExportDestination()
+            val exportIds = AtomicInteger()
+            val exporter = ExportRunner(
+                workspaceRoot = workspace,
+                destinationFactory = { _, _ -> destination },
+                idSource = IdSource { "export-job-${exportIds.incrementAndGet()}" },
+            )
+            cancel.set(false)
+            val cancelledExport = exporter.run(PROJECT_ID, DESTINATION_URI, cancel::get) { progress ->
+                if (progress.currentPageOrder != null) cancel.set(true)
+            }
+            assertEquals(ExportJobStatus.CANCELLED, cancelledExport.job.status)
+            assertTrue(destination.files.isEmpty())
+
+            cancel.set(false)
+            val completedExport = exporter.run(PROJECT_ID, DESTINATION_URI, cancel::get) { }
+            assertEquals(ExportJobStatus.SUCCEEDED, completedExport.job.status)
+            assertEquals(setOf("0001.png"), destination.files.keys)
+            assertEquals(1, completedExport.report?.flattenedPageCount)
+            assertEquals(0, completedExport.report?.reusedPageCount)
+
+            val repeatedExport = exporter.run(PROJECT_ID, DESTINATION_URI, { false }) { }
+            assertEquals(ExportJobStatus.SUCCEEDED, repeatedExport.job.status)
+            assertEquals(1, repeatedExport.report?.reusedPageCount)
+            assertArrayEquals(sourceBytes, Files.readAllBytes(sourcePath(workspace)))
         } finally {
             workspace.toFile().deleteRecursively()
         }
@@ -370,7 +402,39 @@ class CleanupRunnerTest {
 
     private data class OcrFixture(val runKey: String, val pageKey: String, val regionId: String)
 
+    private class InMemoryExportDestination : FolderExportDestination {
+        val files = linkedMapOf<String, ByteArray>()
+
+        override fun matches(outputName: String, expectedSha256: String, expectedByteLength: Long): Boolean {
+            val bytes = files[outputName] ?: return false
+            return bytes.size.toLong() == expectedByteLength && sha256Static(bytes) == expectedSha256
+        }
+
+        override fun publish(
+            outputName: String,
+            bytes: ByteArray,
+            expectedSha256: String,
+            cancellation: () -> Boolean,
+        ): DestinationWriteResult {
+            if (cancellation()) throw ExportCancellationSignal()
+            val existing = files[outputName]
+            if (existing != null && sha256Static(existing) == expectedSha256) {
+                return DestinationWriteResult(reusedExisting = true)
+            }
+            files[outputName] = bytes.copyOf()
+            return DestinationWriteResult(reusedExisting = false)
+        }
+
+        override fun pruneManagedOutputs(expectedNames: Set<String>) {
+            files.keys.removeAll { name -> name.matches(Regex("[0-9]{1,12}\\.png")) && name !in expectedNames }
+        }
+    }
+
     private companion object {
         const val PROJECT_ID = "cleanup-project"
+        const val DESTINATION_URI = "content://provider/tree/export"
+
+        fun sha256Static(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+            .digest(bytes).joinToString("") { "%02x".format(it) }
     }
 }

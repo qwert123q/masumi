@@ -2,7 +2,7 @@
 
 ## Scope
 
-The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, removes source glyphs from accepted translation regions, and lays accepted Chinese text onto flattened pages. Detection, OCR, translation, cleanup, and typesetting each produce strict JSON, resumable job state, and a terminal report. Final chapter export is not implemented yet.
+The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, removes source glyphs from accepted translation regions, lays accepted Chinese text onto flattened pages, and exports the complete ordered page set to a user-selected folder. Every stage has strict JSON, resumable job state, and a terminal report.
 
 The design has three goals:
 
@@ -26,6 +26,7 @@ The design has three goals:
 - the cancellable OpenAI-compatible translation provider, transient retry policy, safe error mapping, and usage parsing;
 - conservative adaptive glyph masking, bubble fill, and free-text boundary inpainting;
 - horizontal and vertical Chinese layout, deterministic maximum-readable-size fitting, and adaptive free-text contrast;
+- Android document-tree write permission, staged page replacement, and final destination read-back verification;
 - progress display, safe preview navigation, and recognized-text details.
 
 `pipeline-core` owns portable behavior:
@@ -36,7 +37,7 @@ The design has three goals:
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
 - the strict OCR-to-translation input boundary, translation policy identity, and structured model-response contracts;
-- cleanup and typesetting dependency, policy, page/run/report, identity, and recovery contracts;
+- cleanup, typesetting, and folder-export dependency, policy, job/report, identity, and recovery contracts;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
 - model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
@@ -102,6 +103,15 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 6. Render dialogue in the cleaned bubble and free text with adaptive black-or-white glyphs plus a contrasting outline, clipped to the selected layout box.
 7. Atomically commit one flattened PNG and strict page JSON, recover only the active page after cancellation or process loss, then publish the complete run and report.
 
+## Folder export flow
+
+1. Select a writable Android document tree. The selected tree is the final output directory; no archive or additional directory is created.
+2. Bind the job to the exact published typesetting run and a one-way destination key. The private job journal retains the URI only for recovery.
+3. Name pages by manifest order as zero-padded PNG files. Prefer the flattened page, then a committed cleanup fallback, then a PNG-normalized immutable source.
+4. Reuse an existing final name only after its length and SHA-256 match. Otherwise write and verify a job-scoped temporary document before replacing matching final names.
+5. Read the promoted final document back and verify it before checkpointing the page. After the whole expected set is valid, remove stale numeric PNG page names outside the current range while leaving non-page files untouched.
+6. Recover cancellation or process loss at the active page, revalidate earlier outputs, then write a sanitized internal report with source-kind and reuse counts.
+
 ## Project artifacts
 
 ```text
@@ -121,9 +131,11 @@ workspace/
 │       │   └── <sha256>.<extension>
 │       ├── reports/
 │       │   ├── <import-job-id>.json
-│       │   └── <import-job-id>.txt
+│       │   ├── <import-job-id>.txt
+│       │   └── export/<export-job-id>.json
 │       ├── jobs/
-│       │   └── <detection-ocr-translation-cleanup-or-typesetting-job-id>.json
+│       │   ├── <detection-ocr-translation-cleanup-or-typesetting-job-id>.json
+│       │   └── export/<export-job-id>.json
 │       ├── staging/
 │       │   ├── detection/<detection-job-id>/<run-key>/
 │       │   ├── ocr/<ocr-job-id>/<run-key>/
@@ -221,7 +233,10 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Typesetting changes only regions with accepted translation and committed cleanup. A layout below the readability floor preserves its cleaned pixels.
 - Typesetting identity includes the exact cleanup, translation, and OCR dependencies plus every layout policy field. A committed page has validated JSON and a digest-verified flattened PNG.
 - Typesetting cancellation and process recovery discard only the active page and never repeat cleanup or any earlier stage.
+- Folder export publishes exactly one verified PNG per manifest page. Its report contains a destination digest, never the document-tree URI.
+- Export may overwrite deterministic page names after a verified temporary write and removes stale numeric PNG pages only after the current complete set is valid; other destination documents are never deleted.
+- Export cancellation and recovery revalidate committed external outputs and never repeat any localization stage.
 
 ## Next slices
 
-The flattened-page boundary is frozen and verified. Final visual quality checks and chapter export remain independent, reportable stages so they can be retried without mutating source pages or repeating valid earlier work.
+The full import-to-folder-export path is now represented by independently resumable stages. The next slice is automated visual quality analysis and targeted retry of OCR, cleanup, translation, or layout defects without mutating source pages or repeating unrelated valid work.
