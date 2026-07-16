@@ -14,6 +14,10 @@ import rs.masumi.core.ocr.PageOcrArtifact
 import rs.masumi.core.serialization.DetectionJson
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
+import rs.masumi.core.serialization.TranslationJson
+import rs.masumi.core.translation.TranslationArtifactStore
+import rs.masumi.core.translation.TranslationReport
+import rs.masumi.core.translation.TranslationRunArtifact
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -34,11 +38,18 @@ data class PublishedOcrRun(
     val report: OcrReport,
 )
 
+data class PublishedTranslationRun(
+    val directory: Path,
+    val artifact: TranslationRunArtifact,
+    val report: TranslationReport,
+)
+
 class ProjectCatalog(
     workspaceRoot: Path,
     private val json: ProjectJson = ProjectJson(),
     private val detectionJson: DetectionJson = DetectionJson(),
     private val ocrJson: OcrJson = OcrJson(),
+    private val translationJson: TranslationJson = TranslationJson(),
 ) {
     private val projectsDirectory = workspaceRoot.toAbsolutePath().normalize().resolve("projects")
 
@@ -141,6 +152,25 @@ class ProjectCatalog(
             require(entries.all { it.pageArtifactKey == page.pageArtifactKey })
         }
     }.getOrNull()
+
+    fun latestPublishedTranslationRun(projectId: String): PublishedTranslationRun? {
+        val project = openProject(projectId) ?: return null
+        val artifactRoot = project.directory.resolve("artifacts/translation")
+        val store = TranslationArtifactStore(project.directory, translationJson)
+        return directDirectories(artifactRoot)
+            .mapNotNull { directory ->
+                val runKey = directory.fileName.toString()
+                if (!SHA256.matches(runKey)) return@mapNotNull null
+                val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
+                val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
+                if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
+                PublishedTranslationRun(directory, artifact, report)
+            }
+            .maxWithOrNull(
+                compareBy<PublishedTranslationRun> { it.artifact.createdAtEpochMillis }
+                    .thenBy { it.artifact.runArtifactKey },
+            )
+    }
 
     private fun readProject(directory: Path): ProjectRef? = runCatching {
         require(Files.isDirectory(directory))

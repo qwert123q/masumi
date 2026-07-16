@@ -284,5 +284,83 @@
             android:text=""
             android:textAppearance="?android:attr/textAppearanceMedium"
             android:textIsSelectable="true" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/translation_section_title"
+            android:textAppearance="?android:attr/textAppearanceLarge"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/translationApiUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="@string/translation_api_url_hint"
+            android:inputType="textUri"
+            android:maxLines="1" />
+
+        <EditText
+            android:id="@+id/translationApiKey"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/translation_api_key_hint"
+            android:inputType="textPassword"
+            android:maxLines="1" />
+
+        <EditText
+            android:id="@+id/translationModel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/translation_model_hint"
+            android:inputType="text"
+            android:maxLines="1" />
+
+        <Button
+            android:id="@+id/saveTranslationSettingsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/save_translation_settings" />
+
+        <Button
+            android:id="@+id/translationButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:enabled="false"
+            android:text="@string/start_translation" />
+
+        <Button
+            android:id="@+id/cancelTranslationButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/cancel_translation"
+            android:visibility="gone" />
+
+        <ProgressBar
+            android:id="@+id/translationProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:indeterminate="false"
+            android:max="1"
+            android:progress="0"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/translationStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="32dp"
+            android:text="@string/translation_status_no_ocr"
+            android:textAppearance="?android:attr/textAppearanceMedium" />
     </LinearLayout>
 </ScrollView>

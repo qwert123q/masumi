@@ -1,6 +1,23 @@
 package rs.masumi.core.translation
 
 object TranslationJobReducer {
+    fun prepareWindow(
+        job: TranslationJobRecord,
+        index: Int,
+        windowArtifactKey: String,
+        now: Long,
+    ): TranslationJobRecord {
+        require(job.status == TranslationJobStatus.RUNNING && !job.cancelRequested)
+        val target = job.windows.single { it.windowIndex == index }
+        require(target.state == TranslationWindowState.PENDING)
+        require(windowArtifactKey.matches(Regex("[0-9a-f]{64}")))
+        return job.updated(now).copy(
+            windows = job.windows.map {
+                if (it.windowIndex == index) it.copy(windowArtifactKey = windowArtifactKey) else it
+            },
+        )
+    }
+
     fun startRunning(job: TranslationJobRecord, now: Long): TranslationJobRecord {
         require(job.status == TranslationJobStatus.QUEUED || job.status == TranslationJobStatus.CANCELLED)
         return job.updated(now).copy(status = TranslationJobStatus.RUNNING, cancelRequested = false, error = null)
@@ -62,14 +79,14 @@ object TranslationJobReducer {
         )
     }
 
-    fun commitPage(job: TranslationJobRecord, pageId: String, artifactPath: String, now: Long): TranslationJobRecord {
-        val page = job.pages.single { it.pageId == pageId }
+    fun commitPage(job: TranslationJobRecord, pageOrder: Int, artifactPath: String, now: Long): TranslationJobRecord {
+        val page = job.pages.single { it.pageOrder == pageOrder }
         require(page.state == TranslationPageState.PENDING || page.state == TranslationPageState.RUNNING)
         val relevant = job.windows.filter { window -> window.translationRegionIds.any(page.translationRegionIds::contains) }
         require(relevant.all { it.state.isTerminal() })
         return job.updated(now).copy(
             pages = job.pages.map {
-                if (it.pageId == pageId) it.copy(
+                if (it.pageOrder == pageOrder) it.copy(
                     state = TranslationPageState.COMMITTED,
                     artifactPath = artifactPath,
                     error = null,

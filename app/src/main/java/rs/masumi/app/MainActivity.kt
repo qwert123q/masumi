@@ -15,9 +15,11 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import rs.masumi.app.detection.DetectionForegroundService
 import rs.masumi.app.detection.DetectionProgress
 import rs.masumi.app.detection.DetectionResumePolicy
@@ -26,10 +28,17 @@ import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedDetectionRun
 import rs.masumi.app.detection.PublishedOcrRun
+import rs.masumi.app.detection.PublishedTranslationRun
 import rs.masumi.app.ocr.OcrForegroundService
 import rs.masumi.app.ocr.OcrProgress
 import rs.masumi.app.ocr.OcrResumePolicy
 import rs.masumi.app.ocr.OcrStatusBroadcast
+import rs.masumi.app.translation.SavedTranslationSettings
+import rs.masumi.app.translation.TranslationForegroundService
+import rs.masumi.app.translation.TranslationProgress
+import rs.masumi.app.translation.TranslationResumePolicy
+import rs.masumi.app.translation.TranslationSettingsStore
+import rs.masumi.app.translation.TranslationStatusBroadcast
 import rs.masumi.core.detection.DetectionArtifactStore
 import rs.masumi.core.detection.DetectionJobStatus
 import rs.masumi.core.detection.DetectionPageState
@@ -41,6 +50,11 @@ import rs.masumi.core.ocr.OcrJobStatus
 import rs.masumi.core.ocr.OcrPageState
 import rs.masumi.core.ocr.OcrRegionState
 import rs.masumi.core.ocr.OcrRunEntry
+import rs.masumi.core.translation.TranslationArtifactStore
+import rs.masumi.core.translation.TranslationJobStatus
+import rs.masumi.core.translation.TranslationPageState
+import rs.masumi.core.translation.TranslationWindowState
+import rs.masumi.core.translation.isTerminal
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -67,24 +81,38 @@ class MainActivity : Activity() {
     private lateinit var previousOcrPageButton: Button
     private lateinit var nextOcrPageButton: Button
     private lateinit var ocrDetailText: TextView
+    private lateinit var translationApiUrl: EditText
+    private lateinit var translationApiKey: EditText
+    private lateinit var translationModel: EditText
+    private lateinit var saveTranslationSettingsButton: Button
+    private lateinit var translationButton: Button
+    private lateinit var cancelTranslationButton: Button
+    private lateinit var translationProgress: ProgressBar
+    private lateinit var translationStatus: TextView
     private lateinit var catalog: ProjectCatalog
+    private lateinit var translationSettingsStore: TranslationSettingsStore
 
     private var importRunning = false
     private var analysisActive = false
     private var ocrActive = false
+    private var translationActive = false
     private var receiverRegistered = false
     private var ocrReceiverRegistered = false
+    private var translationReceiverRegistered = false
     private var currentProject: ProjectRef? = null
     private var currentRun: PublishedDetectionRun? = null
     private var currentPreviewIndex = 0
     private var currentOcrRun: PublishedOcrRun? = null
     private var currentOcrPreviewIndex = 0
+    private var currentTranslationRun: PublishedTranslationRun? = null
     private var displayedBitmap: Bitmap? = null
     private var displayedOcrBitmap: Bitmap? = null
     private var pendingAnalysisProjectId: String? = null
     private var pendingOcrProjectId: String? = null
+    private var pendingTranslationProjectId: String? = null
     private var resumeRequestedThisProcess = false
     private var ocrResumeRequestedThisProcess = false
+    private var translationResumeRequestedThisProcess = false
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -97,6 +125,13 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(OcrStatusBroadcast::parse) ?: return
             refreshOcrDurableState(progress)
+        }
+    }
+
+    private val translationReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val progress = intent?.let(TranslationStatusBroadcast::parse) ?: return
+            refreshTranslationDurableState(progress)
         }
     }
 
@@ -126,7 +161,21 @@ class MainActivity : Activity() {
         previousOcrPageButton = findViewById(R.id.previousOcrPageButton)
         nextOcrPageButton = findViewById(R.id.nextOcrPageButton)
         ocrDetailText = findViewById(R.id.ocrDetailText)
+        translationApiUrl = findViewById(R.id.translationApiUrl)
+        translationApiKey = findViewById(R.id.translationApiKey)
+        translationModel = findViewById(R.id.translationModel)
+        saveTranslationSettingsButton = findViewById(R.id.saveTranslationSettingsButton)
+        translationButton = findViewById(R.id.translationButton)
+        cancelTranslationButton = findViewById(R.id.cancelTranslationButton)
+        translationProgress = findViewById(R.id.translationProgress)
+        translationStatus = findViewById(R.id.translationStatus)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
+        translationSettingsStore = TranslationSettingsStore(this)
+        translationSettingsStore.loadSaved()?.let { saved ->
+            translationApiUrl.setText(saved.apiUrl)
+            translationApiKey.setText(saved.apiKey)
+            translationModel.setText(saved.model)
+        }
 
         importButton.setOnClickListener { openChapterFolder() }
         analysisButton.setOnClickListener { requestAnalysisStart() }
@@ -137,12 +186,16 @@ class MainActivity : Activity() {
         cancelOcrButton.setOnClickListener { cancelOcr() }
         previousOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex - 1) }
         nextOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex + 1) }
+        saveTranslationSettingsButton.setOnClickListener { saveTranslationSettings() }
+        translationButton.setOnClickListener { requestTranslationStart() }
+        cancelTranslationButton.setOnClickListener { cancelTranslation() }
     }
 
     override fun onStart() {
         super.onStart()
         registerDetectionReceiver()
         registerOcrReceiver()
+        registerTranslationReceiver()
     }
 
     override fun onResume() {
@@ -158,6 +211,10 @@ class MainActivity : Activity() {
         if (ocrReceiverRegistered) {
             unregisterReceiver(ocrReceiver)
             ocrReceiverRegistered = false
+        }
+        if (translationReceiverRegistered) {
+            unregisterReceiver(translationReceiver)
+            translationReceiverRegistered = false
         }
         super.onStop()
     }
@@ -189,10 +246,12 @@ class MainActivity : Activity() {
         pendingAnalysisProjectId = null
         pendingOcrProjectId?.let(::startOcr)
         pendingOcrProjectId = null
+        pendingTranslationProjectId?.let(::startTranslation)
+        pendingTranslationProjectId = null
     }
 
     private fun openChapterFolder() {
-        if (importRunning || analysisActive || ocrActive) return
+        if (importRunning || analysisActive || ocrActive || translationActive) return
 
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -248,7 +307,7 @@ class MainActivity : Activity() {
 
     private fun requestAnalysisStart() {
         val projectId = currentProject?.manifest?.projectId ?: return
-        if (analysisActive) return
+        if (analysisActive || ocrActive || translationActive) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
@@ -286,7 +345,7 @@ class MainActivity : Activity() {
 
     private fun requestOcrStart() {
         val projectId = currentProject?.manifest?.projectId ?: return
-        if (currentRun == null || importRunning || analysisActive || ocrActive) return
+        if (currentRun == null || importRunning || analysisActive || ocrActive || translationActive) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
@@ -319,6 +378,65 @@ class MainActivity : Activity() {
         startService(OcrForegroundService.cancelIntent(this))
         cancelOcrButton.isEnabled = false
         ocrStatus.setText(R.string.ocr_notification_cancelling)
+    }
+
+    private fun saveTranslationSettings() {
+        val result = runCatching {
+            translationSettingsStore.save(
+                SavedTranslationSettings(
+                    apiUrl = translationApiUrl.text.toString(),
+                    apiKey = translationApiKey.text.toString(),
+                    model = translationModel.text.toString(),
+                ),
+            )
+        }
+        if (result.isSuccess) {
+            Toast.makeText(this, R.string.translation_settings_saved, Toast.LENGTH_SHORT).show()
+            refreshTranslationDurableState()
+        } else {
+            Toast.makeText(this, R.string.translation_settings_invalid, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun requestTranslationStart() {
+        val projectId = currentProject?.manifest?.projectId ?: return
+        if (currentOcrRun == null || importRunning || analysisActive || ocrActive || translationActive) return
+        if (translationSettingsStore.loadProviderSettings() == null) {
+            translationStatus.setText(R.string.translation_status_settings_missing)
+            return
+        }
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !notificationPermissionWasRequested()
+        ) {
+            pendingTranslationProjectId = projectId
+            markNotificationPermissionRequested()
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                REQUEST_NOTIFICATION_PERMISSION,
+            )
+            return
+        }
+        startTranslation(projectId)
+    }
+
+    private fun startTranslation(projectId: String) {
+        translationResumeRequestedThisProcess = true
+        startForegroundService(TranslationForegroundService.startIntent(this, projectId))
+        setTranslationActive(true)
+        translationStatus.setText(R.string.translation_status_starting)
+        translationProgress.visibility = View.VISIBLE
+        translationProgress.isIndeterminate = false
+        translationProgress.max = 1
+        translationProgress.progress = 0
+    }
+
+    private fun cancelTranslation() {
+        if (!translationActive) return
+        startService(TranslationForegroundService.cancelIntent(this))
+        cancelTranslationButton.isEnabled = false
+        translationStatus.setText(R.string.translation_notification_cancelling)
     }
 
     private fun refreshDurableState(progressOverride: DetectionProgress? = null) {
@@ -361,7 +479,7 @@ class MainActivity : Activity() {
             }
         } else {
             setAnalysisActive(false)
-            analysisButton.isEnabled = !importRunning && !ocrActive
+            analysisButton.isEnabled = !importRunning && !ocrActive && !translationActive
             detectionProgress.visibility = View.GONE
             detectionStatus.setText(R.string.detection_status_ready)
         }
@@ -405,11 +523,118 @@ class MainActivity : Activity() {
             }
         } else {
             setOcrActive(false)
-            ocrButton.isEnabled = !importRunning && !analysisActive
+            ocrButton.isEnabled = !importRunning && !analysisActive && !translationActive
             ocrProgress.visibility = View.GONE
             ocrStatus.setText(R.string.ocr_status_ready)
         }
         showOcrPreview(currentOcrPreviewIndex)
+        refreshTranslationDurableState()
+    }
+
+    private fun refreshTranslationDurableState(progressOverride: TranslationProgress? = null) {
+        val project = currentProject
+        val ocrRun = currentOcrRun
+        if (project == null || ocrRun == null) {
+            resetTranslationState()
+            return
+        }
+        currentTranslationRun = catalog.latestPublishedTranslationRun(project.manifest.projectId)
+            ?.takeIf { it.artifact.dependencies.ocrRunArtifactKey == ocrRun.artifact.runArtifactKey }
+        val durableProgress = progressOverride
+            ?.takeIf { progress ->
+                progress.projectId == project.manifest.projectId &&
+                    translationProgressMatchesOcr(project, progress, ocrRun.artifact.runArtifactKey)
+            }
+            ?: progressFromTranslationDurableState(project, ocrRun.artifact.runArtifactKey)
+        if (durableProgress != null) {
+            renderTranslationProgress(durableProgress)
+            if (
+                progressOverride == null &&
+                !TranslationForegroundService.isTaskActive() &&
+                translationSettingsStore.loadProviderSettings() != null &&
+                TranslationResumePolicy.shouldResume(
+                    durableProgress.status,
+                    translationResumeRequestedThisProcess,
+                )
+            ) {
+                translationResumeRequestedThisProcess = true
+                startForegroundService(
+                    TranslationForegroundService.startIntent(this, project.manifest.projectId),
+                )
+            }
+        } else {
+            setTranslationActive(false)
+            translationButton.isEnabled = translationSettingsStore.loadProviderSettings() != null &&
+                !importRunning && !analysisActive && !ocrActive
+            translationProgress.visibility = View.GONE
+            translationStatus.setText(
+                if (translationSettingsStore.loadProviderSettings() == null) {
+                    R.string.translation_status_settings_missing
+                } else {
+                    R.string.translation_status_ready
+                },
+            )
+        }
+    }
+
+    private fun translationProgressMatchesOcr(
+        project: ProjectRef,
+        progress: TranslationProgress,
+        ocrRunArtifactKey: String,
+    ): Boolean {
+        val job = TranslationArtifactStore(project.directory).readJob(progress.jobId) ?: return false
+        return job.runArtifactKey == progress.runArtifactKey &&
+            job.dependencies.ocrRunArtifactKey == ocrRunArtifactKey
+    }
+
+    private fun progressFromTranslationDurableState(
+        project: ProjectRef,
+        ocrRunArtifactKey: String,
+    ): TranslationProgress? {
+        val job = TranslationArtifactStore(project.directory).findResumableJob()
+        if (
+            job != null &&
+            job.projectId == project.manifest.projectId &&
+            job.dependencies.ocrRunArtifactKey == ocrRunArtifactKey &&
+            (
+                job.status == TranslationJobStatus.QUEUED ||
+                    job.status == TranslationJobStatus.RUNNING ||
+                    currentTranslationRun == null ||
+                    job.updatedAtEpochMillis >= currentTranslationRun!!.report.finishedAtEpochMillis
+                )
+        ) {
+            return TranslationProgress(
+                projectId = job.projectId,
+                jobId = job.jobId,
+                runArtifactKey = job.runArtifactKey,
+                status = job.status,
+                terminalWindowCount = job.windows.count { it.state.isTerminal() },
+                totalWindowCount = job.windows.size,
+                committedPageCount = job.pages.count { it.state == TranslationPageState.COMMITTED },
+                totalPageCount = job.pages.size,
+                translatedItemCount = job.windows.sumOf { it.translatedItemCount },
+                preservedItemCount = job.windows.sumOf { it.preservedItemCount },
+                protectedOcrCount = job.pages.sumOf { it.protectedOcrRegionCount },
+                currentWindowIndex = job.windows.firstOrNull { it.state == TranslationWindowState.RUNNING }?.windowIndex,
+                errorCode = job.error?.code,
+            )
+        }
+        return currentTranslationRun?.report?.let { report ->
+            TranslationProgress(
+                projectId = report.projectId,
+                jobId = report.jobId,
+                runArtifactKey = report.runArtifactKey,
+                status = report.status,
+                terminalWindowCount = report.committedWindowCount,
+                totalWindowCount = report.totalWindowCount,
+                committedPageCount = report.committedPageCount,
+                totalPageCount = report.totalPageCount,
+                translatedItemCount = report.translatedItemCount,
+                preservedItemCount = report.preservedItemCount,
+                protectedOcrCount = report.protectedOcrRegionCount,
+                errorCode = report.error?.code,
+            )
+        }
     }
 
     private fun ocrProgressMatchesDetection(project: ProjectRef, progress: OcrProgress): Boolean {
@@ -500,7 +725,7 @@ class MainActivity : Activity() {
         val active = progress.status.isActive()
         if (!active) resumeRequestedThisProcess = false
         setAnalysisActive(active)
-        analysisButton.isEnabled = !active && !importRunning && !ocrActive && currentProject != null
+        analysisButton.isEnabled = !active && !importRunning && !ocrActive && !translationActive && currentProject != null
         detectionProgress.visibility = View.VISIBLE
         detectionProgress.isIndeterminate = false
         detectionProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -538,7 +763,7 @@ class MainActivity : Activity() {
         val active = progress.status.isActive()
         if (!active) ocrResumeRequestedThisProcess = false
         setOcrActive(active)
-        ocrButton.isEnabled = !active && !importRunning && !analysisActive && currentRun != null
+        ocrButton.isEnabled = !active && !importRunning && !analysisActive && !translationActive && currentRun != null
         ocrProgress.visibility = View.VISIBLE
         ocrProgress.isIndeterminate = progress.status == OcrJobStatus.LOADING_MODEL
         ocrProgress.max = progress.totalRegionCount.coerceAtLeast(1)
@@ -566,6 +791,44 @@ class MainActivity : Activity() {
             OcrJobStatus.CANCELLED -> getString(R.string.ocr_status_cancelled)
             OcrJobStatus.FAILED -> getString(
                 R.string.ocr_status_failed,
+                progress.errorCode.orEmpty(),
+            )
+        }
+    }
+
+    private fun renderTranslationProgress(progress: TranslationProgress) {
+        val active = progress.status.isActive()
+        if (!active) translationResumeRequestedThisProcess = false
+        setTranslationActive(active)
+        translationButton.isEnabled = !active && currentOcrRun != null &&
+            translationSettingsStore.loadProviderSettings() != null &&
+            !importRunning && !analysisActive && !ocrActive
+        translationProgress.visibility = View.VISIBLE
+        translationProgress.isIndeterminate = false
+        translationProgress.max = progress.totalWindowCount.coerceAtLeast(1)
+        translationProgress.progress = progress.terminalWindowCount.coerceIn(0, translationProgress.max)
+        val protectedCount = progress.preservedItemCount + progress.protectedOcrCount
+        translationStatus.text = when (progress.status) {
+            TranslationJobStatus.QUEUED -> getString(R.string.translation_status_starting)
+            TranslationJobStatus.RUNNING -> getString(
+                R.string.translation_status_progress,
+                progress.terminalWindowCount,
+                progress.totalWindowCount,
+                progress.translatedItemCount,
+                protectedCount,
+            )
+            TranslationJobStatus.SUCCEEDED -> getString(
+                R.string.translation_status_succeeded,
+                progress.translatedItemCount,
+            )
+            TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS -> getString(
+                R.string.translation_status_succeeded_protected,
+                progress.translatedItemCount,
+                protectedCount,
+            )
+            TranslationJobStatus.CANCELLED -> getString(R.string.translation_status_cancelled)
+            TranslationJobStatus.FAILED -> getString(
+                R.string.translation_status_failed,
                 progress.errorCode.orEmpty(),
             )
         }
@@ -734,6 +997,15 @@ class MainActivity : Activity() {
         ocrProgress.visibility = View.GONE
         ocrStatus.setText(R.string.ocr_status_no_detection)
         clearOcrPreview()
+        resetTranslationState()
+    }
+
+    private fun resetTranslationState() {
+        currentTranslationRun = null
+        setTranslationActive(false)
+        translationButton.isEnabled = false
+        translationProgress.visibility = View.GONE
+        translationStatus.setText(R.string.translation_status_no_ocr)
     }
 
     private fun OcrRegionState.displayLabel(): String = when (this) {
@@ -798,28 +1070,46 @@ class MainActivity : Activity() {
 
     private fun setImportRunning(running: Boolean) {
         importRunning = running
-        importButton.isEnabled = !running && !analysisActive && !ocrActive
-        analysisButton.isEnabled = !running && !analysisActive && !ocrActive && currentProject != null
-        ocrButton.isEnabled = !running && !analysisActive && !ocrActive && currentRun != null
+        importButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive
+        analysisButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && currentProject != null
+        ocrButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && currentRun != null
+        translationButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive &&
+            currentOcrRun != null && translationSettingsStore.loadProviderSettings() != null
         importProgress.visibility = if (running) View.VISIBLE else View.GONE
     }
 
     private fun setAnalysisActive(active: Boolean) {
         analysisActive = active
-        importButton.isEnabled = !importRunning && !active && !ocrActive
-        analysisButton.isEnabled = currentProject != null && !active && !ocrActive
+        importButton.isEnabled = !importRunning && !active && !ocrActive && !translationActive
+        analysisButton.isEnabled = currentProject != null && !active && !ocrActive && !translationActive
         cancelAnalysisButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelAnalysisButton.isEnabled = active
-        ocrButton.isEnabled = currentRun != null && !importRunning && !active && !ocrActive
+        ocrButton.isEnabled = currentRun != null && !importRunning && !active && !ocrActive && !translationActive
+        translationButton.isEnabled = currentOcrRun != null && !importRunning && !active && !ocrActive &&
+            !translationActive && translationSettingsStore.loadProviderSettings() != null
     }
 
     private fun setOcrActive(active: Boolean) {
         ocrActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !active
-        analysisButton.isEnabled = currentProject != null && !analysisActive && !active
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !active
+        importButton.isEnabled = !importRunning && !analysisActive && !active && !translationActive
+        analysisButton.isEnabled = currentProject != null && !analysisActive && !active && !translationActive
+        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !active && !translationActive
         cancelOcrButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelOcrButton.isEnabled = active
+        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !active &&
+            !translationActive && translationSettingsStore.loadProviderSettings() != null
+    }
+
+    private fun setTranslationActive(active: Boolean) {
+        translationActive = active
+        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !active
+        analysisButton.isEnabled = currentProject != null && !analysisActive && !ocrActive && !active
+        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive && !active
+        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !active && translationSettingsStore.loadProviderSettings() != null
+        saveTranslationSettingsButton.isEnabled = !active
+        cancelTranslationButton.visibility = if (active) View.VISIBLE else View.GONE
+        cancelTranslationButton.isEnabled = active
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -860,11 +1150,33 @@ class MainActivity : Activity() {
         ocrReceiverRegistered = true
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerTranslationReceiver() {
+        if (translationReceiverRegistered) return
+        val filter = IntentFilter(TranslationStatusBroadcast.ACTION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                translationReceiver,
+                filter,
+                internalTranslationStatusPermission(),
+                null,
+                RECEIVER_NOT_EXPORTED,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(translationReceiver, filter, internalTranslationStatusPermission(), null)
+        }
+        translationReceiverRegistered = true
+    }
+
     private fun internalStatusPermission(): String =
         "$packageName.permission.INTERNAL_DETECTION_STATUS"
 
     private fun internalOcrStatusPermission(): String =
         "$packageName.permission.INTERNAL_OCR_STATUS"
+
+    private fun internalTranslationStatusPermission(): String =
+        "$packageName.permission.INTERNAL_TRANSLATION_STATUS"
 
     private fun notificationPermissionWasRequested(): Boolean = getPreferences(MODE_PRIVATE)
         .getBoolean(PREF_NOTIFICATION_REQUESTED, false)
@@ -897,6 +1209,9 @@ class MainActivity : Activity() {
         OcrJobStatus.FAILED,
         -> false
     }
+
+    private fun TranslationJobStatus.isActive(): Boolean =
+        this == TranslationJobStatus.QUEUED || this == TranslationJobStatus.RUNNING
 
     private fun OcrRegionState.isOcrTerminal(): Boolean = when (this) {
         OcrRegionState.RECOGNIZED,

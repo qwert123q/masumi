@@ -63,7 +63,7 @@ class TranslationArtifactStoreTest {
             protectedOcrRegions = emptyList(),
         )
         val pagePath = store.commitPage(job, pageArtifact)
-        job = TranslationJobReducer.commitPage(job, pageArtifact.pageId, pagePath, 5L)
+        job = TranslationJobReducer.commitPage(job, pageArtifact.pageOrder, pagePath, 5L)
         job = TranslationJobReducer.finishSuccess(job, 6L)
 
         val run = TranslationRunArtifact(
@@ -113,6 +113,8 @@ class TranslationArtifactStoreTest {
         assertTrue(published.resolve("glossary.json").exists())
         assertFalse(checkpoint(job).exists())
         assertEquals(run, assertNotNull(store.readPublishedRun(job.runArtifactKey)))
+        assertEquals(report, assertNotNull(store.readPublishedReport(job.runArtifactKey)))
+        assertEquals(glossary, assertNotNull(store.readPublishedGlossary(job.runArtifactKey)).entries)
     }
 
     @Test

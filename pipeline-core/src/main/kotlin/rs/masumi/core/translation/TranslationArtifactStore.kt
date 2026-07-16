@@ -91,9 +91,10 @@ class TranslationArtifactStore(
 
     fun commitPage(job: TranslationJobRecord, artifact: PageTranslationArtifact): String {
         require(job.status == TranslationJobStatus.RUNNING)
-        val page = job.pages.single { it.pageId == artifact.pageId }
+        val page = job.pages.single { it.pageOrder == artifact.pageOrder }
         require(page.state == TranslationPageState.PENDING || page.state == TranslationPageState.RUNNING)
         require(artifact.schemaVersion == TRANSLATION_SCHEMA_VERSION)
+        require(artifact.pageId == page.pageId)
         require(artifact.pageOrder == page.pageOrder)
         require(artifact.ocrPageArtifactKey == page.ocrPageArtifactKey)
         require(artifact.pageArtifactKey == page.pageArtifactKey)
@@ -101,7 +102,7 @@ class TranslationArtifactStore(
         require(artifact.items.map(ValidatedTranslationItem::translationRegionId).sorted() == page.translationRegionIds.sorted())
         artifact.items.forEach(::requireValidOutcome)
         require(artifact.protectedOcrRegions.size == page.protectedOcrRegionCount)
-        val relative = "pages/${artifact.pageId}/translation.json"
+        val relative = "pages/${artifact.pageOrder.toString().padStart(4, '0')}-${artifact.pageId}/translation.json"
         replaceUnique(checkpointDirectory(job).resolve(relative), json.encodePageArtifact(artifact))
         return relative
     }
@@ -145,6 +146,26 @@ class TranslationArtifactStore(
                 require(run.runArtifactKey == runKey)
                 require(run.entries.all { fileSystem.exists(resolveInside(root, it.artifactPath)) })
                 require(fileSystem.exists(resolveInside(root, run.glossaryPath)))
+            }
+        }.getOrNull()
+    }
+
+    fun readPublishedReport(runKey: String): TranslationReport? {
+        requireSha256(runKey)
+        val path = publishedDirectory(runKey).resolve("report.json")
+        if (!fileSystem.exists(path)) return null
+        return runCatching {
+            json.decodeReport(fileSystem.readUtf8(path)).also { require(it.runArtifactKey == runKey) }
+        }.getOrNull()
+    }
+
+    fun readPublishedGlossary(runKey: String): TranslationGlossaryArtifact? {
+        requireSha256(runKey)
+        val run = readPublishedRun(runKey) ?: return null
+        val path = resolveInside(publishedDirectory(runKey), run.glossaryPath)
+        return runCatching {
+            json.decodeGlossary(fileSystem.readUtf8(path)).also {
+                require(it.sha256 == TranslationArtifactIdentity.glossarySha256(it.entries))
             }
         }.getOrNull()
     }

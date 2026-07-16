@@ -6,9 +6,13 @@
     <permission
         android:name="${applicationId}.permission.INTERNAL_OCR_STATUS"
         android:protectionLevel="signature" />
+    <permission
+        android:name="${applicationId}.permission.INTERNAL_TRANSLATION_STATUS"
+        android:protectionLevel="signature" />
 
     <uses-permission android:name="${applicationId}.permission.INTERNAL_DETECTION_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_OCR_STATUS" />
+    <uses-permission android:name="${applicationId}.permission.INTERNAL_TRANSLATION_STATUS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -34,6 +38,11 @@
             android:stopWithTask="false" />
         <service
             android:name=".ocr.OcrForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+        <service
+            android:name=".translation.TranslationForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />

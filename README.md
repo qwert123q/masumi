@@ -1,8 +1,8 @@
 # Masumi
 
-Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, and prepares trusted OCR results for structured translation without modifying the source files.
+Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, and translates trusted Japanese text into Simplified Chinese without modifying the source files.
 
-This repository is at an early stage. Network translation, artwork cleanup, typesetting, and final image export are not implemented yet; versioned OCR artifacts and the strict OCR-to-translation input contract are now the verified boundary for those later stages.
+This repository is at an early stage. Artwork cleanup, typesetting, and final image export are not implemented yet; versioned translation artifacts are now the verified boundary for those later stages.
 
 ## Current capability
 
@@ -31,11 +31,12 @@ This repository is at an early stage. Network translation, artwork cleanup, type
 - Build deterministic chapter translation windows with bounded context and validate structured model output by stable region ID so one malformed item cannot discard valid siblings.
 - Call OpenAI-compatible translation endpoints through a cancellable OkHttp boundary with bounded transient retries, strict structured-response parsing, safe errors, and token-usage capture.
 - Checkpoint translation windows and pages atomically, recover only an interrupted active window, and publish strict page results, final glossary, usage totals, and protection report as one versioned run.
+- Save provider credentials only in application-private settings, then start, cancel, monitor, or resume whole-chapter translation from the Android UI without rerunning OCR.
 - Keep debug and future release installations separate.
 
 ## Modules
 
-- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, foreground execution, and the import/detection/OCR UI.
+- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, foreground execution, and the import/detection/OCR/translation UI.
 - `:pipeline-core` contains portable import, detection, OCR, and translation-boundary contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
 
 ## Build and test

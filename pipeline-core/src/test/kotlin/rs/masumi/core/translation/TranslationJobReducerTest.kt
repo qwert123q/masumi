@@ -5,6 +5,16 @@ import kotlin.test.assertEquals
 
 class TranslationJobReducerTest {
     @Test
+    fun `pending window identity can follow the committed glossary chain`() {
+        var job = TranslationJobReducer.startRunning(TranslationArtifactFixtures.job(), 2L)
+
+        job = TranslationJobReducer.prepareWindow(job, 0, "e".repeat(64), 3L)
+
+        assertEquals("e".repeat(64), job.windows.single().windowArtifactKey)
+        assertEquals(TranslationWindowState.PENDING, job.windows.single().state)
+    }
+
+    @Test
     fun `recovery resets only active window and keeps committed work`() {
         val base = TranslationArtifactFixtures.job()
         val second = base.windows.single().copy(
@@ -48,7 +58,7 @@ class TranslationJobReducerTest {
             error = null,
             now = 4L,
         )
-        job = TranslationJobReducer.commitPage(job, job.pages.single().pageId, "pages/page/translation.json", 5L)
+        job = TranslationJobReducer.commitPage(job, job.pages.single().pageOrder, "pages/page/translation.json", 5L)
         job = TranslationJobReducer.finishSuccess(job, 6L)
 
         assertEquals(TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS, job.status)

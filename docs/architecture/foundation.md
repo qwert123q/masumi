@@ -2,7 +2,7 @@
 
 ## Scope
 
-The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, and recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files. Detection and OCR each produce strict JSON, derived previews, resumable job state, and a terminal report. Translation, cleanup, typesetting, and final export are not implemented yet.
+The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, and translates trusted Japanese text through an OpenAI-compatible provider. Detection, OCR, and translation each produce strict JSON, resumable job state, and a terminal report. Cleanup, typesetting, and final export are not implemented yet.
 
 The design has three goals:
 
@@ -122,7 +122,7 @@ workspace/
 │               ├── report.json
 │               ├── glossary.json
 │               ├── windows/<window>.json
-│               └── pages/<page-id>/translation.json
+│               └── pages/<order>-<page-id>/translation.json
 ├── staging/
 └── failed-reports/
 ```
@@ -159,6 +159,7 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Chapter windows are greedily filled under a versioned estimated-token budget, carry only bounded preceding context, and never truncate one oversized source item.
 - Prompt context IDs are read-only. Only IDs from the current item array may appear in a response, exactly once each.
 - Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
+- Android stores the endpoint, key, and model in application-private preferences and runs translation in its own foreground service with structured progress, cancellation, and automatic interrupted-job recovery.
 - Translation network calls use bounded OkHttp timeouts, retry only network/timeout/`408`/`429`/`5xx` failures, and expose no raw response or underlying exception text on failure.
 - Translation windows are checkpointed before their job journal advances; recovery discards only an unjournaled active window and retains all earlier committed results and token usage.
 - A published translation run atomically contains strict page artifacts, its final normalized glossary, dependency record, and terminal usage/protection report.
@@ -181,4 +182,4 @@ All paths stored in JSON are project-relative. The source manifest records the o
 
 ## Next slices
 
-Structured translation is now the active slice. Provider execution, semantic response validation, glossary/chapter windows, resumable translation artifacts, and usage reporting come next. Artwork cleanup, typesetting, final visual quality checks, and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.
+The structured translation boundary is frozen and verified. Artwork cleanup and source-text removal are the next slice; typesetting, final visual quality checks, and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.

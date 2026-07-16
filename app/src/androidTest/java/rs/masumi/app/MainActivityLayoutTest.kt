@@ -72,5 +72,12 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<ImageView>(R.id.ocrPreviewImage).visibility)
         assertEquals("尚无 OCR 结果", root.findViewById<TextView>(R.id.ocrPageIndicator).text.toString())
         assertEquals("", root.findViewById<TextView>(R.id.ocrDetailText).text.toString())
+
+        assertEquals("保存翻译设置", root.findViewById<Button>(R.id.saveTranslationSettingsButton).text.toString())
+        assertEquals("开始整章翻译", root.findViewById<Button>(R.id.translationButton).text.toString())
+        assertEquals(false, root.findViewById<Button>(R.id.translationButton).isEnabled)
+        assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelTranslationButton).visibility)
+        assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.translationProgress).visibility)
+        assertEquals("完成 OCR 后可直接开始翻译", root.findViewById<TextView>(R.id.translationStatus).text.toString())
     }
 }

@@ -34,13 +34,13 @@
 
 ## Task 5: Add Android execution and UI
 
-- [ ] Persist provider settings without placing secrets in project files.
-- [ ] Run translation in a foreground service with start, cancel, resume, and progress reporting.
-- [ ] Show translated/protected counts and sanitized failures without exposing credentials or paths.
-- [ ] Allow a complete OCR run to launch translation without repeating OCR.
+- [x] Persist provider settings without placing secrets in project files.
+- [x] Run translation in a foreground service with start, cancel, resume, and progress reporting.
+- [x] Show translated/protected counts and sanitized failures without exposing credentials or paths.
+- [x] Allow a complete OCR run to launch translation without repeating OCR.
 
 ## Task 6: Verify the module boundary
 
-- [ ] Run core, Android instrumentation, build, and lint suites.
-- [ ] Validate dialogue/narration coverage, sound-effect policy, partial-response recovery, terminology consistency, and usage reporting on representative pages.
-- [ ] Freeze the translation artifact contract before beginning artwork cleanup and typesetting.
+- [x] Run core, Android instrumentation, build, and lint suites.
+- [x] Validate dialogue/narration coverage, sound-effect policy, partial-response recovery, terminology consistency, and usage reporting on representative pages.
+- [x] Freeze the translation artifact contract before beginning artwork cleanup and typesetting.
