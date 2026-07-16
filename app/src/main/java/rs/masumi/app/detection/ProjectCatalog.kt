@@ -20,6 +20,12 @@ import rs.masumi.core.cleanup.CleanupReport
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.cleanup.CleanupRunArtifact
 import rs.masumi.core.cleanup.PageCleanupArtifact
+import rs.masumi.core.serialization.TypesettingJson
+import rs.masumi.core.typesetting.PageTypesettingArtifact
+import rs.masumi.core.typesetting.TypesettingArtifactStore
+import rs.masumi.core.typesetting.TypesettingPolicy
+import rs.masumi.core.typesetting.TypesettingReport
+import rs.masumi.core.typesetting.TypesettingRunArtifact
 import rs.masumi.core.translation.TranslationArtifactStore
 import rs.masumi.core.translation.TranslationReport
 import rs.masumi.core.translation.TranslationRunArtifact
@@ -55,12 +61,19 @@ data class PublishedCleanupRun(
     val report: CleanupReport,
 )
 
+data class PublishedTypesettingRun(
+    val directory: Path,
+    val artifact: TypesettingRunArtifact,
+    val report: TypesettingReport,
+)
+
 class ProjectCatalog(
     workspaceRoot: Path,
     private val json: ProjectJson = ProjectJson(),
     private val detectionJson: DetectionJson = DetectionJson(),
     private val ocrJson: OcrJson = OcrJson(),
     private val translationJson: TranslationJson = TranslationJson(),
+    private val typesettingJson: TypesettingJson = TypesettingJson(),
 ) {
     private val projectsDirectory = workspaceRoot.toAbsolutePath().normalize().resolve("projects")
 
@@ -231,9 +244,58 @@ class ProjectCatalog(
             )
     }
 
+    fun publishedCleanupRun(projectId: String, runKey: String): PublishedCleanupRun? {
+        if (!SHA256.matches(runKey)) return null
+        val project = openProject(projectId) ?: return null
+        val store = CleanupArtifactStore(project.directory)
+        val artifact = store.readPublishedRun(runKey) ?: return null
+        val report = store.readPublishedReport(runKey) ?: return null
+        if (artifact.projectId != projectId || report.projectId != projectId) return null
+        return PublishedCleanupRun(project.directory.resolve("artifacts/cleanup/$runKey"), artifact, report)
+    }
+
     fun readPublishedCleanupPage(run: PublishedCleanupRun, pageOrder: Int): PageCleanupArtifact? {
         val entry = run.artifact.entries.singleOrNull { it.pageOrder == pageOrder } ?: return null
         return CleanupArtifactStore(run.directory.parent.parent.parent).readPublishedPage(
+            run.artifact.runArtifactKey,
+            entry,
+        )
+    }
+
+    fun latestPublishedTypesettingRun(
+        projectId: String,
+        cleanupRunArtifactKey: String? = null,
+        policy: TypesettingPolicy? = null,
+    ): PublishedTypesettingRun? {
+        val project = openProject(projectId) ?: return null
+        val artifactRoot = project.directory.resolve("artifacts/typesetting")
+        val store = TypesettingArtifactStore(project.directory, typesettingJson)
+        return directDirectories(artifactRoot)
+            .mapNotNull { directory ->
+                val runKey = directory.fileName.toString()
+                if (!SHA256.matches(runKey)) return@mapNotNull null
+                val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
+                val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
+                if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
+                if (
+                    cleanupRunArtifactKey != null &&
+                    artifact.dependencies.cleanupRunArtifactKey != cleanupRunArtifactKey
+                ) return@mapNotNull null
+                if (policy != null && artifact.dependencies.policy != policy) return@mapNotNull null
+                PublishedTypesettingRun(directory, artifact, report)
+            }
+            .maxWithOrNull(
+                compareBy<PublishedTypesettingRun> { it.artifact.createdAtEpochMillis }
+                    .thenBy { it.artifact.runArtifactKey },
+            )
+    }
+
+    fun readPublishedTypesettingPage(
+        run: PublishedTypesettingRun,
+        pageOrder: Int,
+    ): PageTypesettingArtifact? {
+        val entry = run.artifact.entries.singleOrNull { it.pageOrder == pageOrder } ?: return null
+        return TypesettingArtifactStore(run.directory.parent.parent.parent, typesettingJson).readPublishedPage(
             run.artifact.runArtifactKey,
             entry,
         )

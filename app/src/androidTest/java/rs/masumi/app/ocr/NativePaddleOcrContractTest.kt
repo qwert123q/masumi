@@ -130,6 +130,42 @@ class NativePaddleOcrContractTest {
         assertEquals(listOf(false), bridge.createPreferences)
     }
 
+    @Test
+    fun deviceLossReopensCpuAndRetriesTheSameCrop() = withModelFiles { model, projector ->
+        val bridge = DeviceLossBridge()
+        val marker = model.parent.resolve("vulkan-unavailable")
+        val backendHealth = OcrBackendHealthStore(marker)
+
+        ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge, backendHealth).use { engine ->
+            assertEquals(OcrExecutionBackend.VULKAN, engine.executionBackend)
+            val result = engine.recognize(
+                OcrEngineRequest(rgb = byteArrayOf(1, 2, 3), width = 1, height = 1),
+                cancellation = { false },
+            )
+
+            assertEquals("成功", result.rawText)
+            assertEquals(OcrExecutionBackend.CPU, engine.executionBackend)
+        }
+
+        assertEquals(listOf(true, false), bridge.createPreferences)
+        assertEquals(listOf(11L, 12L), bridge.destroyedHandles)
+        assertEquals(listOf(11L, 12L), bridge.recognizedHandles)
+        assertFalse(backendHealth.shouldPreferVulkan())
+    }
+
+    @Test
+    fun recordedDeviceLossStartsDirectlyOnCpu() = withModelFiles { model, projector ->
+        val bridge = PolicyBridge(gpuHandle = 11L, cpuHandle = 12L)
+        val backendHealth = OcrBackendHealthStore(model.parent.resolve("vulkan-unavailable"))
+        backendHealth.markVulkanUnavailable()
+
+        ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge, backendHealth).use { engine ->
+            assertEquals(OcrExecutionBackend.CPU, engine.executionBackend)
+        }
+
+        assertEquals(listOf(false), bridge.createPreferences)
+    }
+
     private class RecordingBridge : NativeOcrBridge {
         var recognizeCalls = 0
 
@@ -210,6 +246,43 @@ class NativePaddleOcrContractTest {
             maximumGeneratedTokens: Int,
             repetitionPenalty: Double,
         ): String = error("not used")
+
+        override fun cancel(handle: Long) = Unit
+
+        override fun destroy(handle: Long) {
+            destroyedHandles += handle
+        }
+    }
+
+    private class DeviceLossBridge : NativeOcrBridge {
+        val createPreferences = mutableListOf<Boolean>()
+        val destroyedHandles = mutableListOf<Long>()
+        val recognizedHandles = mutableListOf<Long>()
+
+        override fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long {
+            createPreferences += preferGpu
+            return if (preferGpu) 11L else 12L
+        }
+
+        override fun executionBackend(handle: Long): String = if (handle == 11L) {
+            OcrExecutionBackend.VULKAN.name
+        } else {
+            OcrExecutionBackend.CPU.name
+        }
+
+        override fun recognize(
+            handle: Long,
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            prompt: String,
+            maximumGeneratedTokens: Int,
+            repetitionPenalty: Double,
+        ): String {
+            recognizedHandles += handle
+            if (handle == 11L) return "{\"errorCode\":\"ACCELERATOR_UNAVAILABLE\"}"
+            return """{"rawText":"成功","tokenIds":[1],"tokenProbabilities":[0.99],"sourceWidth":1,"sourceHeight":1,"processedWidth":1,"processedHeight":1,"visualTokenCount":1,"generatedTokenCount":1,"reachedEos":true,"truncated":false,"repetitionStopped":false,"promptEvaluationMillis":1,"generationMillis":1}"""
+        }
 
         override fun cancel(handle: Long) = Unit
 

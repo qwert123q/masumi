@@ -15,6 +15,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import rs.masumi.core.cleanup.CleanupJobStatus
+import rs.masumi.app.typesetting.TypesettingRunner
+import rs.masumi.core.typesetting.TypesettingJobStatus
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.model.PageRecord
 import rs.masumi.core.model.ProjectManifest
@@ -90,6 +92,27 @@ class CleanupRunnerTest {
 
             assertEquals(completed.runArtifact, cached.runArtifact)
             assertEquals(completed.report, cached.report)
+
+            val typesetter = TypesettingRunner(
+                workspaceRoot = workspace,
+                idSource = IdSource { "typesetting-job" },
+            )
+            cancel.set(false)
+            val cancelledTypesetting = typesetter.run(PROJECT_ID, cancel::get) { progress ->
+                if (progress.currentPageOrder != null) cancel.set(true)
+            }
+            assertEquals(TypesettingJobStatus.CANCELLED, cancelledTypesetting.job.status)
+
+            val completedTypesetting = typesetter.run(PROJECT_ID, { false }) { }
+            assertEquals(TypesettingJobStatus.SUCCEEDED, completedTypesetting.job.status)
+            assertEquals(1, completedTypesetting.report?.typesetRegionCount)
+            assertTrue((completedTypesetting.report?.changedPixelCount ?: 0) > 0)
+            assertNotNull(completedTypesetting.publishedDirectory)
+            assertArrayEquals(sourceBytes, Files.readAllBytes(sourcePath(workspace)))
+
+            val cachedTypesetting = typesetter.run(PROJECT_ID, { false }) { }
+            assertEquals(completedTypesetting.runArtifact, cachedTypesetting.runArtifact)
+            assertEquals(completedTypesetting.report, cachedTypesetting.report)
         } finally {
             workspace.toFile().deleteRecursively()
         }

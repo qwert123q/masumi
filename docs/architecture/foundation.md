@@ -2,7 +2,7 @@
 
 ## Scope
 
-The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, and removes source glyphs from accepted translation regions. Detection, OCR, translation, and cleanup each produce strict JSON, resumable job state, and a terminal report. Typesetting and final export are not implemented yet.
+The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, removes source glyphs from accepted translation regions, and lays accepted Chinese text onto flattened pages. Detection, OCR, translation, cleanup, and typesetting each produce strict JSON, resumable job state, and a terminal report. Final chapter export is not implemented yet.
 
 The design has three goals:
 
@@ -25,6 +25,7 @@ The design has three goals:
 - foreground execution, cancellation, notifications, and package-scoped status broadcasts;
 - the cancellable OpenAI-compatible translation provider, transient retry policy, safe error mapping, and usage parsing;
 - conservative adaptive glyph masking, bubble fill, and free-text boundary inpainting;
+- horizontal and vertical Chinese layout, deterministic maximum-readable-size fitting, and adaptive free-text contrast;
 - progress display, safe preview navigation, and recognized-text details.
 
 `pipeline-core` owns portable behavior:
@@ -35,7 +36,7 @@ The design has three goals:
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
 - the strict OCR-to-translation input boundary, translation policy identity, and structured model-response contracts;
-- cleanup dependency, policy, page/run/report, identity, and recovery contracts;
+- cleanup and typesetting dependency, policy, page/run/report, identity, and recovery contracts;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
 - model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
@@ -73,7 +74,7 @@ Source integrity, model-package, checkpoint-write, and final-publication failure
 1. Strictly load the current published detection run and include its identity in every OCR cache key.
 2. Consolidate overlapping text proposals without proximity-only merging, retain their provenance, associate dialogue-box context, and assign deterministic reading order. Before inference, discard only low-confidence free-text candidates that are implausibly narrow for that page or touch a page edge; in-box text is never removed by this gate.
 3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify the canonical BF16 digests, deterministically normalize both files to F16 in unpublished staging, verify the installed digests, then validate the pair through the CPU native path before publication.
-4. Prefer one Vulkan engine for the job and retry initialization once with CPU when no usable accelerator can open. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
+4. Prefer one Vulkan engine for the job and retry initialization once with CPU when no usable accelerator can open. If the Vulkan device is lost during inference, contain the native exception, reopen CPU once, and retry the same crop. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
 5. Render padded, tight, and contextual crops at their actual dimensions. The projector selects a crop-adaptive workload within the pinned 64–2048 visual-token range. Record raw and normalized text, actual backend, token probabilities, dimensions, stop flags, timings, and sanitized errors for every attempt.
 6. Accept a result only when the quality policy has sufficient token probability or agreement between attempts. Low-confidence free-text proposals also require Han, Hiragana, or Katakana before agreement can accept them, so repeated digit/symbol hallucinations remain preserved. Confirmed empty regions are explicit; uncertain and failed regions retain the source artwork.
 7. Atomically checkpoint each terminal region before starting the next one, then commit page JSON and preview only after every candidate is terminal.
@@ -90,6 +91,16 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 4. Fill in-bubble glyph masks with the local background. Repair translated free-text masks by propagating colors inward from their boundary.
 5. Atomically commit one cleaned PNG and strict page JSON before advancing the job journal. A page failure preserves the complete source page and continues.
 6. Recover cancellation or process loss at the active page only, then atomically publish the cleaned-page run and report.
+
+## Typesetting flow
+
+1. Load the latest cleanup run compatible with the current typesetting policy, then resolve its exact translation and OCR dependencies.
+2. Join accepted translation text, OCR geometry, bubble associations, and cleanup outcomes by stable region ID. Protected or uncleaned regions remain original artwork.
+3. Use the associated bubble bounds for dialogue and a modestly expanded text box for translated free text. All geometry is computed from each page's real dimensions.
+4. Choose centered horizontal layout for wide regions and right-to-left vertical columns for tall regions, including versioned vertical punctuation substitution.
+5. Binary-search the largest font size that fits the region. If no result reaches the absolute readability floor, preserve the cleaned pixels instead of publishing microscopic text.
+6. Render dialogue in the cleaned bubble and free text with adaptive black-or-white glyphs plus a contrasting outline, clipped to the selected layout box.
+7. Atomically commit one flattened PNG and strict page JSON, recover only the active page after cancellation or process loss, then publish the complete run and report.
 
 ## Project artifacts
 
@@ -112,12 +123,13 @@ workspace/
 │       │   ├── <import-job-id>.json
 │       │   └── <import-job-id>.txt
 │       ├── jobs/
-│       │   └── <detection-ocr-translation-or-cleanup-job-id>.json
+│       │   └── <detection-ocr-translation-cleanup-or-typesetting-job-id>.json
 │       ├── staging/
 │       │   ├── detection/<detection-job-id>/<run-key>/
 │       │   ├── ocr/<ocr-job-id>/<run-key>/
 │       │   ├── translation/<translation-job-id>/<run-key>/
-│       │   └── cleanup/<cleanup-job-id>/<run-key>/
+│       │   ├── cleanup/<cleanup-job-id>/<run-key>/
+│       │   └── typesetting/<typesetting-job-id>/<run-key>/
 │       └── artifacts/
 │           ├── detection/<run-key>/
 │           │   ├── artifact.json
@@ -135,12 +147,18 @@ workspace/
 │           │   ├── glossary.json
 │           │   ├── windows/<window>.json
 │           │   └── pages/<order>-<page-id>/translation.json
-│           └── cleanup/<run-key>/
+│           ├── cleanup/<run-key>/
+│           │   ├── artifact.json
+│           │   ├── report.json
+│           │   └── pages/<order>-<page-id>/
+│           │       ├── cleanup.json
+│           │       └── cleaned.png
+│           └── typesetting/<run-key>/
 │               ├── artifact.json
 │               ├── report.json
 │               └── pages/<order>-<page-id>/
-│                   ├── cleanup.json
-│                   └── cleaned.png
+│                   ├── typesetting.json
+│                   └── flattened.png
 ├── staging/
 └── failed-reports/
 ```
@@ -200,7 +218,10 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Cleanup changes pixels only inside an accepted glyph mask for a region with a valid translation; protected or unsafe regions retain source pixels.
 - Cleanup identity includes the exact translation run and every policy field. A committed cleanup page has validated JSON and a digest-verified PNG.
 - Cleanup cancellation and process recovery discard only the active page and never repeat OCR or translation.
+- Typesetting changes only regions with accepted translation and committed cleanup. A layout below the readability floor preserves its cleaned pixels.
+- Typesetting identity includes the exact cleanup, translation, and OCR dependencies plus every layout policy field. A committed page has validated JSON and a digest-verified flattened PNG.
+- Typesetting cancellation and process recovery discard only the active page and never repeat cleanup or any earlier stage.
 
 ## Next slices
 
-The cleaned-page boundary is frozen and verified. Chinese typesetting is the next slice; final visual quality checks and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.
+The flattened-page boundary is frozen and verified. Final visual quality checks and chapter export remain independent, reportable stages so they can be retried without mutating source pages or repeating valid earlier work.

@@ -132,6 +132,30 @@ class OpenAiCompatibleTranslationProviderTest {
     }
 
     @Test
+    fun normalizesCommonGlossaryArrayVariantsWithoutDiscardingTranslations() {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                envelope(
+                    """{"items":[{"id":"item-1","role":"DIALOGUE","translation":"译文"}],"glossaryUpdates":[]}""",
+                ),
+            ),
+        )
+        val empty = provider().newCall(settings(), messages()).execute()
+        assertEquals("译文", empty.response.items.single().translation)
+        assertTrue(empty.response.glossaryUpdates.isEmpty())
+
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                envelope(
+                    """{"items":[{"id":"item-1","role":"DIALOGUE","translation":"译文"}],"glossaryUpdates":[{"source":"名前","translation":"名字"}]}""",
+                ),
+            ),
+        )
+        val populated = provider().newCall(settings(), messages()).execute()
+        assertEquals(mapOf("名前" to "名字"), populated.response.glossaryUpdates)
+    }
+
+    @Test
     fun readTimeoutMapsToSafeTimeoutCode() {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
 

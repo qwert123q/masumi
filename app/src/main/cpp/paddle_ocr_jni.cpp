@@ -437,46 +437,50 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
     const std::string projector_file(projector);
     env->ReleaseStringUTFChars(model_path, model);
     env->ReleaseStringUTFChars(projector_path, projector);
-    static std::once_flag backend_once;
-    std::call_once(backend_once, []() {
-        // Some Android Adreno drivers advertise BF16 shader support but crash
-        // inside the vendor compiler when ggml creates its BF16 mat-vec pipeline.
-        // Prefer the portable Vulkan kernels over a process-level driver crash.
-        setenv("GGML_VK_DISABLE_BFLOAT16", "1", 0);
-        setenv("GGML_VK_DISABLE_F16", "1", 0);
-        setenv("GGML_VK_DISABLE_ASYNC", "1", 0);
-        llama_log_set(silent_log, nullptr);
-        mtmd_log_set(silent_log, nullptr);
-        llama_backend_init();
-    });
     const bool prefer_gpu = prefer_gpu_value == JNI_TRUE;
-    if (prefer_gpu && !has_accelerator_device()) return -5;
-    auto handle = std::make_unique<EngineHandle>();
-    handle->backend = prefer_gpu ? ExecutionBackend::Vulkan : ExecutionBackend::Cpu;
-    llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = prefer_gpu ? 1000 : 0;
-    model_params.use_mmap = true;
-    handle->model = llama_model_load_from_file(model_file.c_str(), model_params);
-    if (handle->model == nullptr) {
-        return -1;
+    try {
+        static std::once_flag backend_once;
+        std::call_once(backend_once, []() {
+            // Some Android Adreno drivers advertise BF16 shader support but crash
+            // inside the vendor compiler when ggml creates its BF16 mat-vec pipeline.
+            // Prefer the portable Vulkan kernels over a process-level driver crash.
+            setenv("GGML_VK_DISABLE_BFLOAT16", "1", 0);
+            setenv("GGML_VK_DISABLE_F16", "1", 0);
+            setenv("GGML_VK_DISABLE_ASYNC", "1", 0);
+            llama_log_set(silent_log, nullptr);
+            mtmd_log_set(silent_log, nullptr);
+            llama_backend_init();
+        });
+        if (prefer_gpu && !has_accelerator_device()) return -5;
+        auto handle = std::make_unique<EngineHandle>();
+        handle->backend = prefer_gpu ? ExecutionBackend::Vulkan : ExecutionBackend::Cpu;
+        llama_model_params model_params = llama_model_default_params();
+        model_params.n_gpu_layers = prefer_gpu ? 1000 : 0;
+        model_params.use_mmap = true;
+        handle->model = llama_model_load_from_file(model_file.c_str(), model_params);
+        if (handle->model == nullptr) {
+            return -1;
+        }
+        if (llama_model_chat_template(handle->model, nullptr) == nullptr) {
+            return -4;
+        }
+        mtmd_context_params vision_params = mtmd_context_params_default();
+        vision_params.use_gpu = prefer_gpu;
+        vision_params.print_timings = false;
+        vision_params.n_threads = kThreadCount;
+        vision_params.warmup = false;
+        // Preserve crop-adaptive preprocessing while avoiding the projector's
+        // full-page minimum (576 input patches) for small text boxes. The actual
+        // token count still follows each crop's own width, height, and aspect ratio.
+        vision_params.image_min_tokens = kImageMinTokens;
+        vision_params.image_max_tokens = kImageMaxTokens;
+        handle->vision = mtmd_init_from_file(projector_file.c_str(), handle->model, vision_params);
+        if (handle->vision == nullptr) return -2;
+        if (!mtmd_support_vision(handle->vision)) return -3;
+        return reinterpret_cast<jlong>(handle.release());
+    } catch (...) {
+        return prefer_gpu ? -5 : -1;
     }
-    if (llama_model_chat_template(handle->model, nullptr) == nullptr) {
-        return -4;
-    }
-    mtmd_context_params vision_params = mtmd_context_params_default();
-    vision_params.use_gpu = prefer_gpu;
-    vision_params.print_timings = false;
-    vision_params.n_threads = kThreadCount;
-    vision_params.warmup = false;
-    // Preserve crop-adaptive preprocessing while avoiding the projector's
-    // full-page minimum (576 input patches) for small text boxes. The actual
-    // token count still follows each crop's own width, height, and aspect ratio.
-    vision_params.image_min_tokens = kImageMinTokens;
-    vision_params.image_max_tokens = kImageMaxTokens;
-    handle->vision = mtmd_init_from_file(projector_file.c_str(), handle->model, vision_params);
-    if (handle->vision == nullptr) return -2;
-    if (!mtmd_support_vision(handle->vision)) return -3;
-    return reinterpret_cast<jlong>(handle.release());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -520,15 +524,26 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_recognize(
     }
     std::lock_guard<std::mutex> lock(handle->inference_mutex);
     InferenceResult result;
-    const char * error = run_inference(
-        handle,
-        reinterpret_cast<uint8_t *>(rgb_bytes),
-        width,
-        height,
-        prompt_chars,
-        maximum_generated_tokens,
-        repetition_penalty,
-        &result);
+    const char * error = nullptr;
+    try {
+        error = run_inference(
+            handle,
+            reinterpret_cast<uint8_t *>(rgb_bytes),
+            width,
+            height,
+            prompt_chars,
+            maximum_generated_tokens,
+            repetition_penalty,
+            &result);
+    } catch (const std::exception & failure) {
+        const std::string message = failure.what() == nullptr ? "" : failure.what();
+        error = message.find("DeviceLost") != std::string::npos ||
+            message.find("ErrorDeviceLost") != std::string::npos
+            ? "ACCELERATOR_UNAVAILABLE"
+            : "DECODE";
+    } catch (...) {
+        error = "DECODE";
+    }
     env->ReleaseStringUTFChars(prompt, prompt_chars);
     env->ReleaseByteArrayElements(rgb, rgb_bytes, JNI_ABORT);
     if (error != nullptr) return error_json(env, error);

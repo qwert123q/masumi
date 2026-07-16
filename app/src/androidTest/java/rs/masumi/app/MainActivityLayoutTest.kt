@@ -87,5 +87,13 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<ImageView>(R.id.cleanupPreviewImage).visibility)
         assertEquals("尚无清理结果", root.findViewById<TextView>(R.id.cleanupPageIndicator).text.toString())
         assertEquals("完成翻译后可清理已翻译区域的日文", root.findViewById<TextView>(R.id.cleanupStatus).text.toString())
+
+        assertEquals("生成嵌字成品页", root.findViewById<Button>(R.id.typesettingButton).text.toString())
+        assertEquals(false, root.findViewById<Button>(R.id.typesettingButton).isEnabled)
+        assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelTypesettingButton).visibility)
+        assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.typesettingProgress).visibility)
+        assertEquals(View.GONE, root.findViewById<ImageView>(R.id.typesettingPreviewImage).visibility)
+        assertEquals("尚无嵌字结果", root.findViewById<TextView>(R.id.typesettingPageIndicator).text.toString())
+        assertEquals("完成原文清理后可生成中文嵌字页面", root.findViewById<TextView>(R.id.typesettingStatus).text.toString())
     }
 }

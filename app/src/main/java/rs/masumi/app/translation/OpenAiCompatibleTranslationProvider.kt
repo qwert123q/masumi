@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -136,7 +137,7 @@ class OpenAiCompatibleTranslationProvider(
                     ?.get("content")?.jsonPrimitive
                     ?.contentOrNull
                     ?: throw malformed(attempt)
-                val structured = translationJson.decodeModelResponse(content)
+                val structured = translationJson.decodeModelResponse(normalizeModelResponseContent(content))
                 return ParsedResponse(
                     response = structured,
                     usage = parseUsage(root),
@@ -179,6 +180,28 @@ class OpenAiCompatibleTranslationProvider(
 
         private fun elapsedMillis(started: Long): Long =
             ((nanoTime() - started).coerceAtLeast(0L) / NANOS_PER_MILLISECOND)
+
+        private fun normalizeModelResponseContent(content: String): String {
+            val parsed = responseJson.parseToJsonElement(content).jsonObject
+            val rawGlossary = parsed["glossaryUpdates"] ?: return content
+            if (rawGlossary is JsonObject) return content
+            require(rawGlossary is JsonArray)
+            val updates = linkedMapOf<String, String>()
+            rawGlossary.forEach { element ->
+                val entry = element.jsonObject
+                val source = entry["source"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                val translation = entry["translation"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                require(source.isNotBlank() && translation.isNotBlank() && source !in updates)
+                updates[source] = translation
+            }
+            return buildJsonObject {
+                parsed.forEach { (key, value) -> put(key, value) }
+                put(
+                    "glossaryUpdates",
+                    buildJsonObject { updates.forEach { (source, translation) -> put(source, translation) } },
+                )
+            }.toString()
+        }
     }
 
     private fun buildRequest(

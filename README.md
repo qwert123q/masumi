@@ -1,8 +1,8 @@
 # Masumi
 
-Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, translates trusted Japanese text into Simplified Chinese, and produces source-text-cleaned page images without modifying the source files.
+Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, translates trusted Japanese text into Simplified Chinese, removes accepted source glyphs, and lays out translated text onto flattened page images without modifying the source files.
 
-This repository is at an early stage. Conservative source-text cleanup is implemented; Chinese typesetting and final image export are not implemented yet. Versioned cleaned-page artifacts are now the verified boundary for those later stages.
+This repository is at an early stage. Conservative source-text cleanup and Chinese typesetting are implemented; final chapter export is not implemented yet. Versioned flattened-page artifacts are now the verified boundary for export.
 
 ## Current capability
 
@@ -22,6 +22,7 @@ This repository is at an early stage. Conservative source-text cleanup is implem
 - Consolidate overlapping text proposals, associate bubble context, and assign deterministic Japanese reading order.
 - Skip only low-confidence free-text candidates whose page-relative geometry is clearly implausible, while never filtering in-box dialogue at this gate.
 - Normalize canonical BF16 GGUF files to verified F16 during installation, then run sequential arm64 Vulkan-preferred OCR with deterministic CPU fallback.
+- Contain Vulkan inference device loss at the native boundary, reopen the CPU backend once, and retry the same crop without discarding committed OCR checkpoints.
 - Size the vision workload from each real crop's width, height, and aspect ratio within a quality-tested adaptive range instead of forcing one fixed text-box size.
 - Try up to three deterministic crops per region and accept text only when token quality or cross-crop agreement passes the recorded policy.
 - Preserve the original artwork for uncertain or failed regions instead of publishing guessed text.
@@ -35,12 +36,15 @@ This repository is at an early stage. Conservative source-text cleanup is implem
 - Clean only regions with accepted translations, using local background fill for bubble text and boundary-propagated inpainting for translated free text.
 - Reject empty or unsafe glyph masks, preserve protected regions and complete failed pages, and record every cleanup outcome without manual approval.
 - Checkpoint cleaned PNG and strict page JSON together, resume interrupted pages without repeating OCR or translation, and preview the published result in the app.
+- Lay out accepted Simplified Chinese translations in centered horizontal lines or right-to-left vertical columns according to each region's real geometry.
+- Fit text with a deterministic maximum-readable-size search, preserve regions that cannot meet the absolute readability floor, and use adaptive outlined text for free-text artwork.
+- Checkpoint flattened PNG and strict page JSON together, resume interrupted pages without repeating upstream stages, and preview the published result page by page in the app.
 - Keep debug and future release installations separate.
 
 ## Modules
 
-- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, cleanup pixels, foreground execution, and the import/detection/OCR/translation/cleanup UI.
-- `:pipeline-core` contains portable import, detection, OCR, translation, and cleanup contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
+- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, cleanup and typesetting pixels, foreground execution, and the import/detection/OCR/translation/cleanup/typesetting UI.
+- `:pipeline-core` contains portable import, detection, OCR, translation, cleanup, and typesetting contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
 
 ## Build and test
 

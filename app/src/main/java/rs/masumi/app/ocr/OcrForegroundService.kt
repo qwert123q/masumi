@@ -92,13 +92,18 @@ class OcrForegroundService : Service() {
 
     private fun createRunner(): OcrRunner {
         val workspace = filesDir.toPath().resolve("workspace")
+        val backendHealth = OcrBackendHealthStore(
+            workspace.resolve("runtime/ocr-vulkan-unavailable"),
+        )
         return OcrRunner(
             workspaceRoot = workspace,
             modelProvider = DefaultOcrModelProvider(
                 workspaceRoot = workspace,
                 capabilityValidator = NativePaddleOcrCapabilityValidator(),
             ),
-            engineFactory = OcrEngineFactory(NativePaddleOcrEngine::open),
+            engineFactory = OcrEngineFactory { model, projector ->
+                ResilientPaddleOcrEngine.open(model, projector, backendHealth)
+            },
             decoder = PageBitmapDecoder(),
             cropRenderer = OcrCropRenderer(),
             previewRenderer = OcrPreviewRenderer(),
