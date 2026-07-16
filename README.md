@@ -1,8 +1,8 @@
 # Masumi
 
-Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, and translates trusted Japanese text into Simplified Chinese without modifying the source files.
+Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, translates trusted Japanese text into Simplified Chinese, and produces source-text-cleaned page images without modifying the source files.
 
-This repository is at an early stage. Artwork cleanup, typesetting, and final image export are not implemented yet; versioned translation artifacts are now the verified boundary for those later stages.
+This repository is at an early stage. Conservative source-text cleanup is implemented; Chinese typesetting and final image export are not implemented yet. Versioned cleaned-page artifacts are now the verified boundary for those later stages.
 
 ## Current capability
 
@@ -32,12 +32,15 @@ This repository is at an early stage. Artwork cleanup, typesetting, and final im
 - Call OpenAI-compatible translation endpoints through a cancellable OkHttp boundary with bounded transient retries, strict structured-response parsing, safe errors, and token-usage capture.
 - Checkpoint translation windows and pages atomically, recover only an interrupted active window, and publish strict page results, final glossary, usage totals, and protection report as one versioned run.
 - Save provider credentials only in application-private settings, then start, cancel, monitor, or resume whole-chapter translation from the Android UI without rerunning OCR.
+- Clean only regions with accepted translations, using local background fill for bubble text and boundary-propagated inpainting for translated free text.
+- Reject empty or unsafe glyph masks, preserve protected regions and complete failed pages, and record every cleanup outcome without manual approval.
+- Checkpoint cleaned PNG and strict page JSON together, resume interrupted pages without repeating OCR or translation, and preview the published result in the app.
 - Keep debug and future release installations separate.
 
 ## Modules
 
-- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, foreground execution, and the import/detection/OCR/translation UI.
-- `:pipeline-core` contains portable import, detection, OCR, and translation-boundary contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
+- `:app` contains Android document access, bitmap/EXIF preparation, ONNX Runtime, the arm64 llama.cpp/`mtmd` bridge, cleanup pixels, foreground execution, and the import/detection/OCR/translation/cleanup UI.
+- `:pipeline-core` contains portable import, detection, OCR, translation, and cleanup contracts; deterministic identities; candidate/quality policy; state transitions; model-package integrity; reporting; and atomic publication.
 
 ## Build and test
 

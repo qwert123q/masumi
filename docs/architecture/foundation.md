@@ -2,7 +2,7 @@
 
 ## Scope
 
-The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, and translates trusted Japanese text through an OpenAI-compatible provider. Detection, OCR, and translation each produce strict JSON, resumable job state, and a terminal report. Cleanup, typesetting, and final export are not implemented yet.
+The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, and removes source glyphs from accepted translation regions. Detection, OCR, translation, and cleanup each produce strict JSON, resumable job state, and a terminal report. Typesetting and final export are not implemented yet.
 
 The design has three goals:
 
@@ -24,6 +24,7 @@ The design has three goals:
 - source crop rendering and an arm64 llama.cpp `mtmd` JNI runtime;
 - foreground execution, cancellation, notifications, and package-scoped status broadcasts;
 - the cancellable OpenAI-compatible translation provider, transient retry policy, safe error mapping, and usage parsing;
+- conservative adaptive glyph masking, bubble fill, and free-text boundary inpainting;
 - progress display, safe preview navigation, and recognized-text details.
 
 `pipeline-core` owns portable behavior:
@@ -34,6 +35,7 @@ The design has three goals:
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
 - the strict OCR-to-translation input boundary, translation policy identity, and structured model-response contracts;
+- cleanup dependency, policy, page/run/report, identity, and recovery contracts;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
 - model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
@@ -80,6 +82,15 @@ Source integrity, model-package, checkpoint-write, and final-publication failure
 
 The pinned OCR package is about 1.82 GB combined. It is downloaded on first use, normalized in staging, remains in app-private storage, and is not included in the APK or repository. The native runtime contains arm64 Vulkan and CPU backends and intentionally runs one crop at a time to bound memory use.
 
+## Cleanup flow
+
+1. Load the latest published translation run and its exact published OCR dependency; verify every ordered page and source digest before decoding.
+2. Join accepted translation items to OCR geometry by stable region ID. Preserved translations and protected OCR regions are never cleanup targets.
+3. Estimate a local background from each target perimeter, select high-contrast glyph pixels, dilate small gaps, and reject empty or implausibly large masks.
+4. Fill in-bubble glyph masks with the local background. Repair translated free-text masks by propagating colors inward from their boundary.
+5. Atomically commit one cleaned PNG and strict page JSON before advancing the job journal. A page failure preserves the complete source page and continues.
+6. Recover cancellation or process loss at the active page only, then atomically publish the cleaned-page run and report.
+
 ## Project artifacts
 
 ```text
@@ -101,11 +112,12 @@ workspace/
 │       │   ├── <import-job-id>.json
 │       │   └── <import-job-id>.txt
 │       ├── jobs/
-│       │   └── <detection-ocr-or-translation-job-id>.json
+│       │   └── <detection-ocr-translation-or-cleanup-job-id>.json
 │       ├── staging/
 │       │   ├── detection/<detection-job-id>/<run-key>/
 │       │   ├── ocr/<ocr-job-id>/<run-key>/
-│       │   └── translation/<translation-job-id>/<run-key>/
+│       │   ├── translation/<translation-job-id>/<run-key>/
+│       │   └── cleanup/<cleanup-job-id>/<run-key>/
 │       └── artifacts/
 │           ├── detection/<run-key>/
 │           │   ├── artifact.json
@@ -117,12 +129,18 @@ workspace/
 │           │   ├── report.json
 │           │   ├── pages/<page-id>/ocr.json
 │           │   └── previews/<order>.png
-│           └── translation/<run-key>/
+│           ├── translation/<run-key>/
+│           │   ├── artifact.json
+│           │   ├── report.json
+│           │   ├── glossary.json
+│           │   ├── windows/<window>.json
+│           │   └── pages/<order>-<page-id>/translation.json
+│           └── cleanup/<run-key>/
 │               ├── artifact.json
 │               ├── report.json
-│               ├── glossary.json
-│               ├── windows/<window>.json
-│               └── pages/<order>-<page-id>/translation.json
+│               └── pages/<order>-<page-id>/
+│                   ├── cleanup.json
+│                   └── cleaned.png
 ├── staging/
 └── failed-reports/
 ```
@@ -179,7 +197,10 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - At most one OCR engine and one crop inference are active. Cancellation and recovery never discard earlier terminal regions.
 - Per-page detection and OCR always use each source page and crop's real dimensions; a later webtoon reading mode cannot alter OCR geometry or cache identity.
 - Unknown OCR JSON fields are rejected, and all stored paths remain inside the project or model-package roots.
+- Cleanup changes pixels only inside an accepted glyph mask for a region with a valid translation; protected or unsafe regions retain source pixels.
+- Cleanup identity includes the exact translation run and every policy field. A committed cleanup page has validated JSON and a digest-verified PNG.
+- Cleanup cancellation and process recovery discard only the active page and never repeat OCR or translation.
 
 ## Next slices
 
-The structured translation boundary is frozen and verified. Artwork cleanup and source-text removal are the next slice; typesetting, final visual quality checks, and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.
+The cleaned-page boundary is frozen and verified. Chinese typesetting is the next slice; final visual quality checks and flattened image export remain independent, reportable stages so each can be retried without mutating source pages or repeating valid earlier work.

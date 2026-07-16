@@ -170,6 +170,22 @@ class TranslationArtifactStore(
         }.getOrNull()
     }
 
+    fun readPublishedPage(runKey: String, entry: TranslationRunEntry): PageTranslationArtifact? {
+        requireSha256(runKey)
+        val run = readPublishedRun(runKey) ?: return null
+        require(run.entries.any { it == entry })
+        val path = resolveInside(publishedDirectory(runKey), entry.artifactPath)
+        return runCatching {
+            json.decodePageArtifact(fileSystem.readUtf8(path)).also { artifact ->
+                require(artifact.pageId == entry.pageId)
+                require(artifact.pageOrder == entry.pageOrder)
+                require(artifact.ocrPageArtifactKey == entry.ocrPageArtifactKey)
+                require(artifact.pageArtifactKey == entry.pageArtifactKey)
+                require(artifact.dependencies == run.dependencies)
+            }
+        }.getOrNull()
+    }
+
     private fun checkpointDirectory(job: TranslationJobRecord): Path = projectDirectory
         .resolve("staging/translation/${job.jobId}/${job.runArtifactKey}").normalize()
 

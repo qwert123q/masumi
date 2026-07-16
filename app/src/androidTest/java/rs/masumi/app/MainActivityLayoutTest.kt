@@ -79,5 +79,13 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelTranslationButton).visibility)
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.translationProgress).visibility)
         assertEquals("完成 OCR 后可直接开始翻译", root.findViewById<TextView>(R.id.translationStatus).text.toString())
+
+        assertEquals("生成清理后页面", root.findViewById<Button>(R.id.cleanupButton).text.toString())
+        assertEquals(false, root.findViewById<Button>(R.id.cleanupButton).isEnabled)
+        assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelCleanupButton).visibility)
+        assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.cleanupProgress).visibility)
+        assertEquals(View.GONE, root.findViewById<ImageView>(R.id.cleanupPreviewImage).visibility)
+        assertEquals("尚无清理结果", root.findViewById<TextView>(R.id.cleanupPageIndicator).text.toString())
+        assertEquals("完成翻译后可清理已翻译区域的日文", root.findViewById<TextView>(R.id.cleanupStatus).text.toString())
     }
 }

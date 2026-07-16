@@ -17,6 +17,7 @@ interface ProjectFileSystem {
     fun writeUtf8(path: Path, content: String)
     fun replaceUtf8(path: Path, content: String)
     fun readUtf8(path: Path): String
+    fun readBytes(path: Path): ByteArray
     fun list(path: Path): List<Path>
     fun publishDirectory(stagingDirectory: Path, projectDirectory: Path)
     fun deleteRecursively(path: Path)
@@ -77,6 +78,8 @@ class NioProjectFileSystem : ProjectFileSystem {
     override fun readUtf8(path: Path): String = Files.newBufferedReader(path, Charsets.UTF_8).use { reader ->
         reader.readText()
     }
+
+    override fun readBytes(path: Path): ByteArray = Files.readAllBytes(path)
 
     override fun list(path: Path): List<Path> {
         if (!Files.exists(path)) return emptyList()

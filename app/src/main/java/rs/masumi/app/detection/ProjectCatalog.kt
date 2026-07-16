@@ -15,6 +15,11 @@ import rs.masumi.core.serialization.DetectionJson
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
+import rs.masumi.core.cleanup.CleanupArtifactStore
+import rs.masumi.core.cleanup.CleanupReport
+import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.cleanup.CleanupRunArtifact
+import rs.masumi.core.cleanup.PageCleanupArtifact
 import rs.masumi.core.translation.TranslationArtifactStore
 import rs.masumi.core.translation.TranslationReport
 import rs.masumi.core.translation.TranslationRunArtifact
@@ -42,6 +47,12 @@ data class PublishedTranslationRun(
     val directory: Path,
     val artifact: TranslationRunArtifact,
     val report: TranslationReport,
+)
+
+data class PublishedCleanupRun(
+    val directory: Path,
+    val artifact: CleanupRunArtifact,
+    val report: CleanupReport,
 )
 
 class ProjectCatalog(
@@ -136,6 +147,16 @@ class ProjectCatalog(
             )
     }
 
+    fun publishedOcrRun(projectId: String, runKey: String): PublishedOcrRun? {
+        if (!SHA256.matches(runKey)) return null
+        val project = openProject(projectId) ?: return null
+        val store = OcrArtifactStore(project.directory)
+        val artifact = store.readPublishedRun(runKey) ?: return null
+        val report = store.readPublishedReport(runKey) ?: return null
+        if (artifact.projectId != projectId || report.projectId != projectId) return null
+        return PublishedOcrRun(project.directory.resolve("artifacts/ocr/$runKey"), artifact, report)
+    }
+
     fun readPublishedOcrPage(run: PublishedOcrRun, pageId: String): PageOcrArtifact? = runCatching {
         require(SHA256.matches(pageId))
         val entries = run.artifact.entries.filter { it.pageId == pageId }
@@ -170,6 +191,52 @@ class ProjectCatalog(
                 compareBy<PublishedTranslationRun> { it.artifact.createdAtEpochMillis }
                     .thenBy { it.artifact.runArtifactKey },
             )
+    }
+
+    fun publishedTranslationRun(projectId: String, runKey: String): PublishedTranslationRun? {
+        if (!SHA256.matches(runKey)) return null
+        val project = openProject(projectId) ?: return null
+        val store = TranslationArtifactStore(project.directory, translationJson)
+        val artifact = store.readPublishedRun(runKey) ?: return null
+        val report = store.readPublishedReport(runKey) ?: return null
+        if (artifact.projectId != projectId || report.projectId != projectId) return null
+        return PublishedTranslationRun(project.directory.resolve("artifacts/translation/$runKey"), artifact, report)
+    }
+
+    fun latestPublishedCleanupRun(
+        projectId: String,
+        translationRunArtifactKey: String? = null,
+        policy: CleanupPolicy? = null,
+    ): PublishedCleanupRun? {
+        val project = openProject(projectId) ?: return null
+        val artifactRoot = project.directory.resolve("artifacts/cleanup")
+        val store = CleanupArtifactStore(project.directory)
+        return directDirectories(artifactRoot)
+            .mapNotNull { directory ->
+                val runKey = directory.fileName.toString()
+                if (!SHA256.matches(runKey)) return@mapNotNull null
+                val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
+                val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
+                if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
+                if (
+                    translationRunArtifactKey != null &&
+                    artifact.dependencies.translationRunArtifactKey != translationRunArtifactKey
+                ) return@mapNotNull null
+                if (policy != null && artifact.dependencies.policy != policy) return@mapNotNull null
+                PublishedCleanupRun(directory, artifact, report)
+            }
+            .maxWithOrNull(
+                compareBy<PublishedCleanupRun> { it.artifact.createdAtEpochMillis }
+                    .thenBy { it.artifact.runArtifactKey },
+            )
+    }
+
+    fun readPublishedCleanupPage(run: PublishedCleanupRun, pageOrder: Int): PageCleanupArtifact? {
+        val entry = run.artifact.entries.singleOrNull { it.pageOrder == pageOrder } ?: return null
+        return CleanupArtifactStore(run.directory.parent.parent.parent).readPublishedPage(
+            run.artifact.runArtifactKey,
+            entry,
+        )
     }
 
     private fun readProject(directory: Path): ProjectRef? = runCatching {

@@ -20,6 +20,10 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import rs.masumi.app.cleanup.CleanupForegroundService
+import rs.masumi.app.cleanup.CleanupProgress
+import rs.masumi.app.cleanup.CleanupResumePolicy
+import rs.masumi.app.cleanup.CleanupStatusBroadcast
 import rs.masumi.app.detection.DetectionForegroundService
 import rs.masumi.app.detection.DetectionProgress
 import rs.masumi.app.detection.DetectionResumePolicy
@@ -28,7 +32,14 @@ import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedDetectionRun
 import rs.masumi.app.detection.PublishedOcrRun
+import rs.masumi.app.detection.PublishedCleanupRun
 import rs.masumi.app.detection.PublishedTranslationRun
+import rs.masumi.core.cleanup.CleanupArtifactStore
+import rs.masumi.core.cleanup.CleanupJobStatus
+import rs.masumi.core.cleanup.CleanupPageState
+import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.cleanup.CleanupRegionState
+import rs.masumi.core.cleanup.CleanupRunEntry
 import rs.masumi.app.ocr.OcrForegroundService
 import rs.masumi.app.ocr.OcrProgress
 import rs.masumi.app.ocr.OcrResumePolicy
@@ -89,6 +100,16 @@ class MainActivity : Activity() {
     private lateinit var cancelTranslationButton: Button
     private lateinit var translationProgress: ProgressBar
     private lateinit var translationStatus: TextView
+    private lateinit var cleanupButton: Button
+    private lateinit var cancelCleanupButton: Button
+    private lateinit var cleanupProgress: ProgressBar
+    private lateinit var cleanupStatus: TextView
+    private lateinit var cleanupPreviewImage: ImageView
+    private lateinit var cleanupPreservedPageMarker: TextView
+    private lateinit var cleanupPageIndicator: TextView
+    private lateinit var previousCleanupPageButton: Button
+    private lateinit var nextCleanupPageButton: Button
+    private lateinit var cleanupDetailText: TextView
     private lateinit var catalog: ProjectCatalog
     private lateinit var translationSettingsStore: TranslationSettingsStore
 
@@ -96,23 +117,30 @@ class MainActivity : Activity() {
     private var analysisActive = false
     private var ocrActive = false
     private var translationActive = false
+    private var cleanupActive = false
     private var receiverRegistered = false
     private var ocrReceiverRegistered = false
     private var translationReceiverRegistered = false
+    private var cleanupReceiverRegistered = false
     private var currentProject: ProjectRef? = null
     private var currentRun: PublishedDetectionRun? = null
     private var currentPreviewIndex = 0
     private var currentOcrRun: PublishedOcrRun? = null
     private var currentOcrPreviewIndex = 0
     private var currentTranslationRun: PublishedTranslationRun? = null
+    private var currentCleanupRun: PublishedCleanupRun? = null
+    private var currentCleanupPreviewIndex = 0
     private var displayedBitmap: Bitmap? = null
     private var displayedOcrBitmap: Bitmap? = null
+    private var displayedCleanupBitmap: Bitmap? = null
     private var pendingAnalysisProjectId: String? = null
     private var pendingOcrProjectId: String? = null
     private var pendingTranslationProjectId: String? = null
+    private var pendingCleanupProjectId: String? = null
     private var resumeRequestedThisProcess = false
     private var ocrResumeRequestedThisProcess = false
     private var translationResumeRequestedThisProcess = false
+    private var cleanupResumeRequestedThisProcess = false
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -132,6 +160,13 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TranslationStatusBroadcast::parse) ?: return
             refreshTranslationDurableState(progress)
+        }
+    }
+
+    private val cleanupReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val progress = intent?.let(CleanupStatusBroadcast::parse) ?: return
+            refreshCleanupDurableState(progress)
         }
     }
 
@@ -169,6 +204,16 @@ class MainActivity : Activity() {
         cancelTranslationButton = findViewById(R.id.cancelTranslationButton)
         translationProgress = findViewById(R.id.translationProgress)
         translationStatus = findViewById(R.id.translationStatus)
+        cleanupButton = findViewById(R.id.cleanupButton)
+        cancelCleanupButton = findViewById(R.id.cancelCleanupButton)
+        cleanupProgress = findViewById(R.id.cleanupProgress)
+        cleanupStatus = findViewById(R.id.cleanupStatus)
+        cleanupPreviewImage = findViewById(R.id.cleanupPreviewImage)
+        cleanupPreservedPageMarker = findViewById(R.id.cleanupPreservedPageMarker)
+        cleanupPageIndicator = findViewById(R.id.cleanupPageIndicator)
+        previousCleanupPageButton = findViewById(R.id.previousCleanupPageButton)
+        nextCleanupPageButton = findViewById(R.id.nextCleanupPageButton)
+        cleanupDetailText = findViewById(R.id.cleanupDetailText)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
         translationSettingsStore.loadSaved()?.let { saved ->
@@ -189,6 +234,10 @@ class MainActivity : Activity() {
         saveTranslationSettingsButton.setOnClickListener { saveTranslationSettings() }
         translationButton.setOnClickListener { requestTranslationStart() }
         cancelTranslationButton.setOnClickListener { cancelTranslation() }
+        cleanupButton.setOnClickListener { requestCleanupStart() }
+        cancelCleanupButton.setOnClickListener { cancelCleanup() }
+        previousCleanupPageButton.setOnClickListener { showCleanupPreview(currentCleanupPreviewIndex - 1) }
+        nextCleanupPageButton.setOnClickListener { showCleanupPreview(currentCleanupPreviewIndex + 1) }
     }
 
     override fun onStart() {
@@ -196,6 +245,7 @@ class MainActivity : Activity() {
         registerDetectionReceiver()
         registerOcrReceiver()
         registerTranslationReceiver()
+        registerCleanupReceiver()
     }
 
     override fun onResume() {
@@ -216,12 +266,17 @@ class MainActivity : Activity() {
             unregisterReceiver(translationReceiver)
             translationReceiverRegistered = false
         }
+        if (cleanupReceiverRegistered) {
+            unregisterReceiver(cleanupReceiver)
+            cleanupReceiverRegistered = false
+        }
         super.onStop()
     }
 
     override fun onDestroy() {
         clearDisplayedBitmap()
         clearDisplayedOcrBitmap()
+        clearDisplayedCleanupBitmap()
         super.onDestroy()
     }
 
@@ -248,10 +303,12 @@ class MainActivity : Activity() {
         pendingOcrProjectId = null
         pendingTranslationProjectId?.let(::startTranslation)
         pendingTranslationProjectId = null
+        pendingCleanupProjectId?.let(::startCleanup)
+        pendingCleanupProjectId = null
     }
 
     private fun openChapterFolder() {
-        if (importRunning || analysisActive || ocrActive || translationActive) return
+        if (importRunning || analysisActive || ocrActive || translationActive || cleanupActive) return
 
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -307,7 +364,7 @@ class MainActivity : Activity() {
 
     private fun requestAnalysisStart() {
         val projectId = currentProject?.manifest?.projectId ?: return
-        if (analysisActive || ocrActive || translationActive) return
+        if (analysisActive || ocrActive || translationActive || cleanupActive) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
@@ -345,7 +402,7 @@ class MainActivity : Activity() {
 
     private fun requestOcrStart() {
         val projectId = currentProject?.manifest?.projectId ?: return
-        if (currentRun == null || importRunning || analysisActive || ocrActive || translationActive) return
+        if (currentRun == null || importRunning || analysisActive || ocrActive || translationActive || cleanupActive) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
@@ -400,7 +457,7 @@ class MainActivity : Activity() {
 
     private fun requestTranslationStart() {
         val projectId = currentProject?.manifest?.projectId ?: return
-        if (currentOcrRun == null || importRunning || analysisActive || ocrActive || translationActive) return
+        if (currentOcrRun == null || importRunning || analysisActive || ocrActive || translationActive || cleanupActive) return
         if (translationSettingsStore.loadProviderSettings() == null) {
             translationStatus.setText(R.string.translation_status_settings_missing)
             return
@@ -437,6 +494,46 @@ class MainActivity : Activity() {
         startService(TranslationForegroundService.cancelIntent(this))
         cancelTranslationButton.isEnabled = false
         translationStatus.setText(R.string.translation_notification_cancelling)
+    }
+
+    private fun requestCleanupStart() {
+        val projectId = currentProject?.manifest?.projectId ?: return
+        if (
+            currentTranslationRun == null || importRunning || analysisActive || ocrActive ||
+            translationActive || cleanupActive
+        ) return
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !notificationPermissionWasRequested()
+        ) {
+            pendingCleanupProjectId = projectId
+            markNotificationPermissionRequested()
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                REQUEST_NOTIFICATION_PERMISSION,
+            )
+            return
+        }
+        startCleanup(projectId)
+    }
+
+    private fun startCleanup(projectId: String) {
+        cleanupResumeRequestedThisProcess = true
+        startForegroundService(CleanupForegroundService.startIntent(this, projectId))
+        setCleanupActive(true)
+        cleanupStatus.setText(R.string.cleanup_status_starting)
+        cleanupProgress.visibility = View.VISIBLE
+        cleanupProgress.isIndeterminate = false
+        cleanupProgress.max = currentProject?.manifest?.pages?.size?.coerceAtLeast(1) ?: 1
+        cleanupProgress.progress = 0
+    }
+
+    private fun cancelCleanup() {
+        if (!cleanupActive) return
+        startService(CleanupForegroundService.cancelIntent(this))
+        cancelCleanupButton.isEnabled = false
+        cleanupStatus.setText(R.string.cleanup_notification_cancelling)
     }
 
     private fun refreshDurableState(progressOverride: DetectionProgress? = null) {
@@ -479,7 +576,7 @@ class MainActivity : Activity() {
             }
         } else {
             setAnalysisActive(false)
-            analysisButton.isEnabled = !importRunning && !ocrActive && !translationActive
+            analysisButton.isEnabled = !importRunning && !ocrActive && !translationActive && !cleanupActive
             detectionProgress.visibility = View.GONE
             detectionStatus.setText(R.string.detection_status_ready)
         }
@@ -523,7 +620,7 @@ class MainActivity : Activity() {
             }
         } else {
             setOcrActive(false)
-            ocrButton.isEnabled = !importRunning && !analysisActive && !translationActive
+            ocrButton.isEnabled = !importRunning && !analysisActive && !translationActive && !cleanupActive
             ocrProgress.visibility = View.GONE
             ocrStatus.setText(R.string.ocr_status_ready)
         }
@@ -565,7 +662,7 @@ class MainActivity : Activity() {
         } else {
             setTranslationActive(false)
             translationButton.isEnabled = translationSettingsStore.loadProviderSettings() != null &&
-                !importRunning && !analysisActive && !ocrActive
+                !importRunning && !analysisActive && !ocrActive && !cleanupActive
             translationProgress.visibility = View.GONE
             translationStatus.setText(
                 if (translationSettingsStore.loadProviderSettings() == null) {
@@ -573,6 +670,109 @@ class MainActivity : Activity() {
                 } else {
                     R.string.translation_status_ready
                 },
+            )
+        }
+        refreshCleanupDurableState()
+    }
+
+    private fun refreshCleanupDurableState(progressOverride: CleanupProgress? = null) {
+        val project = currentProject
+        val translationRun = currentTranslationRun
+        if (project == null || translationRun == null) {
+            resetCleanupState()
+            return
+        }
+        val priorRunKey = currentCleanupRun?.artifact?.runArtifactKey
+        currentCleanupRun = catalog.latestPublishedCleanupRun(
+            project.manifest.projectId,
+            translationRun.artifact.runArtifactKey,
+            CleanupPolicy(),
+        )
+        if (currentCleanupRun?.artifact?.runArtifactKey != priorRunKey) currentCleanupPreviewIndex = 0
+        val durableProgress = progressOverride
+            ?.takeIf { progress ->
+                progress.projectId == project.manifest.projectId &&
+                    cleanupProgressMatchesTranslation(project, progress, translationRun.artifact.runArtifactKey)
+            }
+            ?: progressFromCleanupDurableState(project, translationRun.artifact.runArtifactKey)
+        if (durableProgress != null) {
+            renderCleanupProgress(durableProgress)
+            if (
+                progressOverride == null &&
+                !CleanupForegroundService.isTaskActive() &&
+                CleanupResumePolicy.shouldResume(
+                    durableProgress.status,
+                    cleanupResumeRequestedThisProcess,
+                )
+            ) {
+                cleanupResumeRequestedThisProcess = true
+                startForegroundService(
+                    CleanupForegroundService.startIntent(this, project.manifest.projectId),
+                )
+            }
+        } else {
+            setCleanupActive(false)
+            cleanupButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive
+            cleanupProgress.visibility = View.GONE
+            cleanupStatus.setText(R.string.cleanup_status_ready)
+        }
+        showCleanupPreview(currentCleanupPreviewIndex)
+    }
+
+    private fun cleanupProgressMatchesTranslation(
+        project: ProjectRef,
+        progress: CleanupProgress,
+        translationRunArtifactKey: String,
+    ): Boolean {
+        val job = CleanupArtifactStore(project.directory).readJob(progress.jobId) ?: return false
+        return job.runArtifactKey == progress.runArtifactKey &&
+            job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
+            job.dependencies.policy == CleanupPolicy()
+    }
+
+    private fun progressFromCleanupDurableState(
+        project: ProjectRef,
+        translationRunArtifactKey: String,
+    ): CleanupProgress? {
+        val job = CleanupArtifactStore(project.directory).findResumableJob()
+        if (
+            job != null &&
+            job.projectId == project.manifest.projectId &&
+            job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
+            job.dependencies.policy == CleanupPolicy() &&
+            (
+                job.status == CleanupJobStatus.QUEUED ||
+                    job.status == CleanupJobStatus.RUNNING ||
+                    currentCleanupRun == null ||
+                    job.updatedAtEpochMillis >= currentCleanupRun!!.report.finishedAtEpochMillis
+                )
+        ) {
+            return CleanupProgress(
+                projectId = job.projectId,
+                jobId = job.jobId,
+                runArtifactKey = job.runArtifactKey,
+                status = job.status,
+                terminalPageCount = job.pages.count {
+                    it.state == CleanupPageState.COMMITTED || it.state == CleanupPageState.PRESERVED_SOURCE
+                },
+                totalPageCount = job.pages.size,
+                cleanedRegionCount = job.pages.sumOf { it.cleanedRegionCount },
+                preservedRegionCount = job.pages.sumOf { it.preservedRegionCount },
+                currentPageOrder = job.pages.firstOrNull { it.state == CleanupPageState.RUNNING }?.pageOrder,
+                errorCode = job.error?.code,
+            )
+        }
+        return currentCleanupRun?.report?.let { report ->
+            CleanupProgress(
+                projectId = report.projectId,
+                jobId = report.jobId,
+                runArtifactKey = report.runArtifactKey,
+                status = report.status,
+                terminalPageCount = report.committedPageCount + report.preservedPageCount,
+                totalPageCount = report.totalPageCount,
+                cleanedRegionCount = report.cleanedRegionCount,
+                preservedRegionCount = report.preservedRegionCount,
+                errorCode = report.error?.code,
             )
         }
     }
@@ -725,7 +925,7 @@ class MainActivity : Activity() {
         val active = progress.status.isActive()
         if (!active) resumeRequestedThisProcess = false
         setAnalysisActive(active)
-        analysisButton.isEnabled = !active && !importRunning && !ocrActive && !translationActive && currentProject != null
+        analysisButton.isEnabled = !active && !importRunning && !ocrActive && !translationActive && !cleanupActive && currentProject != null
         detectionProgress.visibility = View.VISIBLE
         detectionProgress.isIndeterminate = false
         detectionProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -763,7 +963,7 @@ class MainActivity : Activity() {
         val active = progress.status.isActive()
         if (!active) ocrResumeRequestedThisProcess = false
         setOcrActive(active)
-        ocrButton.isEnabled = !active && !importRunning && !analysisActive && !translationActive && currentRun != null
+        ocrButton.isEnabled = !active && !importRunning && !analysisActive && !translationActive && !cleanupActive && currentRun != null
         ocrProgress.visibility = View.VISIBLE
         ocrProgress.isIndeterminate = progress.status == OcrJobStatus.LOADING_MODEL
         ocrProgress.max = progress.totalRegionCount.coerceAtLeast(1)
@@ -802,7 +1002,7 @@ class MainActivity : Activity() {
         setTranslationActive(active)
         translationButton.isEnabled = !active && currentOcrRun != null &&
             translationSettingsStore.loadProviderSettings() != null &&
-            !importRunning && !analysisActive && !ocrActive
+            !importRunning && !analysisActive && !ocrActive && !cleanupActive
         translationProgress.visibility = View.VISIBLE
         translationProgress.isIndeterminate = false
         translationProgress.max = progress.totalWindowCount.coerceAtLeast(1)
@@ -832,6 +1032,126 @@ class MainActivity : Activity() {
                 progress.errorCode.orEmpty(),
             )
         }
+    }
+
+    private fun renderCleanupProgress(progress: CleanupProgress) {
+        val active = progress.status.isActive()
+        if (!active) cleanupResumeRequestedThisProcess = false
+        setCleanupActive(active)
+        cleanupButton.isEnabled = !active && currentTranslationRun != null &&
+            !importRunning && !analysisActive && !ocrActive && !translationActive
+        cleanupProgress.visibility = View.VISIBLE
+        cleanupProgress.isIndeterminate = false
+        cleanupProgress.max = progress.totalPageCount.coerceAtLeast(1)
+        cleanupProgress.progress = progress.terminalPageCount.coerceIn(0, cleanupProgress.max)
+        cleanupStatus.text = when (progress.status) {
+            CleanupJobStatus.QUEUED -> getString(R.string.cleanup_status_starting)
+            CleanupJobStatus.RUNNING -> getString(
+                R.string.cleanup_status_progress,
+                progress.terminalPageCount,
+                progress.totalPageCount,
+                progress.cleanedRegionCount,
+                progress.preservedRegionCount,
+            )
+            CleanupJobStatus.SUCCEEDED -> getString(
+                R.string.cleanup_status_succeeded,
+                progress.cleanedRegionCount,
+            )
+            CleanupJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS -> getString(
+                R.string.cleanup_status_succeeded_preserved,
+                progress.cleanedRegionCount,
+                progress.preservedRegionCount,
+            )
+            CleanupJobStatus.CANCELLED -> getString(R.string.cleanup_status_cancelled)
+            CleanupJobStatus.FAILED -> getString(
+                R.string.cleanup_status_failed,
+                progress.errorCode.orEmpty(),
+            )
+        }
+    }
+
+    private fun showCleanupPreview(requestedIndex: Int) {
+        val run = currentCleanupRun
+        val project = currentProject
+        if (run == null || project == null || run.artifact.entries.isEmpty()) {
+            clearCleanupPreview()
+            return
+        }
+        val entries = run.artifact.entries.sortedBy(CleanupRunEntry::pageOrder)
+        currentCleanupPreviewIndex = requestedIndex.coerceIn(entries.indices)
+        val entry = entries[currentCleanupPreviewIndex]
+        val imagePath = when (entry.state) {
+            CleanupPageState.COMMITTED -> entry.imagePath?.let { relative ->
+                resolveRegularFileInside(run.directory, relative)
+            }
+            CleanupPageState.PRESERVED_SOURCE -> project.manifest.pages
+                .firstOrNull { it.order == entry.pageOrder }
+                ?.storedPath
+                ?.let { relative -> resolveRegularFileInside(project.directory, relative) }
+            CleanupPageState.PENDING,
+            CleanupPageState.RUNNING,
+            -> null
+        }
+        val pageArtifact = if (entry.state == CleanupPageState.COMMITTED) {
+            catalog.readPublishedCleanupPage(run, entry.pageOrder)
+        } else {
+            null
+        }
+        val bitmap = imagePath?.let(::decodePreviewBitmap)
+        clearDisplayedCleanupBitmap()
+        if (bitmap != null) {
+            displayedCleanupBitmap = bitmap
+            cleanupPreviewImage.setImageBitmap(bitmap)
+            cleanupPreviewImage.visibility = View.VISIBLE
+        } else {
+            cleanupPreviewImage.setImageDrawable(null)
+            cleanupPreviewImage.visibility = View.GONE
+        }
+        val preservedCount = pageArtifact?.regions?.count {
+            it.state == CleanupRegionState.PRESERVED_SOURCE
+        } ?: 0
+        cleanupPreservedPageMarker.visibility = when {
+            entry.state == CleanupPageState.PRESERVED_SOURCE -> View.VISIBLE
+            bitmap == null -> View.VISIBLE
+            preservedCount > 0 -> View.VISIBLE
+            else -> View.GONE
+        }
+        cleanupPreservedPageMarker.text = when {
+            entry.state == CleanupPageState.PRESERVED_SOURCE -> getString(
+                R.string.cleanup_preview_preserved_page,
+                entry.error?.code.orEmpty(),
+            )
+            bitmap == null -> getString(R.string.preview_unavailable)
+            preservedCount > 0 -> getString(R.string.cleanup_preview_protected_regions, preservedCount)
+            else -> ""
+        }
+        val cleanedCount = pageArtifact?.regions?.count { it.state == CleanupRegionState.CLEANED } ?: 0
+        cleanupDetailText.text = pageArtifact?.let {
+            getString(
+                R.string.cleanup_preview_detail,
+                cleanedCount,
+                preservedCount,
+                it.regions.sumOf { region -> region.changedPixelCount },
+            )
+        }.orEmpty()
+        cleanupPageIndicator.text = getString(
+            R.string.cleanup_preview_page_indicator,
+            currentCleanupPreviewIndex + 1,
+            entries.size,
+        )
+        previousCleanupPageButton.isEnabled = currentCleanupPreviewIndex > 0
+        nextCleanupPageButton.isEnabled = currentCleanupPreviewIndex < entries.lastIndex
+    }
+
+    private fun clearCleanupPreview() {
+        clearDisplayedCleanupBitmap()
+        cleanupPreviewImage.setImageDrawable(null)
+        cleanupPreviewImage.visibility = View.GONE
+        cleanupPreservedPageMarker.visibility = View.GONE
+        cleanupPageIndicator.setText(R.string.cleanup_preview_empty)
+        cleanupDetailText.text = ""
+        previousCleanupPageButton.isEnabled = false
+        nextCleanupPageButton.isEnabled = false
     }
 
     private fun showPreview(requestedIndex: Int) {
@@ -1006,6 +1326,17 @@ class MainActivity : Activity() {
         translationButton.isEnabled = false
         translationProgress.visibility = View.GONE
         translationStatus.setText(R.string.translation_status_no_ocr)
+        resetCleanupState()
+    }
+
+    private fun resetCleanupState() {
+        currentCleanupRun = null
+        currentCleanupPreviewIndex = 0
+        setCleanupActive(false)
+        cleanupButton.isEnabled = false
+        cleanupProgress.visibility = View.GONE
+        cleanupStatus.setText(R.string.cleanup_status_no_translation)
+        clearCleanupPreview()
     }
 
     private fun OcrRegionState.displayLabel(): String = when (this) {
@@ -1068,48 +1399,75 @@ class MainActivity : Activity() {
         displayedOcrBitmap = null
     }
 
+    private fun clearDisplayedCleanupBitmap() {
+        displayedCleanupBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
+        displayedCleanupBitmap = null
+    }
+
     private fun setImportRunning(running: Boolean) {
         importRunning = running
-        importButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive
-        analysisButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && currentProject != null
-        ocrButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && currentRun != null
-        translationButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive &&
+        importButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive
+        analysisButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive && currentProject != null
+        ocrButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive && currentRun != null
+        translationButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive &&
             currentOcrRun != null && translationSettingsStore.loadProviderSettings() != null
+        cleanupButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive &&
+            currentTranslationRun != null
         importProgress.visibility = if (running) View.VISIBLE else View.GONE
     }
 
     private fun setAnalysisActive(active: Boolean) {
         analysisActive = active
-        importButton.isEnabled = !importRunning && !active && !ocrActive && !translationActive
-        analysisButton.isEnabled = currentProject != null && !active && !ocrActive && !translationActive
+        importButton.isEnabled = !importRunning && !active && !ocrActive && !translationActive && !cleanupActive
+        analysisButton.isEnabled = currentProject != null && !active && !ocrActive && !translationActive && !cleanupActive
         cancelAnalysisButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelAnalysisButton.isEnabled = active
-        ocrButton.isEnabled = currentRun != null && !importRunning && !active && !ocrActive && !translationActive
+        ocrButton.isEnabled = currentRun != null && !importRunning && !active && !ocrActive && !translationActive && !cleanupActive
         translationButton.isEnabled = currentOcrRun != null && !importRunning && !active && !ocrActive &&
-            !translationActive && translationSettingsStore.loadProviderSettings() != null
+            !translationActive && !cleanupActive && translationSettingsStore.loadProviderSettings() != null
+        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !active && !ocrActive &&
+            !translationActive && !cleanupActive
     }
 
     private fun setOcrActive(active: Boolean) {
         ocrActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !active && !translationActive
-        analysisButton.isEnabled = currentProject != null && !analysisActive && !active && !translationActive
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !active && !translationActive
+        importButton.isEnabled = !importRunning && !analysisActive && !active && !translationActive && !cleanupActive
+        analysisButton.isEnabled = currentProject != null && !analysisActive && !active && !translationActive && !cleanupActive
+        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !active && !translationActive && !cleanupActive
         cancelOcrButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelOcrButton.isEnabled = active
         translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !active &&
-            !translationActive && translationSettingsStore.loadProviderSettings() != null
+            !translationActive && !cleanupActive && translationSettingsStore.loadProviderSettings() != null
+        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !active &&
+            !translationActive && !cleanupActive
     }
 
     private fun setTranslationActive(active: Boolean) {
         translationActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !active
-        analysisButton.isEnabled = currentProject != null && !analysisActive && !ocrActive && !active
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive && !active
+        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !active && !cleanupActive
+        analysisButton.isEnabled = currentProject != null && !analysisActive && !ocrActive && !active && !cleanupActive
+        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive && !active && !cleanupActive
         translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !active && translationSettingsStore.loadProviderSettings() != null
-        saveTranslationSettingsButton.isEnabled = !active
+            !active && !cleanupActive && translationSettingsStore.loadProviderSettings() != null
+        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !active && !cleanupActive
+        saveTranslationSettingsButton.isEnabled = !active && !cleanupActive
         cancelTranslationButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelTranslationButton.isEnabled = active
+    }
+
+    private fun setCleanupActive(active: Boolean) {
+        cleanupActive = active
+        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive && !active
+        analysisButton.isEnabled = currentProject != null && !analysisActive && !ocrActive && !translationActive && !active
+        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive && !translationActive && !active
+        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !active && translationSettingsStore.loadProviderSettings() != null
+        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
+            !translationActive && !active
+        saveTranslationSettingsButton.isEnabled = !translationActive && !active
+        cancelCleanupButton.visibility = if (active) View.VISIBLE else View.GONE
+        cancelCleanupButton.isEnabled = active
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -1169,6 +1527,25 @@ class MainActivity : Activity() {
         translationReceiverRegistered = true
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerCleanupReceiver() {
+        if (cleanupReceiverRegistered) return
+        val filter = IntentFilter(CleanupStatusBroadcast.ACTION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                cleanupReceiver,
+                filter,
+                internalCleanupStatusPermission(),
+                null,
+                RECEIVER_NOT_EXPORTED,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(cleanupReceiver, filter, internalCleanupStatusPermission(), null)
+        }
+        cleanupReceiverRegistered = true
+    }
+
     private fun internalStatusPermission(): String =
         "$packageName.permission.INTERNAL_DETECTION_STATUS"
 
@@ -1177,6 +1554,9 @@ class MainActivity : Activity() {
 
     private fun internalTranslationStatusPermission(): String =
         "$packageName.permission.INTERNAL_TRANSLATION_STATUS"
+
+    private fun internalCleanupStatusPermission(): String =
+        "$packageName.permission.INTERNAL_CLEANUP_STATUS"
 
     private fun notificationPermissionWasRequested(): Boolean = getPreferences(MODE_PRIVATE)
         .getBoolean(PREF_NOTIFICATION_REQUESTED, false)
@@ -1212,6 +1592,9 @@ class MainActivity : Activity() {
 
     private fun TranslationJobStatus.isActive(): Boolean =
         this == TranslationJobStatus.QUEUED || this == TranslationJobStatus.RUNNING
+
+    private fun CleanupJobStatus.isActive(): Boolean =
+        this == CleanupJobStatus.QUEUED || this == CleanupJobStatus.RUNNING
 
     private fun OcrRegionState.isOcrTerminal(): Boolean = when (this) {
         OcrRegionState.RECOGNIZED,
