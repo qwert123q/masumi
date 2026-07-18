@@ -22,5 +22,5 @@
 ## Task 4: Verify
 
 - [x] Run core, build, test-APK compilation, and lint suites.
-- [ ] Exercise the pixel gate and recovery through Android instrumentation on device.
-- [ ] Scan repository content for private environment, device, corpus, and credential data.
+- [x] Exercise the pixel gate and recovery through Android instrumentation on device.
+- [x] Scan repository content for private environment, device, corpus, and credential data.
