@@ -243,7 +243,16 @@ class MainActivity : Activity() {
     private val qualityReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(QualityStatusBroadcast::parse) ?: return
-            refreshQualityDurableState(progress)
+            val project = currentProject
+            val job = project?.let { QualityArtifactStore(it.directory).readJob(progress.jobId) }
+            if (
+                job != null &&
+                job.dependencies.typesettingRunArtifactKey != currentTypesettingRun?.artifact?.runArtifactKey
+            ) {
+                refreshDurableState()
+            } else {
+                refreshQualityDurableState(progress)
+            }
         }
     }
 
@@ -1001,7 +1010,6 @@ class MainActivity : Activity() {
         currentTypesettingRun = catalog.latestPublishedTypesettingRun(
             project.manifest.projectId,
             cleanupRun.artifact.runArtifactKey,
-            TypesettingPolicy(),
         )
         if (currentTypesettingRun?.artifact?.runArtifactKey != priorRunKey) currentTypesettingPreviewIndex = 0
         val durableProgress = progressOverride
@@ -1739,13 +1747,21 @@ class MainActivity : Activity() {
         qualityProgress.progress = progress.terminalPageCount.coerceIn(0, qualityProgress.max)
         qualityStatus.text = when (progress.status) {
             QualityJobStatus.QUEUED -> getString(R.string.quality_status_starting)
-            QualityJobStatus.RUNNING -> getString(
-                R.string.quality_status_progress,
-                progress.terminalPageCount,
-                progress.totalPageCount,
-                progress.warningCount,
-                progress.blockingCount,
-            )
+            QualityJobStatus.RUNNING -> if (progress.errorCode == "QUALITY_REPAIRING") {
+                getString(
+                    R.string.quality_status_repairing,
+                    progress.terminalPageCount,
+                    progress.totalPageCount,
+                )
+            } else {
+                getString(
+                    R.string.quality_status_progress,
+                    progress.terminalPageCount,
+                    progress.totalPageCount,
+                    progress.warningCount,
+                    progress.blockingCount,
+                )
+            }
             QualityJobStatus.SUCCEEDED -> getString(
                 R.string.quality_status_succeeded,
                 progress.totalPageCount,

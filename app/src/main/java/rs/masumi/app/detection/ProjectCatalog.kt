@@ -300,6 +300,16 @@ class ProjectCatalog(
             )
     }
 
+    fun publishedTypesettingRun(projectId: String, runKey: String): PublishedTypesettingRun? {
+        if (!SHA256.matches(runKey)) return null
+        val project = openProject(projectId) ?: return null
+        val store = TypesettingArtifactStore(project.directory, typesettingJson)
+        val artifact = store.readPublishedRun(runKey) ?: return null
+        val report = store.readPublishedReport(runKey) ?: return null
+        if (artifact.projectId != projectId || report.projectId != projectId) return null
+        return PublishedTypesettingRun(project.directory.resolve("artifacts/typesetting/$runKey"), artifact, report)
+    }
+
     fun readPublishedTypesettingPage(
         run: PublishedTypesettingRun,
         pageOrder: Int,

@@ -41,6 +41,7 @@ This repository is at an early stage. Conservative source-text cleanup, Chinese 
 - Checkpoint flattened PNG and strict page JSON together, resume interrupted pages without repeating upstream stages, and preview the published result page by page in the app.
 - Compare every flattened page with its cleanup dependency, verify declared layout pixels, detect page-boundary or outside-layout edits, and publish pass, warning, or blocked quality reports without manual approval.
 - Treat intentionally protected artwork as a reportable warning while blocking only deterministic corruption or layout failures.
+- Automatically rerender only deterministically blocked typesetting pages once, reuse digest-verified unaffected pages, and rerun quality without repeating OCR, translation, or cleanup.
 - Select an Android folder and export every page directly as deterministic `0001.png`, `0002.png`, and later files without creating an archive or wrapper directory.
 - Require a passed or warning-only quality run for the exact typesetting result before export.
 - Prefer flattened pages, fall back to verified cleanup or normalized source pages when a complete page was preserved, and record fallback counts without blocking the chapter.

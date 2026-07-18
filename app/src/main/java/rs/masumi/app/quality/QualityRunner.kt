@@ -36,7 +36,6 @@ import rs.masumi.core.quality.isPublished
 import rs.masumi.core.typesetting.PageTypesettingArtifact
 import rs.masumi.core.typesetting.TypesettingArtifactStore
 import rs.masumi.core.typesetting.TypesettingPageState
-import rs.masumi.core.typesetting.TypesettingPolicy
 
 data class QualityProgress(
     val projectId: String,
@@ -63,6 +62,7 @@ data class QualityRunResult(
 class QualityRunner(
     workspaceRoot: Path,
     private val policy: QualityPolicy = QualityPolicy(),
+    private val typesettingRunArtifactKey: String? = null,
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
 ) {
@@ -81,7 +81,8 @@ class QualityRunner(
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
         val typesettingRun = requireNotNull(
-            catalog.latestPublishedTypesettingRun(projectId, policy = TypesettingPolicy()),
+            typesettingRunArtifactKey?.let { catalog.publishedTypesettingRun(projectId, it) }
+                ?: catalog.latestPublishedTypesettingRun(projectId),
         ) { "completed typesetting run was not found" }
         val cleanupRun = requireNotNull(
             catalog.publishedCleanupRun(projectId, typesettingRun.artifact.dependencies.cleanupRunArtifactKey),

@@ -33,7 +33,6 @@ import rs.masumi.core.quality.QualityPolicy
 import rs.masumi.core.quality.allowsExport
 import rs.masumi.core.typesetting.TypesettingArtifactStore
 import rs.masumi.core.typesetting.TypesettingPageState
-import rs.masumi.core.typesetting.TypesettingPolicy
 
 data class ExportProgress(
     val projectId: String,
@@ -79,7 +78,7 @@ class ExportRunner(
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
         val typesettingRun = requireNotNull(
-            catalog.latestPublishedTypesettingRun(projectId, policy = TypesettingPolicy()),
+            catalog.latestPublishedTypesettingRun(projectId),
         ) { "completed typesetting run was not found" }
         val cleanupRun = requireNotNull(
             catalog.publishedCleanupRun(

@@ -21,7 +21,7 @@ class QualityForegroundService : Service() {
     private lateinit var notificationManager: NotificationManager
     private val cancellation = AtomicBoolean(false)
 
-    @Volatile private var runner: QualityRunner? = null
+    @Volatile private var runner: QualityRepairCoordinator? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -81,7 +81,7 @@ class QualityForegroundService : Service() {
         cancellation.set(false)
         executor.execute {
             try {
-                val active = QualityRunner(filesDir.toPath().resolve("workspace"))
+                val active = QualityRepairCoordinator(filesDir.toPath().resolve("workspace"))
                 runner = active
                 active.run(projectId, cancellation::get, ::publishProgress)
             } catch (_: Throwable) {
@@ -108,11 +108,19 @@ class QualityForegroundService : Service() {
         )
         val text = when (progress.status) {
             QualityJobStatus.QUEUED -> getString(R.string.quality_notification_starting)
-            QualityJobStatus.RUNNING -> getString(
-                R.string.quality_notification_progress,
-                progress.terminalPageCount,
-                progress.totalPageCount,
-            )
+            QualityJobStatus.RUNNING -> if (progress.errorCode == "QUALITY_REPAIRING") {
+                getString(
+                    R.string.quality_notification_repairing,
+                    progress.terminalPageCount,
+                    progress.totalPageCount,
+                )
+            } else {
+                getString(
+                    R.string.quality_notification_progress,
+                    progress.terminalPageCount,
+                    progress.totalPageCount,
+                )
+            }
             QualityJobStatus.SUCCEEDED -> getString(R.string.quality_notification_succeeded)
             QualityJobStatus.SUCCEEDED_WITH_WARNINGS -> getString(
                 R.string.quality_notification_succeeded_warnings,

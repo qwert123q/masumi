@@ -21,10 +21,11 @@ import rs.masumi.app.exporting.DestinationWriteResult
 import rs.masumi.app.exporting.ExportCancellationSignal
 import rs.masumi.app.exporting.ExportRunner
 import rs.masumi.app.exporting.FolderExportDestination
-import rs.masumi.app.quality.QualityRunner
+import rs.masumi.app.quality.QualityRepairCoordinator
 import rs.masumi.core.exporting.ExportJobStatus
 import rs.masumi.core.quality.QualityJobStatus
 import rs.masumi.core.typesetting.TypesettingJobStatus
+import rs.masumi.core.typesetting.isSuccessful
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.model.PageRecord
 import rs.masumi.core.model.ProjectManifest
@@ -51,6 +52,7 @@ import rs.masumi.core.detection.VisibleOrientation
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
+import rs.masumi.core.serialization.TypesettingJson
 import rs.masumi.core.translation.PageTranslationArtifact
 import rs.masumi.core.translation.TranslationArtifactIdentity
 import rs.masumi.core.translation.TranslationBatchingConfig
@@ -91,7 +93,7 @@ class CleanupRunnerTest {
             val completed = runner.run(PROJECT_ID, { false }) { }
 
             assertEquals(CleanupJobStatus.SUCCEEDED, completed.job.status)
-            assertEquals(1, completed.report?.cleanedRegionCount)
+            assertEquals(2, completed.report?.cleanedRegionCount)
             assertTrue((completed.report?.changedPixelCount ?: 0) > 0)
             assertNotNull(completed.publishedDirectory)
             assertArrayEquals(sourceBytes, Files.readAllBytes(sourcePath(workspace)))
@@ -113,7 +115,7 @@ class CleanupRunnerTest {
 
             val completedTypesetting = typesetter.run(PROJECT_ID, { false }) { }
             assertEquals(TypesettingJobStatus.SUCCEEDED, completedTypesetting.job.status)
-            assertEquals(1, completedTypesetting.report?.typesetRegionCount)
+            assertEquals(2, completedTypesetting.report?.typesetRegionCount)
             assertTrue((completedTypesetting.report?.changedPixelCount ?: 0) > 0)
             assertNotNull(completedTypesetting.publishedDirectory)
             assertArrayEquals(sourceBytes, Files.readAllBytes(sourcePath(workspace)))
@@ -122,25 +124,20 @@ class CleanupRunnerTest {
             assertEquals(completedTypesetting.runArtifact, cachedTypesetting.runArtifact)
             assertEquals(completedTypesetting.report, cachedTypesetting.report)
 
-            val quality = QualityRunner(
-                workspaceRoot = workspace,
-                idSource = IdSource { "quality-job" },
-            )
-            cancel.set(false)
-            val cancelledQuality = quality.run(PROJECT_ID, cancel::get) { progress ->
-                if (progress.currentPageOrder != null) cancel.set(true)
-            }
-            assertEquals(QualityJobStatus.CANCELLED, cancelledQuality.job.status)
+            corruptFlattenedPageToCleanedPixels(completed, completedTypesetting)
+            val repairCoordinator = QualityRepairCoordinator(workspace)
+            val repairedQuality = repairCoordinator.run(PROJECT_ID, { false }) { }
+            assertEquals(QualityJobStatus.BLOCKED, repairedQuality.initialQuality.job.status)
+            assertEquals(setOf(0), repairedQuality.repairPlan?.repairPageOrders())
+            assertTrue(repairedQuality.repairedTypesetting?.job?.status?.isSuccessful() == true)
+            assertEquals(1, repairedQuality.repairedTypesetting?.report?.reusedPageCount)
+            assertEquals(QualityJobStatus.SUCCEEDED, repairedQuality.finalQuality?.job?.status)
+            assertEquals(2, repairedQuality.finalQuality?.report?.passedPageCount)
+            assertEquals(0, repairedQuality.finalQuality?.report?.blockingCount)
 
-            val completedQuality = quality.run(PROJECT_ID, { false }) { }
-            assertEquals(QualityJobStatus.SUCCEEDED, completedQuality.job.status)
-            assertEquals(1, completedQuality.report?.passedPageCount)
-            assertEquals(0, completedQuality.report?.blockingCount)
-            assertNotNull(completedQuality.publishedDirectory)
-
-            val cachedQuality = quality.run(PROJECT_ID, { false }) { }
-            assertEquals(completedQuality.runArtifact, cachedQuality.runArtifact)
-            assertEquals(completedQuality.report, cachedQuality.report)
+            val cachedQuality = repairCoordinator.run(PROJECT_ID, { false }) { }
+            assertEquals(repairedQuality.finalQuality?.runArtifact, cachedQuality.initialQuality.runArtifact)
+            assertEquals(null, cachedQuality.repairPlan)
 
             val destination = InMemoryExportDestination()
             val exportIds = AtomicInteger()
@@ -159,13 +156,13 @@ class CleanupRunnerTest {
             cancel.set(false)
             val completedExport = exporter.run(PROJECT_ID, DESTINATION_URI, cancel::get) { }
             assertEquals(ExportJobStatus.SUCCEEDED, completedExport.job.status)
-            assertEquals(setOf("0001.png"), destination.files.keys)
-            assertEquals(1, completedExport.report?.flattenedPageCount)
+            assertEquals(setOf("0001.png", "0002.png"), destination.files.keys)
+            assertEquals(2, completedExport.report?.flattenedPageCount)
             assertEquals(0, completedExport.report?.reusedPageCount)
 
             val repeatedExport = exporter.run(PROJECT_ID, DESTINATION_URI, { false }) { }
             assertEquals(ExportJobStatus.SUCCEEDED, repeatedExport.job.status)
-            assertEquals(1, repeatedExport.report?.reusedPageCount)
+            assertEquals(2, repeatedExport.report?.reusedPageCount)
             assertArrayEquals(sourceBytes, Files.readAllBytes(sourcePath(workspace)))
         } finally {
             workspace.toFile().deleteRecursively()
@@ -178,7 +175,7 @@ class CleanupRunnerTest {
         val source = project.resolve("sources/$sourceSha.png")
         Files.createDirectories(source.parent)
         Files.write(source, sourceBytes)
-        val page = PageRecord(
+        val firstPage = PageRecord(
             order = 0,
             pageId = sourceSha,
             sourceSha256 = sourceSha,
@@ -187,17 +184,45 @@ class CleanupRunnerTest {
             byteLength = sourceBytes.size.toLong(),
             storedPath = "sources/$sourceSha.png",
         )
+        val pages = listOf(
+            firstPage,
+            firstPage.copy(order = 1, originalName = "page-2.png"),
+        )
         writeUtf8(
             project.resolve("manifest.json"),
             ProjectJson().encodeManifest(
-                ProjectManifest(projectId = PROJECT_ID, createdAtEpochMillis = 1L, pages = listOf(page)),
+                ProjectManifest(projectId = PROJECT_ID, createdAtEpochMillis = 1L, pages = pages),
             ),
         )
-        val ocr = publishOcr(project, page)
-        publishTranslation(project, page, ocr)
+        val ocr = publishOcr(project, pages)
+        publishTranslation(project, pages, ocr)
     }
 
-    private fun publishOcr(project: Path, page: PageRecord): OcrFixture {
+    private fun corruptFlattenedPageToCleanedPixels(
+        cleanup: CleanupRunResult,
+        typesetting: rs.masumi.app.typesetting.TypesettingRunResult,
+    ) {
+        val cleanupRun = requireNotNull(cleanup.runArtifact)
+        val cleanupDirectory = requireNotNull(cleanup.publishedDirectory)
+        val cleanupEntry = cleanupRun.entries.single { it.pageOrder == 0 }
+        val cleanedBytes = Files.readAllBytes(cleanupDirectory.resolve(requireNotNull(cleanupEntry.imagePath)))
+        val typesettingRun = requireNotNull(typesetting.runArtifact)
+        val typesettingDirectory = requireNotNull(typesetting.publishedDirectory)
+        val entry = typesettingRun.entries.single { it.pageOrder == 0 }
+        Files.write(typesettingDirectory.resolve(requireNotNull(entry.imagePath)), cleanedBytes)
+        val json = TypesettingJson()
+        val artifactPath = typesettingDirectory.resolve(requireNotNull(entry.artifactPath))
+        val artifact = Files.newBufferedReader(artifactPath, Charsets.UTF_8).use {
+            json.decodePageArtifact(it.readText())
+        }
+        writeUtf8(
+            artifactPath,
+            json.encodePageArtifact(artifact.copy(renderedImageSha256 = sha256(cleanedBytes))),
+        )
+    }
+
+    private fun publishOcr(project: Path, pages: List<PageRecord>): OcrFixture {
+        val page = pages.first()
         val runKey = "a".repeat(64)
         val pageKey = "b".repeat(64)
         val regionId = "c".repeat(64)
@@ -266,18 +291,18 @@ class CleanupRunnerTest {
             detectionRunArtifactKey = "f".repeat(64),
             createdAtEpochMillis = 2L,
             dependencies = dependencies,
-            entries = listOf(
+            entries = pages.map { orderedPage ->
                 OcrRunEntry(
-                    order = 0,
+                    order = orderedPage.order,
                     pageId = page.pageId,
                     sourceSha256 = page.sourceSha256,
                     detectionPageArtifactKey = pageArtifact.detectionPageArtifactKey,
                     pageArtifactKey = pageKey,
                     state = OcrPageState.COMMITTED,
                     artifactPath = "pages/${page.pageId}/ocr.json",
-                    previewPath = "previews/0000.png",
-                ),
-            ),
+                    previewPath = "previews/${orderedPage.order.toString().padStart(4, '0')}.png",
+                )
+            },
         )
         val report = OcrReport(
             jobId = "ocr-job",
@@ -286,10 +311,10 @@ class CleanupRunnerTest {
             startedAtEpochMillis = 1L,
             finishedAtEpochMillis = 2L,
             status = OcrJobStatus.SUCCEEDED,
-            totalPageCount = 1,
-            committedPageCount = 1,
-            totalRegionCount = 1,
-            recognizedRegionCount = 1,
+            totalPageCount = pages.size,
+            committedPageCount = pages.size,
+            totalRegionCount = pages.size,
+            recognizedRegionCount = pages.size,
             needsFallbackRegionCount = 0,
             noTextRegionCount = 0,
             preservedRegionCount = 0,
@@ -298,18 +323,23 @@ class CleanupRunnerTest {
         val json = OcrJson()
         writeUtf8(runDirectory.resolve("pages/${page.pageId}/ocr.json"), json.encodePageArtifact(pageArtifact))
         Files.createDirectories(runDirectory.resolve("previews"))
-        Files.write(runDirectory.resolve("previews/0000.png"), byteArrayOf(1))
+        pages.forEach { orderedPage ->
+            Files.write(
+                runDirectory.resolve("previews/${orderedPage.order.toString().padStart(4, '0')}.png"),
+                byteArrayOf(1),
+            )
+        }
         writeUtf8(runDirectory.resolve("artifact.json"), json.encodeRun(run))
         writeUtf8(runDirectory.resolve("report.json"), json.encodeReport(report))
         return OcrFixture(runKey, pageKey, regionId)
     }
 
-    private fun publishTranslation(project: Path, page: PageRecord, ocr: OcrFixture) {
+    private fun publishTranslation(project: Path, pages: List<PageRecord>, ocr: OcrFixture) {
         val runKey = "1".repeat(64)
         val pageKey = "2".repeat(64)
         val translationRegionId = "3".repeat(64)
         val runDirectory = project.resolve("artifacts/translation/$runKey")
-        Files.createDirectories(runDirectory.resolve("pages/${page.pageId}"))
+        Files.createDirectories(runDirectory)
         val emptyGlossarySha = TranslationArtifactIdentity.glossarySha256(emptyList())
         val dependencies = TranslationDependencies(
             ocrRunArtifactKey = ocr.runKey,
@@ -324,37 +354,39 @@ class CleanupRunnerTest {
             ),
             initialGlossarySha256 = emptyGlossarySha,
         )
-        val pageArtifact = PageTranslationArtifact(
-            pageId = page.pageId,
-            pageOrder = 0,
-            ocrPageArtifactKey = ocr.pageKey,
-            pageArtifactKey = pageKey,
-            dependencies = dependencies,
-            items = listOf(
-                ValidatedTranslationItem(
-                    translationRegionId = translationRegionId,
-                    ocrRegionId = ocr.regionId,
-                    role = TranslationRole.DIALOGUE,
-                    translatedText = "测试",
-                    state = TranslationResultState.TRANSLATED,
+        val pageArtifacts = pages.map { page ->
+            PageTranslationArtifact(
+                pageId = page.pageId,
+                pageOrder = page.order,
+                ocrPageArtifactKey = ocr.pageKey,
+                pageArtifactKey = if (page.order == 0) pageKey else "4".repeat(64),
+                dependencies = dependencies,
+                items = listOf(
+                    ValidatedTranslationItem(
+                        translationRegionId = translationRegionId,
+                        ocrRegionId = ocr.regionId,
+                        role = TranslationRole.DIALOGUE,
+                        translatedText = "测试",
+                        state = TranslationResultState.TRANSLATED,
+                    ),
                 ),
-            ),
-            protectedOcrRegions = emptyList(),
-        )
+                protectedOcrRegions = emptyList(),
+            )
+        }
         val run = TranslationRunArtifact(
             runArtifactKey = runKey,
             projectId = PROJECT_ID,
             createdAtEpochMillis = 3L,
             dependencies = dependencies,
-            entries = listOf(
+            entries = pageArtifacts.map { pageArtifact ->
                 TranslationRunEntry(
-                    pageId = page.pageId,
-                    pageOrder = 0,
+                    pageId = pageArtifact.pageId,
+                    pageOrder = pageArtifact.pageOrder,
                     ocrPageArtifactKey = ocr.pageKey,
-                    pageArtifactKey = pageKey,
-                    artifactPath = "pages/${page.pageId}/translation.json",
-                ),
-            ),
+                    pageArtifactKey = pageArtifact.pageArtifactKey,
+                    artifactPath = "pages/${pageArtifact.pageOrder.toString().padStart(4, '0')}-${pageArtifact.pageId}/translation.json",
+                )
+            },
             glossaryPath = "glossary.json",
         )
         val report = TranslationReport(
@@ -364,11 +396,11 @@ class CleanupRunnerTest {
             startedAtEpochMillis = 2L,
             finishedAtEpochMillis = 3L,
             status = TranslationJobStatus.SUCCEEDED,
-            totalPageCount = 1,
-            committedPageCount = 1,
+            totalPageCount = pages.size,
+            committedPageCount = pages.size,
             totalWindowCount = 1,
             committedWindowCount = 1,
-            translatedItemCount = 1,
+            translatedItemCount = pages.size,
             preservedItemCount = 0,
             protectedOcrRegionCount = 0,
             promptTokens = 1,
@@ -377,10 +409,14 @@ class CleanupRunnerTest {
             retryCount = 0,
         )
         val json = TranslationJson()
-        writeUtf8(
-            runDirectory.resolve("pages/${page.pageId}/translation.json"),
-            json.encodePageArtifact(pageArtifact),
-        )
+        pageArtifacts.forEach { pageArtifact ->
+            writeUtf8(
+                runDirectory.resolve(
+                    "pages/${pageArtifact.pageOrder.toString().padStart(4, '0')}-${pageArtifact.pageId}/translation.json",
+                ),
+                json.encodePageArtifact(pageArtifact),
+            )
+        }
         writeUtf8(
             runDirectory.resolve("glossary.json"),
             json.encodeGlossary(TranslationGlossaryArtifact(sha256 = emptyGlossarySha, entries = emptyList())),
@@ -411,7 +447,7 @@ class CleanupRunnerTest {
         val manifest = Files.newBufferedReader(project.resolve("manifest.json")).use {
             ProjectJson().decodeManifest(it.readText())
         }
-        return project.resolve(manifest.pages.single().storedPath)
+        return project.resolve(manifest.pages.first().storedPath)
     }
 
     private fun writeUtf8(path: Path, content: String) {

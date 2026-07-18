@@ -13,6 +13,7 @@ import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedCleanupRun
 import rs.masumi.app.detection.PublishedOcrRun
 import rs.masumi.app.detection.PublishedTranslationRun
+import rs.masumi.app.detection.PublishedTypesettingRun
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupRegionState
@@ -39,6 +40,8 @@ import rs.masumi.core.typesetting.TypesettingPreserveReason
 import rs.masumi.core.typesetting.TypesettingRegionArtifact
 import rs.masumi.core.typesetting.TypesettingRegionState
 import rs.masumi.core.typesetting.TypesettingReport
+import rs.masumi.core.typesetting.TypesettingRepairPageAction
+import rs.masumi.core.typesetting.TypesettingRepairPlanner
 import rs.masumi.core.typesetting.TypesettingRunArtifact
 import rs.masumi.core.typesetting.TypesettingRunEntry
 import rs.masumi.core.typesetting.TypesettingStyle
@@ -69,6 +72,8 @@ class TypesettingRunner(
     private val decoder: PageBitmapDecoder = PageBitmapDecoder(),
     private val renderer: ChineseTypesetter = ChineseTypesetter(),
     private val policy: TypesettingPolicy = TypesettingPolicy(),
+    private val reuseRunArtifactKey: String? = null,
+    private val reprocessPageOrders: Set<Int> = emptySet(),
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
 ) {
@@ -89,6 +94,11 @@ class TypesettingRunner(
         val cleanupRun = requireNotNull(
             catalog.latestPublishedCleanupRun(projectId, policy = rs.masumi.core.cleanup.CleanupPolicy()),
         ) { "completed cleanup run was not found" }
+        val reuseRun = reuseRunArtifactKey?.let { runKey ->
+            requireNotNull(catalog.publishedTypesettingRun(projectId, runKey)) {
+                "typesetting reuse run was not found"
+            }
+        }
         val translationRun = requireNotNull(
             catalog.publishedTranslationRun(
                 projectId,
@@ -99,6 +109,7 @@ class TypesettingRunner(
             catalog.publishedOcrRun(projectId, translationRun.artifact.dependencies.ocrRunArtifactKey),
         ) { "translation OCR dependency was not found" }
         validateDependencies(project, cleanupRun, translationRun, ocrRun)
+        validateReuse(project, cleanupRun, reuseRun)
         val dependencies = TypesettingDependencies(
             cleanupRunArtifactKey = cleanupRun.artifact.runArtifactKey,
             policy = policy,
@@ -151,6 +162,23 @@ class TypesettingRunner(
                     TypesettingJobReducer.startPage(job, sourcePage.order, clock.millis()),
                     sourcePage.order,
                 )
+                val reuseEntry = reuseRun?.artifact?.entries?.single { it.pageOrder == sourcePage.order }
+                val repairAction = TypesettingRepairPlanner.pageAction(
+                    reuseEntry?.state,
+                    sourcePage.order in reprocessPageOrders,
+                )
+                if (repairAction == TypesettingRepairPageAction.CARRY_PRESERVED) {
+                    job = persist(
+                        TypesettingJobReducer.preservePage(
+                            job,
+                            sourcePage.order,
+                            requireNotNull(requireNotNull(reuseEntry).error),
+                            clock.millis(),
+                        ),
+                        sourcePage.order,
+                    )
+                    return@forEach
+                }
                 val cleanupEntry = cleanupRun.artifact.entries.single { it.pageOrder == sourcePage.order }
                 if (cleanupEntry.state != CleanupPageState.COMMITTED) {
                     job = persist(
@@ -165,16 +193,26 @@ class TypesettingRunner(
                     return@forEach
                 }
                 try {
-                    val artifactAndPng = processPage(
-                        project,
-                        sourcePage,
-                        cleanupRun,
-                        translationRun,
-                        ocrRun,
-                        pageKeys.getValue(sourcePage.order),
-                        dependencies,
-                        ::isCancelled,
-                    )
+                    val artifactAndPng = if (repairAction == TypesettingRepairPageAction.REUSE_COMMITTED) {
+                        reusePage(
+                            project,
+                            sourcePage,
+                            requireNotNull(reuseRun),
+                            pageKeys.getValue(sourcePage.order),
+                            dependencies,
+                        )
+                    } else {
+                        processPage(
+                            project,
+                            sourcePage,
+                            cleanupRun,
+                            translationRun,
+                            ocrRun,
+                            pageKeys.getValue(sourcePage.order),
+                            dependencies,
+                            ::isCancelled,
+                        )
+                    }
                     val artifact = artifactAndPng.first
                     val (artifactPath, imagePath) = store.commitPage(job, artifact, artifactAndPng.second)
                     val typeset = artifact.regions.count { it.state == TypesettingRegionState.TYPESET }
@@ -330,6 +368,31 @@ class TypesettingRunner(
         }
     }
 
+    private fun reusePage(
+        project: ProjectRef,
+        sourcePage: PageRecord,
+        reuseRun: PublishedTypesettingRun,
+        pageKey: String,
+        dependencies: TypesettingDependencies,
+    ): Pair<PageTypesettingArtifact, ByteArray> {
+        val entry = reuseRun.artifact.entries.single { it.pageOrder == sourcePage.order }
+        require(entry.state == TypesettingPageState.COMMITTED)
+        val artifact = TypesettingArtifactStore(project.directory).readPublishedPage(
+            reuseRun.artifact.runArtifactKey,
+            entry,
+        ) ?: throw FatalTypesettingException("REUSE_PAGE_INVALID")
+        val imagePath = resolveInside(reuseRun.directory, requireNotNull(entry.imagePath))
+        val png = Files.readAllBytes(imagePath)
+        if (sha256(png) != artifact.renderedImageSha256) {
+            throw FatalTypesettingException("REUSE_IMAGE_INVALID")
+        }
+        return artifact.copy(
+            pageArtifactKey = pageKey,
+            reusedFromPageArtifactKey = artifact.pageArtifactKey,
+            dependencies = dependencies,
+        ) to png
+    }
+
     private fun recoverOrCreateJob(
         store: TypesettingArtifactStore,
         project: ProjectRef,
@@ -414,6 +477,25 @@ class TypesettingRunner(
         }
     }
 
+    private fun validateReuse(
+        project: ProjectRef,
+        cleanup: PublishedCleanupRun,
+        reuse: PublishedTypesettingRun?,
+    ) {
+        if (reuse == null) {
+            require(reprocessPageOrders.isEmpty())
+            return
+        }
+        require(reprocessPageOrders.isNotEmpty())
+        require(reuse.artifact.projectId == project.manifest.projectId)
+        require(reuse.artifact.dependencies.cleanupRunArtifactKey == cleanup.artifact.runArtifactKey)
+        require(reuse.artifact.entries.size == project.manifest.pages.size)
+        require(reprocessPageOrders.all { it in project.manifest.pages.indices })
+        project.manifest.pages.forEach { page ->
+            require(reuse.artifact.entries.single { it.pageOrder == page.order }.pageId == page.pageId)
+        }
+    }
+
     private fun validateSource(projectDirectory: Path, page: PageRecord) {
         val path = resolveInside(projectDirectory, page.storedPath)
         if (!Files.isRegularFile(path)) throw FatalTypesettingException("SOURCE_MISSING")
@@ -480,6 +562,7 @@ class TypesettingRunner(
         changedPixelCount = artifacts.values.flatMap(PageTypesettingArtifact::regions)
             .sumOf { it.changedPixelCount.toLong() },
         retryCount = pages.sumOf { (it.attemptCount - 1).coerceAtLeast(0) },
+        reusedPageCount = artifacts.values.count { it.reusedFromPageArtifactKey != null },
     )
 
     private fun TypesettingJobRecord.toProgress(

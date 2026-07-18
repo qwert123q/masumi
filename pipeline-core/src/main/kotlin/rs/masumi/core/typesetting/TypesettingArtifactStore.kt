@@ -180,6 +180,10 @@ class TypesettingArtifactStore(
         require(artifact.dependencies == dependencies)
         require(artifact.visibleWidth > 0 && artifact.visibleHeight > 0)
         requireSha256(artifact.renderedImageSha256)
+        artifact.reusedFromPageArtifactKey?.let {
+            requireSha256(it)
+            require(it != artifact.pageArtifactKey)
+        }
         artifact.regions.forEach { region ->
             requireSha256(region.ocrRegionId)
             region.translationRegionId?.let(::requireSha256)

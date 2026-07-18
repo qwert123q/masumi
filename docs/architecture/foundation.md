@@ -121,6 +121,8 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 4. Count changes outside the union of declared layout boxes. Changes beyond the versioned anti-aliasing tolerance are blocking defects.
 5. Record OCR-protected or deliberately preserved artwork as warnings. Warning-only pages pass without human approval; deterministic pixel or geometry defects block export.
 6. Checkpoint strict quality JSON per page, recover only the interrupted page, and atomically publish the run and terminal issue report.
+7. If the report is blocked, route current deterministic issue codes only to typesetting, render the blocked pages once under the conservative repair policy, copy verified unaffected pages into the new run, and audit that exact run again.
+8. If the single repair attempt remains blocked, publish the final report and keep export disabled. Never escalate automatically to OCR, translation, or cleanup.
 
 ## Project artifacts
 
@@ -251,6 +253,7 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Automatic quality identity includes the exact typesetting run, rendered page digests, and every policy field. It compares only immutable published inputs.
 - Protected artwork produces warning-only quality results; proven geometry, dimension, missing-pixel, or outside-layout defects block export without requesting manual review.
 - Quality cancellation and recovery discard only the active audit page and never repeat typesetting or any earlier stage.
+- Quality-directed repair has one versioned attempt per typesetting lineage. Its policy revision participates in artifact identity, and unaffected pages record the prior page key they reused.
 - Folder export publishes exactly one verified PNG per manifest page. Its report contains a destination digest, never the document-tree URI.
 - Folder export requires the exact quality run recorded in its dependency identity and rejects blocked reports.
 - Export may overwrite deterministic page names after a verified temporary write and removes stale numeric PNG pages only after the current complete set is valid; other destination documents are never deleted.
@@ -258,4 +261,4 @@ All paths stored in JSON are project-relative. The source manifest records the o
 
 ## Next slices
 
-The full import-to-folder-export path is now represented by independently resumable stages, including a deterministic automatic quality gate. The next slice is targeted automatic retry of OCR, cleanup, translation, or layout defects without mutating source pages or repeating unrelated valid work.
+The full import-to-folder-export path is now represented by independently resumable stages, including a deterministic automatic quality gate and bounded typesetting-page repair. Later quality signals may route to OCR, translation, or cleanup only after those defects can be proved without guessing.

@@ -169,6 +169,7 @@
     <string name="quality_status_ready">嵌字成品已就绪，可以自动检查全部页面</string>
     <string name="quality_status_starting">正在启动自动验收…</string>
     <string name="quality_status_progress">已检查 %1$d / %2$d 页；警告 %3$d 项，阻断 %4$d 项</string>
+    <string name="quality_status_repairing">验收发现确定性问题，正在定向重做 %1$d / %2$d 页；其他页面直接复用</string>
     <string name="quality_status_succeeded">自动验收通过：%1$d 页均无确定性问题</string>
     <string name="quality_status_succeeded_warnings">自动验收通过：%1$d 个警告已记入报告，不需人工确认</string>
     <string name="quality_status_blocked">自动验收未通过：%1$d 页有 %2$d 个确定性问题，已阻止导出</string>
@@ -180,6 +181,7 @@
     <string name="quality_notification_busy">已有自动验收任务正在运行</string>
     <string name="quality_notification_cancelling">正在取消当前验收页…</string>
     <string name="quality_notification_progress">已检查 %1$d / %2$d 页</string>
+    <string name="quality_notification_repairing">正在定向修复嵌字页 %1$d / %2$d</string>
     <string name="quality_notification_succeeded">自动验收通过</string>
     <string name="quality_notification_succeeded_warnings">自动验收通过，%1$d 个警告已记录</string>
     <string name="quality_notification_blocked">自动验收发现 %1$d 个阻断问题</string>

@@ -92,6 +92,7 @@ data class PageTypesettingArtifact(
     val visibleWidth: Int,
     val visibleHeight: Int,
     val renderedImageSha256: String,
+    val reusedFromPageArtifactKey: String? = null,
     val dependencies: TypesettingDependencies,
     val regions: List<TypesettingRegionArtifact>,
 )
@@ -182,6 +183,7 @@ data class TypesettingReport(
     val preservedRegionCount: Int,
     val changedPixelCount: Long,
     val retryCount: Int,
+    val reusedPageCount: Int = 0,
     val error: TypesettingError? = null,
     val durationMillis: Long = finishedAtEpochMillis - startedAtEpochMillis,
 )
