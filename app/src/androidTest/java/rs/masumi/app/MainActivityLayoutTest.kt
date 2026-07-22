@@ -7,15 +7,18 @@ import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.View.MeasureSpec
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -57,10 +60,20 @@ class MainActivityLayoutTest {
         val pager = root.findViewById<HorizontalSwipeViewFlipper>(R.id.contentPager)
         assertEquals(2, pager.childCount)
         assertEquals(0, pager.displayedChild)
+        assertEquals(View.VISIBLE, pager.getChildAt(0).visibility)
+        assertEquals(View.INVISIBLE, pager.getChildAt(1).visibility)
+        repeat(pager.childCount) { index ->
+            val page = pager.getChildAt(index) as ScrollView
+            assertNull((page.getChildAt(0) as ViewGroup).layoutTransition)
+        }
         pager.displayedChild = 1
         assertEquals(1, pager.displayedChild)
+        assertEquals(View.INVISIBLE, pager.getChildAt(0).visibility)
+        assertEquals(View.VISIBLE, pager.getChildAt(1).visibility)
         pager.displayedChild = 0
         assertEquals(0, pager.displayedChild)
+        assertEquals(View.VISIBLE, pager.getChildAt(0).visibility)
+        assertEquals(View.INVISIBLE, pager.getChildAt(1).visibility)
     }
 
     @Test

@@ -16,7 +16,6 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
-import android.view.animation.AnimationUtils
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -405,10 +404,7 @@ class MainActivity : Activity() {
             translationModel.setText(saved.model)
         }
         setTranslationSettingsExpanded(false)
-        showPage(
-            PageNavigation.normalize(savedInstanceState?.getInt(STATE_SELECTED_PAGE)),
-            animate = false,
-        )
+        showPage(PageNavigation.normalize(savedInstanceState?.getInt(STATE_SELECTED_PAGE)))
         contentPager.onSwipe = { direction ->
             showPage(
                 if (direction == HorizontalSwipeViewFlipper.Direction.LEFT) {
@@ -556,28 +552,9 @@ class MainActivity : Activity() {
         return true
     }
 
-    private fun showPage(page: Int, animate: Boolean = true) {
+    private fun showPage(page: Int) {
         val target = page.coerceIn(PAGE_WORKSPACE, PAGE_DETAILS)
-        val current = contentPager.displayedChild
-        if (!animate) {
-            contentPager.inAnimation = null
-            contentPager.outAnimation = null
-        }
-        if (current != target) {
-            repeat(contentPager.childCount) { index ->
-                contentPager.getChildAt(index).clearAnimation()
-            }
-            if (animate) {
-                val movingForward = target > current
-                contentPager.inAnimation = AnimationUtils.loadAnimation(
-                    this,
-                    if (movingForward) R.anim.masumi_slide_in_right else R.anim.masumi_slide_in_left,
-                )
-                contentPager.outAnimation = AnimationUtils.loadAnimation(
-                    this,
-                    if (movingForward) R.anim.masumi_slide_out_left else R.anim.masumi_slide_out_right,
-                )
-            }
+        if (contentPager.displayedChild != target) {
             contentPager.displayedChild = target
         }
         workspaceTabButton.isSelected = target == PAGE_WORKSPACE

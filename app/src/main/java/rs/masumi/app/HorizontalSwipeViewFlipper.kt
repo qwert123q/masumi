@@ -6,19 +6,26 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.widget.ViewFlipper
+import android.widget.FrameLayout
 import kotlin.math.abs
 
 class HorizontalSwipeViewFlipper @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
-) : ViewFlipper(context, attrs) {
+) : FrameLayout(context, attrs) {
     enum class Direction {
         LEFT,
         RIGHT,
     }
 
     var onSwipe: ((Direction) -> Unit)? = null
+
+    var displayedChild: Int = 0
+        set(value) {
+            val target = if (childCount == 0) 0 else value.coerceIn(0, childCount - 1)
+            field = target
+            updateChildVisibility()
+        }
 
     private val minimumSwipeDistance = maxOf(
         48f * resources.displayMetrics.density,
@@ -29,6 +36,11 @@ class HorizontalSwipeViewFlipper @JvmOverloads constructor(
     private var downY = 0f
     private var interceptingSwipe = false
     private var swipeBlockedByTextEditor = false
+
+    override fun onFinishInflate() {
+        super.onFinishInflate()
+        updateChildVisibility()
+    }
 
     override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
@@ -92,6 +104,12 @@ class HorizontalSwipeViewFlipper @JvmOverloads constructor(
         interceptingSwipe = false
         swipeBlockedByTextEditor = false
         parent?.requestDisallowInterceptTouchEvent(false)
+    }
+
+    private fun updateChildVisibility() {
+        repeat(childCount) { index ->
+            getChildAt(index).visibility = if (index == displayedChild) View.VISIBLE else View.INVISIBLE
+        }
     }
 
     private fun findTouchTarget(group: ViewGroup, x: Float, y: Float): View? {
