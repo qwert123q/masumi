@@ -11,8 +11,8 @@ import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.ViewFlipper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -40,6 +40,28 @@ class MainActivityLayoutTest {
         assertEquals(true, root.findViewById<Button>(R.id.importButton).isEnabled)
         assertEquals("等待导入", root.findViewById<TextView>(R.id.statusText).text.toString())
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.importProgress).visibility)
+        assertEquals(false, root.findViewById<Button>(R.id.processButton).isEnabled)
+        assertEquals("开始自动处理", root.findViewById<Button>(R.id.processButton).text.toString())
+        assertEquals(0, root.findViewById<ViewFlipper>(R.id.contentPager).displayedChild)
+    }
+
+    @Test
+    fun workspaceAndProcessingDetailsSwitchHorizontally() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        lateinit var root: View
+
+        instrumentation.runOnMainSync {
+            val context = ContextThemeWrapper(instrumentation.targetContext, R.style.Theme_Masumi)
+            root = LayoutInflater.from(context).inflate(R.layout.activity_main, null, false)
+        }
+
+        val pager = root.findViewById<ViewFlipper>(R.id.contentPager)
+        assertEquals(2, pager.childCount)
+        assertEquals(0, pager.displayedChild)
+        pager.displayedChild = 1
+        assertEquals(1, pager.displayedChild)
+        pager.displayedChild = 0
+        assertEquals(0, pager.displayedChild)
     }
 
     @Test
@@ -128,7 +150,7 @@ class MainActivityLayoutTest {
 
         instrumentation.runOnMainSync {
             val context = ContextThemeWrapper(instrumentation.targetContext, R.style.Theme_Masumi)
-            val root = LayoutInflater.from(context).inflate(R.layout.activity_main, null, false) as ScrollView
+            val root = LayoutInflater.from(context).inflate(R.layout.activity_main, null, false) as LinearLayout
             val width = (PHONE_WIDTH_DP * context.resources.displayMetrics.density).toInt()
             val height = (PHONE_HEIGHT_DP * context.resources.displayMetrics.density).toInt()
             root.measure(
@@ -141,23 +163,30 @@ class MainActivityLayoutTest {
             assertTrue(root.findViewById<Button>(R.id.importButton).measuredHeight >= minimumTouchTarget)
             assertTrue(root.findViewById<Button>(R.id.analysisButton).measuredHeight >= minimumTouchTarget)
 
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val snapshotWidth = width / 2
+            val snapshotHeight = height / 2
+            val bitmap = Bitmap.createBitmap(snapshotWidth, snapshotHeight, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
             canvas.drawColor(context.getColor(R.color.masumi_background))
+            canvas.scale(0.5f, 0.5f)
             root.draw(canvas)
-            assertTrue(bitmap.getPixel(width / 2, height / 2) != Color.TRANSPARENT)
+            assertTrue(bitmap.getPixel(snapshotWidth / 2, snapshotHeight / 2) != Color.TRANSPARENT)
             snapshot = File(instrumentation.targetContext.cacheDir, SNAPSHOT_NAME)
             snapshot.outputStream().use { output -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, output) }
             bitmap.recycle()
 
-            val content = root.getChildAt(0)
-            val workflowOffset = height
-            assertTrue(content.measuredHeight > workflowOffset + height)
-            val workflowBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val pager = root.findViewById<ViewFlipper>(R.id.contentPager)
+            pager.displayedChild = 1
+            root.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+            )
+            root.layout(0, 0, width, height)
+            val workflowBitmap = Bitmap.createBitmap(snapshotWidth, snapshotHeight, Bitmap.Config.ARGB_8888)
             val workflowCanvas = Canvas(workflowBitmap)
             workflowCanvas.drawColor(context.getColor(R.color.masumi_background))
-            workflowCanvas.translate(0f, -workflowOffset.toFloat())
-            content.draw(workflowCanvas)
+            workflowCanvas.scale(0.5f, 0.5f)
+            root.draw(workflowCanvas)
             workflowSnapshot = File(instrumentation.targetContext.cacheDir, WORKFLOW_SNAPSHOT_NAME)
             workflowSnapshot.outputStream().use { output ->
                 workflowBitmap.compress(Bitmap.CompressFormat.PNG, 100, output)

@@ -15,13 +15,17 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.MotionEvent
 import android.view.View
+import android.view.animation.AnimationUtils
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.ViewFlipper
 import rs.masumi.app.cleanup.CleanupForegroundService
 import rs.masumi.app.cleanup.CleanupProgress
 import rs.masumi.app.cleanup.CleanupResumePolicy
@@ -102,6 +106,17 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 class MainActivity : Activity() {
+    private lateinit var contentPager: ViewFlipper
+    private lateinit var workspacePage: ScrollView
+    private lateinit var detailsPage: ScrollView
+    private lateinit var workspaceTabButton: Button
+    private lateinit var detailsTabButton: Button
+    private lateinit var processButton: Button
+    private lateinit var pipelineProgress: ProgressBar
+    private lateinit var pipelineProgressText: TextView
+    private lateinit var pipelineStatus: TextView
+    private lateinit var translationSettingsShortcutButton: Button
+    private lateinit var detailsShortcutButton: Button
     private lateinit var importButton: Button
     private lateinit var importProgress: ProgressBar
     private lateinit var statusText: TextView
@@ -173,6 +188,15 @@ class MainActivity : Activity() {
     private var typesettingActive = false
     private var qualityActive = false
     private var exportActive = false
+    private var automaticPipelineRequested = false
+        set(value) {
+            field = value
+            if (::translationSettingsStore.isInitialized) {
+                getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_AUTOMATIC_PIPELINE, value).apply()
+            }
+        }
+    private var pageTouchDownX = 0f
+    private var pageTouchDownY = 0f
     private var receiverRegistered = false
     private var ocrReceiverRegistered = false
     private var translationReceiverRegistered = false
@@ -213,6 +237,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(DetectionStatusBroadcast::parse) ?: return
             refreshDurableState(progress)
+            if (progress.status == DetectionJobStatus.CANCELLED || progress.status == DetectionJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -220,6 +248,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(OcrStatusBroadcast::parse) ?: return
             refreshOcrDurableState(progress)
+            if (progress.status == OcrJobStatus.CANCELLED || progress.status == OcrJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -227,6 +259,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TranslationStatusBroadcast::parse) ?: return
             refreshTranslationDurableState(progress)
+            if (progress.status == TranslationJobStatus.CANCELLED || progress.status == TranslationJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -234,6 +270,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(CleanupStatusBroadcast::parse) ?: return
             refreshCleanupDurableState(progress)
+            if (progress.status == CleanupJobStatus.CANCELLED || progress.status == CleanupJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -241,6 +281,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TypesettingStatusBroadcast::parse) ?: return
             refreshTypesettingDurableState(progress)
+            if (progress.status == TypesettingJobStatus.CANCELLED || progress.status == TypesettingJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -257,6 +301,14 @@ class MainActivity : Activity() {
             } else {
                 refreshQualityDurableState(progress)
             }
+            if (
+                progress.status == QualityJobStatus.CANCELLED ||
+                progress.status == QualityJobStatus.FAILED ||
+                progress.status == QualityJobStatus.BLOCKED
+            ) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -264,6 +316,7 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(ExportStatusBroadcast::parse) ?: return
             refreshExportDurableState(progress)
+            onPipelineStateChanged()
         }
     }
 
@@ -271,6 +324,17 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        contentPager = findViewById(R.id.contentPager)
+        workspacePage = findViewById(R.id.workspacePage)
+        detailsPage = findViewById(R.id.detailsPage)
+        workspaceTabButton = findViewById(R.id.workspaceTabButton)
+        detailsTabButton = findViewById(R.id.detailsTabButton)
+        processButton = findViewById(R.id.processButton)
+        pipelineProgress = findViewById(R.id.pipelineProgress)
+        pipelineProgressText = findViewById(R.id.pipelineProgressText)
+        pipelineStatus = findViewById(R.id.pipelineStatus)
+        translationSettingsShortcutButton = findViewById(R.id.translationSettingsShortcutButton)
+        detailsShortcutButton = findViewById(R.id.detailsShortcutButton)
         importButton = findViewById(R.id.importButton)
         importProgress = findViewById(R.id.importProgress)
         statusText = findViewById(R.id.statusText)
@@ -333,6 +397,8 @@ class MainActivity : Activity() {
         exportStatus = findViewById(R.id.exportStatus)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
+        automaticPipelineRequested = getPreferences(MODE_PRIVATE)
+            .getBoolean(PREF_AUTOMATIC_PIPELINE, false)
         val savedTranslationSettings = translationSettingsStore.loadSaved()
         savedTranslationSettings?.let { saved ->
             translationApiUrl.setText(saved.apiUrl)
@@ -340,7 +406,17 @@ class MainActivity : Activity() {
             translationModel.setText(saved.model)
         }
         setTranslationSettingsExpanded(false)
+        showPage(PAGE_WORKSPACE, animate = false)
+        bindHorizontalPageSwitch(workspacePage)
+        bindHorizontalPageSwitch(detailsPage)
 
+        workspaceTabButton.setOnClickListener { showPage(PAGE_WORKSPACE) }
+        detailsTabButton.setOnClickListener { showPage(PAGE_DETAILS) }
+        detailsShortcutButton.setOnClickListener { showPage(PAGE_DETAILS) }
+        translationSettingsShortcutButton.setOnClickListener {
+            showTranslationSettings()
+        }
+        processButton.setOnClickListener { startAutomaticPipeline() }
         importButton.setOnClickListener { openChapterFolder() }
         analysisButton.setOnClickListener { requestAnalysisStart() }
         cancelAnalysisButton.setOnClickListener { cancelAnalysis() }
@@ -372,6 +448,7 @@ class MainActivity : Activity() {
         cancelQualityButton.setOnClickListener { cancelQuality() }
         exportButton.setOnClickListener { openExportFolder() }
         cancelExportButton.setOnClickListener { cancelExport() }
+        syncWorkspaceState()
     }
 
     override fun onStart() {
@@ -388,6 +465,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshDurableState()
+        onPipelineStateChanged()
     }
 
     override fun onStop() {
@@ -429,6 +507,175 @@ class MainActivity : Activity() {
         clearDisplayedTypesettingBitmap()
         super.onDestroy()
     }
+
+    private fun showPage(page: Int, animate: Boolean = true) {
+        val target = page.coerceIn(PAGE_WORKSPACE, PAGE_DETAILS)
+        val current = contentPager.displayedChild
+        if (animate && current != target) {
+            val movingForward = target > current
+            contentPager.inAnimation = AnimationUtils.loadAnimation(
+                this,
+                if (movingForward) R.anim.masumi_slide_in_right else R.anim.masumi_slide_in_left,
+            )
+            contentPager.outAnimation = AnimationUtils.loadAnimation(
+                this,
+                if (movingForward) R.anim.masumi_slide_out_left else R.anim.masumi_slide_out_right,
+            )
+        } else if (!animate) {
+            contentPager.inAnimation = null
+            contentPager.outAnimation = null
+        }
+        contentPager.displayedChild = target
+        workspaceTabButton.isSelected = target == PAGE_WORKSPACE
+        detailsTabButton.isSelected = target == PAGE_DETAILS
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun bindHorizontalPageSwitch(page: View) {
+        val minimumSwipe = 72f * resources.displayMetrics.density
+        page.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    pageTouchDownX = event.x
+                    pageTouchDownY = event.y
+                }
+                MotionEvent.ACTION_UP -> {
+                    val horizontalDistance = event.x - pageTouchDownX
+                    val verticalDistance = event.y - pageTouchDownY
+                    if (
+                        kotlin.math.abs(horizontalDistance) >= minimumSwipe &&
+                        kotlin.math.abs(horizontalDistance) > kotlin.math.abs(verticalDistance) * 1.25f
+                    ) {
+                        showPage(if (horizontalDistance < 0f) PAGE_DETAILS else PAGE_WORKSPACE)
+                    }
+                }
+            }
+            false
+        }
+    }
+
+    private fun showTranslationSettings() {
+        showPage(PAGE_DETAILS)
+        setTranslationSettingsExpanded(true)
+        translationSettingsToggleButton.post {
+            translationSettingsToggleButton.requestFocus()
+        }
+    }
+
+    private fun startAutomaticPipeline() {
+        if (currentProject == null) {
+            openChapterFolder()
+            return
+        }
+        if (translationSettingsStore.loadProviderSettings() == null) {
+            automaticPipelineRequested = false
+            pipelineStatus.setText(R.string.process_waiting_settings)
+            showTranslationSettings()
+            return
+        }
+        if (currentQualityRun != null && currentQualityRun?.report?.status?.allowsExport() != true) {
+            automaticPipelineRequested = false
+            pipelineStatus.setText(R.string.process_quality_blocked)
+            showPage(PAGE_DETAILS)
+            return
+        }
+        automaticPipelineRequested = true
+        advanceAutomaticPipeline()
+    }
+
+    private fun advanceAutomaticPipeline() {
+        if (!automaticPipelineRequested) return
+        when (AutomaticPipelinePlanner.next(automaticPipelineSnapshot())) {
+            AutomaticPipelineAction.START_DETECTION -> requestAnalysisStart()
+            AutomaticPipelineAction.START_OCR -> requestOcrStart()
+            AutomaticPipelineAction.START_TRANSLATION -> requestTranslationStart()
+            AutomaticPipelineAction.START_CLEANUP -> requestCleanupStart()
+            AutomaticPipelineAction.START_TYPESETTING -> requestTypesettingStart()
+            AutomaticPipelineAction.START_QUALITY -> requestQualityStart()
+            AutomaticPipelineAction.CONFIGURE_TRANSLATION -> {
+                automaticPipelineRequested = false
+                showTranslationSettings()
+            }
+            AutomaticPipelineAction.REVIEW_QUALITY -> {
+                automaticPipelineRequested = false
+                showPage(PAGE_DETAILS)
+            }
+            AutomaticPipelineAction.COMPLETE,
+            AutomaticPipelineAction.WAIT_FOR_IMPORT,
+            -> automaticPipelineRequested = false
+            AutomaticPipelineAction.WAIT_FOR_ACTIVE_STAGE -> Unit
+        }
+        syncWorkspaceState()
+    }
+
+    private fun onPipelineStateChanged() {
+        syncWorkspaceState()
+        if (automaticPipelineRequested) {
+            contentPager.post { advanceAutomaticPipeline() }
+        }
+    }
+
+    private fun syncWorkspaceState() {
+        val snapshot = automaticPipelineSnapshot()
+        val completed = AutomaticPipelinePlanner.completedStages(snapshot)
+        val total = AutomaticPipelinePlanner.STAGE_COUNT
+        val hasProject = currentProject != null
+        val hasSettings = translationSettingsStore.loadProviderSettings() != null
+        val exportReady = currentQualityRun?.report?.status?.allowsExport() == true
+        val active = hasActiveWork()
+        val qualityBlocked = currentQualityRun != null && !exportReady
+
+        pipelineProgress.max = total
+        pipelineProgress.progress = completed
+        pipelineProgressText.text = getString(R.string.process_progress, completed, total)
+        pipelineStatus.text = when {
+            !hasProject -> getString(R.string.process_waiting_import)
+            !hasSettings -> getString(R.string.process_waiting_settings)
+            exportReady -> getString(R.string.process_ready_export)
+            qualityBlocked -> getString(R.string.process_quality_blocked)
+            active || automaticPipelineRequested -> getString(R.string.process_background)
+            completed == 0 -> getString(R.string.process_idle)
+            else -> getString(R.string.process_paused, completed, total)
+        }
+        processButton.setText(
+            when {
+                exportReady -> R.string.process_done
+                active || automaticPipelineRequested -> R.string.process_running
+                completed > 0 -> R.string.process_continue
+                else -> R.string.process_start
+            },
+        )
+        processButton.isEnabled = hasProject && hasSettings && !exportReady && !active && !qualityBlocked
+        translationSettingsShortcutButton.visibility = if (hasSettings) View.GONE else View.VISIBLE
+
+        val project = currentProject
+        if (
+            project != null &&
+            !importRunning &&
+            statusText.text.toString() == getString(R.string.import_status_idle)
+        ) {
+            statusText.text = getString(R.string.import_status_existing, project.manifest.pages.size)
+        }
+    }
+
+    private fun automaticPipelineSnapshot(): AutomaticPipelineSnapshot {
+        val qualityReady = currentQualityRun?.report?.status?.allowsExport() == true
+        return AutomaticPipelineSnapshot(
+            hasProject = currentProject != null,
+            hasTranslationSettings = translationSettingsStore.loadProviderSettings() != null,
+            hasActiveWork = hasActiveWork(),
+            detectionReady = currentRun != null,
+            ocrReady = currentOcrRun != null,
+            translationReady = currentTranslationRun != null,
+            cleanupReady = currentCleanupRun != null,
+            typesettingReady = currentTypesettingRun != null,
+            qualityReady = qualityReady,
+            qualityBlocked = currentQualityRun != null && !qualityReady,
+        )
+    }
+
+    private fun hasActiveWork(): Boolean = importRunning || analysisActive || ocrActive ||
+        translationActive || cleanupActive || typesettingActive || qualityActive || exportActive
 
     @Deprecated("Uses the platform result API to keep the foundation dependency-free")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -473,6 +720,7 @@ class MainActivity : Activity() {
             importRunning || analysisActive || ocrActive || translationActive || cleanupActive ||
             typesettingActive || qualityActive || exportActive
         ) return
+        automaticPipelineRequested = false
 
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -561,8 +809,12 @@ class MainActivity : Activity() {
                         }
                     },
                 )
+                if (result.isSuccess && translationSettingsStore.loadProviderSettings() != null) {
+                    automaticPipelineRequested = true
+                }
                 setImportRunning(false)
                 refreshDurableState()
+                onPipelineStateChanged()
             }
         }, IMPORT_THREAD_NAME).start()
     }
@@ -661,6 +913,10 @@ class MainActivity : Activity() {
             Toast.makeText(this, R.string.translation_settings_saved, Toast.LENGTH_SHORT).show()
             setTranslationSettingsExpanded(false)
             refreshTranslationDurableState()
+            if (currentProject != null && currentQualityRun?.report?.status?.allowsExport() != true) {
+                automaticPipelineRequested = true
+                onPipelineStateChanged()
+            }
         } else {
             Toast.makeText(this, R.string.translation_settings_invalid, Toast.LENGTH_SHORT).show()
         }
@@ -2251,6 +2507,7 @@ class MainActivity : Activity() {
         typesettingButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive &&
             !cleanupActive && !typesettingActive && currentCleanupRun != null
         importProgress.visibility = if (running) View.VISIBLE else View.GONE
+        syncWorkspaceState()
     }
 
     private fun setAnalysisActive(active: Boolean) {
@@ -2266,6 +2523,7 @@ class MainActivity : Activity() {
             !translationActive && !cleanupActive && !typesettingActive
         typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !active && !ocrActive &&
             !translationActive && !cleanupActive && !typesettingActive
+        syncWorkspaceState()
     }
 
     private fun setOcrActive(active: Boolean) {
@@ -2281,6 +2539,7 @@ class MainActivity : Activity() {
             !translationActive && !cleanupActive && !typesettingActive
         typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !active &&
             !translationActive && !cleanupActive && !typesettingActive
+        syncWorkspaceState()
     }
 
     private fun setTranslationActive(active: Boolean) {
@@ -2297,6 +2556,7 @@ class MainActivity : Activity() {
         saveTranslationSettingsButton.isEnabled = !active && !cleanupActive && !typesettingActive
         cancelTranslationButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelTranslationButton.isEnabled = active
+        syncWorkspaceState()
     }
 
     private fun setCleanupActive(active: Boolean) {
@@ -2313,6 +2573,7 @@ class MainActivity : Activity() {
         cancelCleanupButton.isEnabled = active
         typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive &&
             !ocrActive && !translationActive && !active && !typesettingActive
+        syncWorkspaceState()
     }
 
     private fun setTypesettingActive(active: Boolean) {
@@ -2337,6 +2598,7 @@ class MainActivity : Activity() {
         exportButton.isEnabled = currentQualityRun?.report?.status?.allowsExport() == true &&
             !importRunning && !analysisActive && !ocrActive && !translationActive && !cleanupActive &&
             !active && !qualityActive && !exportActive
+        syncWorkspaceState()
     }
 
     private fun setQualityActive(active: Boolean) {
@@ -2363,6 +2625,7 @@ class MainActivity : Activity() {
             !typesettingActive && !active && !exportActive
         cancelQualityButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelQualityButton.isEnabled = active
+        syncWorkspaceState()
     }
 
     private fun setExportActive(active: Boolean) {
@@ -2388,6 +2651,7 @@ class MainActivity : Activity() {
         saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive && !typesettingActive && !active
         cancelExportButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelExportButton.isEnabled = active
+        syncWorkspaceState()
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -2603,10 +2867,13 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        const val PAGE_WORKSPACE = 0
+        const val PAGE_DETAILS = 1
         const val REQUEST_OPEN_CHAPTER = 1001
         const val REQUEST_NOTIFICATION_PERMISSION = 1002
         const val REQUEST_EXPORT_FOLDER = 1003
         const val IMPORT_THREAD_NAME = "masumi-import"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
+        const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"
     }
 }

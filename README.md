@@ -37,6 +37,7 @@ The repository now contains the complete end-to-end Android application pipeline
 - Refuse to publish a run when every provider window failed, while still publishing useful partial results when only isolated items must retain their source.
 - Checkpoint translation windows and pages atomically, recover only an interrupted active window, and publish strict page results, final glossary, usage totals, and protection report as one versioned run.
 - Save provider credentials only in application-private settings, then start, cancel, monitor, or resume whole-chapter translation from the Android UI without rerunning OCR.
+- Use the import-first workspace to automatically advance detection, OCR, translation, cleanup, typesetting, and quality; switch sideways to processing details only for diagnostics or manual recovery, then preview and export from the main result card.
 - Clean only regions with accepted translations, using local background fill for bubble text and allocation-bounded boundary-propagated inpainting for translated free text.
 - Recycle decoded source pages as soon as the mutable cleanup copy exists and use Android's large image-processing heap to keep high-resolution chapters below the runtime memory ceiling.
 - Reject empty or unsafe glyph masks, preserve protected regions and complete failed pages, and record every cleanup outcome without manual approval.

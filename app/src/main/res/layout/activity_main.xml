@@ -1,141 +1,458 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/mainRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/masumi_background"
-    android:clipToPadding="false"
-    android:fillViewport="true">
+    android:fitsSystemWindows="true"
+    android:orientation="vertical">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:animateLayoutChanges="true"
         android:orientation="vertical"
         android:paddingStart="18dp"
-        android:paddingTop="20dp"
+        android:paddingTop="14dp"
         android:paddingEnd="18dp"
-        android:paddingBottom="48dp">
+        android:paddingBottom="10dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/masumi_hero_background"
-            android:orientation="vertical"
-            android:padding="24dp">
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/app_name"
+                android:textColor="@color/masumi_ink"
+                android:textSize="22sp" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:background="@drawable/masumi_chip_background"
                 android:text="@string/main_eyebrow"
-                android:textColor="@color/masumi_on_accent"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:accessibilityHeading="true"
-                android:layout_marginTop="18dp"
-                android:text="@string/main_title"
-                android:textAppearance="@style/TextAppearance.Masumi.Display" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="@string/main_description"
-                android:textAppearance="@style/TextAppearance.Masumi.Body" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:text="@string/workflow_path"
-                android:textColor="@color/masumi_accent_pressed"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/importButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                android:text="@string/import_chapter" />
-
-            <ProgressBar
-                android:id="@+id/importProgress"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center_horizontal"
-                android:layout_marginTop="16dp"
-                android:indeterminate="true"
-                android:indeterminateTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/statusText"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/import_status_idle"
-                android:textIsSelectable="true" />
+                android:textAppearance="@style/TextAppearance.Masumi.Label" />
         </LinearLayout>
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:accessibilityHeading="true"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="30dp"
-            android:text="@string/workflow_title"
-            android:textAppearance="@style/TextAppearance.Masumi.Title" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="6dp"
-            android:layout_marginEnd="4dp"
-            android:text="@string/workflow_description"
-            android:textAppearance="@style/TextAppearance.Masumi.Body" />
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:background="@drawable/masumi_stage_background"
-            android:orientation="vertical"
-            android:padding="20dp">
+            android:layout_marginTop="12dp"
+            android:background="@drawable/masumi_status_background"
+            android:orientation="horizontal"
+            android:padding="4dp">
+
+            <Button
+                android:id="@+id/workspaceTabButton"
+                style="@style/Widget.Masumi.Tab"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/workspace_tab" />
+
+            <Button
+                android:id="@+id/detailsTabButton"
+                style="@style/Widget.Masumi.Tab"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:text="@string/details_tab" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <ViewFlipper
+        android:id="@+id/contentPager"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:animateFirstView="false"
+        android:contentDescription="@string/swipe_hint">
+
+        <ScrollView
+            android:id="@+id/workspacePage"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:fillViewport="true">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/masumi_chip_background"
-                    android:importantForAccessibility="no"
-                    android:text="@string/stage_1"
-                    android:textColor="@color/masumi_on_accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
+                android:animateLayoutChanges="true"
+                android:orientation="vertical"
+                android:paddingStart="18dp"
+                android:paddingTop="8dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="44dp">
 
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:background="@drawable/masumi_hero_background"
+                    android:orientation="vertical"
+                    android:padding="24dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/masumi_chip_background"
+                        android:text="@string/main_eyebrow"
+                        android:textColor="@color/masumi_on_accent"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:accessibilityHeading="true"
+                        android:text="@string/main_title"
+                        android:textAppearance="@style/TextAppearance.Masumi.Display" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="@string/main_description"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginTop="28dp"
+                    android:accessibilityHeading="true"
+                    android:text="@string/workspace_title"
+                    android:textAppearance="@style/TextAppearance.Masumi.Title" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginTop="5dp"
+                    android:text="@string/workspace_description"
+                    android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/import_step_label"
+                        android:textAppearance="@style/TextAppearance.Masumi.Label" />
+
+                    <Button
+                        android:id="@+id/importButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:text="@string/import_chapter" />
+
+                    <ProgressBar
+                        android:id="@+id/importProgress"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_horizontal"
+                        android:layout_marginTop="12dp"
+                        android:indeterminate="true"
+                        android:indeterminateTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/statusText"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/import_status_idle"
+                        android:textIsSelectable="true" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/process_step_label"
+                        android:textAppearance="@style/TextAppearance.Masumi.Label" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:accessibilityHeading="true"
+                        android:text="@string/process_title"
+                        android:textAppearance="@style/TextAppearance.Masumi.Title" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/process_description"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <ProgressBar
+                        android:id="@+id/pipelineProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:max="6"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent" />
+
+                    <TextView
+                        android:id="@+id/pipelineProgressText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        android:text="@string/process_idle"
+                        android:textAppearance="@style/TextAppearance.Masumi.Label" />
+
+                    <TextView
+                        android:id="@+id/pipelineStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/process_waiting_import" />
+
+                    <Button
+                        android:id="@+id/processButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:enabled="false"
+                        android:text="@string/process_start" />
+
+                    <Button
+                        android:id="@+id/translationSettingsShortcutButton"
+                        style="@style/Widget.Masumi.Button.Secondary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/open_translation_settings" />
+
+                    <Button
+                        android:id="@+id/detailsShortcutButton"
+                        style="@style/Widget.Masumi.Button.Secondary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/open_processing_details" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/masumi_hero_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/result_step_label"
+                        android:textAppearance="@style/TextAppearance.Masumi.Label" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:accessibilityHeading="true"
+                        android:text="@string/result_title"
+                        android:textAppearance="@style/TextAppearance.Masumi.Title" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/result_description"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <ImageView
+                        android:id="@+id/typesettingPreviewImage"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:adjustViewBounds="true"
+                        android:contentDescription="@string/typesetting_preview_content_description"
+                        android:scaleType="fitCenter"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/typesettingPreservedPageMarker"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:textColor="@color/masumi_danger"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/typesettingPageIndicator"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:gravity="center"
+                        android:text="@string/typesetting_preview_empty"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/previousTypesettingPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/previous_page" />
+
+                        <Button
+                            android:id="@+id/nextTypesettingPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/next_page" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/typesettingDetailText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <Button
+                        android:id="@+id/exportButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:enabled="false"
+                        android:text="@string/start_export" />
+
+                    <Button
+                        android:id="@+id/cancelExportButton"
+                        style="@style/Widget.Masumi.Button.Danger"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/cancel_export"
+                        android:visibility="gone" />
+
+                    <ProgressBar
+                        android:id="@+id/exportProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:max="1"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/exportStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/export_status_no_typesetting" />
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+
+        <ScrollView
+            android:id="@+id/detailsPage"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:animateLayoutChanges="true"
+                android:orientation="vertical"
+                android:paddingStart="18dp"
+                android:paddingTop="8dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="44dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:accessibilityHeading="true"
+                    android:text="@string/details_title"
+                    android:textAppearance="@style/TextAppearance.Masumi.Display" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/details_description"
+                    android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="@string/workflow_path"
+                    android:textColor="@color/masumi_accent_pressed"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/masumi_chip_background"
+                        android:importantForAccessibility="no"
+                        android:text="@string/stage_1"
+                        android:textColor="@color/masumi_on_accent"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
                         android:accessibilityHeading="true"
                         android:text="@string/detection_section_title"
                         android:textAppearance="@style/TextAppearance.Masumi.Title" />
@@ -146,173 +463,148 @@
                         android:layout_marginTop="3dp"
                         android:text="@string/detection_section_description"
                         android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <Button
+                        android:id="@+id/analysisButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:enabled="false"
+                        android:text="@string/start_detection" />
+
+                    <Button
+                        android:id="@+id/cancelAnalysisButton"
+                        style="@style/Widget.Masumi.Button.Danger"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/cancel_detection"
+                        android:visibility="gone" />
+
+                    <ProgressBar
+                        android:id="@+id/detectionProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:indeterminate="false"
+                        android:max="1"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/detectionStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/detection_status_no_project" />
+
+                    <ImageView
+                        android:id="@+id/previewImage"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:adjustViewBounds="true"
+                        android:contentDescription="@string/preview_content_description"
+                        android:scaleType="fitCenter"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/preservedPageMarker"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:textColor="@color/masumi_danger"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/pageIndicator"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center"
+                        android:text="@string/preview_empty"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/previousPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/previous_page" />
+
+                        <Button
+                            android:id="@+id/nextPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/next_page" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/legendBubble"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/legend_bubble"
+                        android:textColor="@color/detection_bubble_blue"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/legendTextInBubble"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/legend_text_in_bubble"
+                        android:textColor="@color/detection_text_green"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/legendFreeText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/legend_free_text"
+                        android:textColor="@color/detection_free_text_orange"
+                        android:textStyle="bold" />
                 </LinearLayout>
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/analysisButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:enabled="false"
-                android:text="@string/start_detection" />
-
-            <Button
-                android:id="@+id/cancelAnalysisButton"
-                style="@style/Widget.Masumi.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/cancel_detection"
-                android:visibility="gone" />
-
-            <ProgressBar
-                android:id="@+id/detectionProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:indeterminate="false"
-                android:max="1"
-                android:progress="0"
-                android:progressTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/detectionStatus"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/detection_status_no_project" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:text="@string/preview_section_title"
-                android:textAppearance="@style/TextAppearance.Masumi.Label" />
-
-            <ImageView
-                android:id="@+id/previewImage"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:adjustViewBounds="true"
-                android:contentDescription="@string/preview_content_description"
-                android:scaleType="fitCenter"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/preservedPageMarker"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:textColor="@color/masumi_danger"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/pageIndicator"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:gravity="center"
-                android:text="@string/preview_empty"
-                android:textAppearance="@style/TextAppearance.Masumi.Body" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/previousPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/previous_page" />
-
-                <Button
-                    android:id="@+id/nextPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/next_page" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/legendBubble"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/legend_bubble"
-                android:textColor="@color/detection_bubble_blue"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/legendTextInBubble"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="5dp"
-                android:text="@string/legend_text_in_bubble"
-                android:textColor="@color/detection_text_green"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/legendFreeText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="5dp"
-                android:text="@string/legend_free_text"
-                android:textColor="@color/detection_free_text_orange"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/masumi_stage_background"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/masumi_chip_background"
-                    android:importantForAccessibility="no"
-                    android:text="@string/stage_2"
-                    android:textColor="@color/masumi_on_accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
 
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/masumi_chip_background"
+                        android:importantForAccessibility="no"
+                        android:text="@string/stage_2"
+                        android:textColor="@color/masumi_on_accent"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
                         android:accessibilityHeading="true"
                         android:text="@string/ocr_section_title"
                         android:textAppearance="@style/TextAppearance.Masumi.Title" />
@@ -323,146 +615,129 @@
                         android:layout_marginTop="3dp"
                         android:text="@string/ocr_section_description"
                         android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <Button
+                        android:id="@+id/ocrButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:enabled="false"
+                        android:text="@string/start_ocr" />
+
+                    <Button
+                        android:id="@+id/cancelOcrButton"
+                        style="@style/Widget.Masumi.Button.Danger"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/cancel_ocr"
+                        android:visibility="gone" />
+
+                    <ProgressBar
+                        android:id="@+id/ocrProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:max="1"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/ocrStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/ocr_status_no_detection" />
+
+                    <ImageView
+                        android:id="@+id/ocrPreviewImage"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:adjustViewBounds="true"
+                        android:contentDescription="@string/ocr_preview_content_description"
+                        android:scaleType="fitCenter"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/ocrPreservedPageMarker"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:textColor="@color/masumi_danger"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/ocrPageIndicator"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center"
+                        android:text="@string/ocr_preview_empty"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/previousOcrPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/previous_page" />
+
+                        <Button
+                            android:id="@+id/nextOcrPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/next_page" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/ocrDetailText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body"
+                        android:textIsSelectable="true" />
                 </LinearLayout>
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/ocrButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:enabled="false"
-                android:text="@string/start_ocr" />
-
-            <Button
-                android:id="@+id/cancelOcrButton"
-                style="@style/Widget.Masumi.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/cancel_ocr"
-                android:visibility="gone" />
-
-            <ProgressBar
-                android:id="@+id/ocrProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:indeterminate="false"
-                android:max="1"
-                android:progress="0"
-                android:progressTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/ocrStatus"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/ocr_status_no_detection" />
-
-            <ImageView
-                android:id="@+id/ocrPreviewImage"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:adjustViewBounds="true"
-                android:contentDescription="@string/ocr_preview_content_description"
-                android:scaleType="fitCenter"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/ocrPreservedPageMarker"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:textColor="@color/masumi_danger"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/ocrPageIndicator"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:gravity="center"
-                android:text="@string/ocr_preview_empty"
-                android:textAppearance="@style/TextAppearance.Masumi.Body" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/previousOcrPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/previous_page" />
-
-                <Button
-                    android:id="@+id/nextOcrPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/next_page" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/ocrDetailText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text=""
-                android:textAppearance="@style/TextAppearance.Masumi.Body"
-                android:textIsSelectable="true" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:animateLayoutChanges="true"
-            android:background="@drawable/masumi_stage_background"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/masumi_chip_background"
-                    android:importantForAccessibility="no"
-                    android:text="@string/stage_3"
-                    android:textColor="@color/masumi_on_accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
 
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:layout_marginTop="14dp"
+                    android:animateLayoutChanges="true"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/masumi_chip_background"
+                        android:importantForAccessibility="no"
+                        android:text="@string/stage_3"
+                        android:textColor="@color/masumi_on_accent"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
                         android:accessibilityHeading="true"
                         android:text="@string/translation_section_title"
                         android:textAppearance="@style/TextAppearance.Masumi.Title" />
@@ -473,143 +748,125 @@
                         android:layout_marginTop="3dp"
                         android:text="@string/translation_section_description"
                         android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <Button
+                        android:id="@+id/translationSettingsToggleButton"
+                        style="@style/Widget.Masumi.Button.Secondary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:text="@string/translation_settings_show" />
+
+                    <LinearLayout
+                        android:id="@+id/translationSettingsContainer"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/translation_settings_privacy"
+                            android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                        <EditText
+                            android:id="@+id/translationApiUrl"
+                            style="@style/Widget.Masumi.EditText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:hint="@string/translation_api_url_hint"
+                            android:importantForAutofill="no"
+                            android:inputType="textUri" />
+
+                        <EditText
+                            android:id="@+id/translationApiKey"
+                            style="@style/Widget.Masumi.EditText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:hint="@string/translation_api_key_hint"
+                            android:importantForAutofill="no"
+                            android:inputType="textPassword" />
+
+                        <EditText
+                            android:id="@+id/translationModel"
+                            style="@style/Widget.Masumi.EditText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:hint="@string/translation_model_hint"
+                            android:importantForAutofill="no"
+                            android:inputType="text" />
+
+                        <Button
+                            android:id="@+id/saveTranslationSettingsButton"
+                            style="@style/Widget.Masumi.Button.Primary"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:text="@string/save_translation_settings" />
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/translationButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:enabled="false"
+                        android:text="@string/start_translation" />
+
+                    <Button
+                        android:id="@+id/cancelTranslationButton"
+                        style="@style/Widget.Masumi.Button.Danger"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/cancel_translation"
+                        android:visibility="gone" />
+
+                    <ProgressBar
+                        android:id="@+id/translationProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:max="1"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/translationStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/translation_status_no_ocr" />
                 </LinearLayout>
-            </LinearLayout>
 
-            <Button
-                android:id="@+id/translationSettingsToggleButton"
-                style="@style/Widget.Masumi.Button.Secondary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:text="@string/translation_settings_show" />
-
-            <LinearLayout
-                android:id="@+id/translationSettingsContainer"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:visibility="gone">
-
-                <TextView
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="14dp"
-                    android:text="@string/translation_settings_privacy"
-                    android:textAppearance="@style/TextAppearance.Masumi.Body" />
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
 
-                <EditText
-                    android:id="@+id/translationApiUrl"
-                    style="@style/Widget.Masumi.EditText"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:hint="@string/translation_api_url_hint"
-                    android:inputType="textUri"
-                    android:maxLines="1" />
-
-                <EditText
-                    android:id="@+id/translationApiKey"
-                    style="@style/Widget.Masumi.EditText"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:hint="@string/translation_api_key_hint"
-                    android:inputType="textPassword"
-                    android:maxLines="1" />
-
-                <EditText
-                    android:id="@+id/translationModel"
-                    style="@style/Widget.Masumi.EditText"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:hint="@string/translation_model_hint"
-                    android:inputType="text"
-                    android:maxLines="1" />
-
-                <Button
-                    android:id="@+id/saveTranslationSettingsButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:text="@string/save_translation_settings" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/translationButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:enabled="false"
-                android:text="@string/start_translation" />
-
-            <Button
-                android:id="@+id/cancelTranslationButton"
-                style="@style/Widget.Masumi.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/cancel_translation"
-                android:visibility="gone" />
-
-            <ProgressBar
-                android:id="@+id/translationProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:indeterminate="false"
-                android:max="1"
-                android:progress="0"
-                android:progressTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/translationStatus"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/translation_status_no_ocr" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/masumi_stage_background"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/masumi_chip_background"
-                    android:importantForAccessibility="no"
-                    android:text="@string/stage_4"
-                    android:textColor="@color/masumi_on_accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/masumi_chip_background"
+                        android:importantForAccessibility="no"
+                        android:text="@string/stage_4"
+                        android:textColor="@color/masumi_on_accent"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
                         android:accessibilityHeading="true"
                         android:text="@string/cleanup_section_title"
                         android:textAppearance="@style/TextAppearance.Masumi.Title" />
@@ -620,144 +877,127 @@
                         android:layout_marginTop="3dp"
                         android:text="@string/cleanup_section_description"
                         android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <Button
+                        android:id="@+id/cleanupButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:enabled="false"
+                        android:text="@string/start_cleanup" />
+
+                    <Button
+                        android:id="@+id/cancelCleanupButton"
+                        style="@style/Widget.Masumi.Button.Danger"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/cancel_cleanup"
+                        android:visibility="gone" />
+
+                    <ProgressBar
+                        android:id="@+id/cleanupProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:max="1"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/cleanupStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/cleanup_status_no_translation" />
+
+                    <ImageView
+                        android:id="@+id/cleanupPreviewImage"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:adjustViewBounds="true"
+                        android:contentDescription="@string/cleanup_preview_content_description"
+                        android:scaleType="fitCenter"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/cleanupPreservedPageMarker"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:textColor="@color/masumi_danger"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/cleanupPageIndicator"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center"
+                        android:text="@string/cleanup_preview_empty"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/previousCleanupPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/previous_page" />
+
+                        <Button
+                            android:id="@+id/nextCleanupPageButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:enabled="false"
+                            android:text="@string/next_page" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/cleanupDetailText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
                 </LinearLayout>
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/cleanupButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:enabled="false"
-                android:text="@string/start_cleanup" />
-
-            <Button
-                android:id="@+id/cancelCleanupButton"
-                style="@style/Widget.Masumi.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/cancel_cleanup"
-                android:visibility="gone" />
-
-            <ProgressBar
-                android:id="@+id/cleanupProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:indeterminate="false"
-                android:max="1"
-                android:progress="0"
-                android:progressTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/cleanupStatus"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/cleanup_status_no_translation" />
-
-            <ImageView
-                android:id="@+id/cleanupPreviewImage"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:adjustViewBounds="true"
-                android:contentDescription="@string/cleanup_preview_content_description"
-                android:scaleType="fitCenter"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/cleanupPreservedPageMarker"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:textColor="@color/masumi_danger"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/cleanupPageIndicator"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:gravity="center"
-                android:text="@string/cleanup_preview_empty"
-                android:textAppearance="@style/TextAppearance.Masumi.Body" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/previousCleanupPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/previous_page" />
-
-                <Button
-                    android:id="@+id/nextCleanupPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/next_page" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/cleanupDetailText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text=""
-                android:textAppearance="@style/TextAppearance.Masumi.Body" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/masumi_stage_background"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/masumi_chip_background"
-                    android:importantForAccessibility="no"
-                    android:text="@string/stage_5"
-                    android:textColor="@color/masumi_on_accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
 
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/masumi_chip_background"
+                        android:importantForAccessibility="no"
+                        android:text="@string/stage_5"
+                        android:textColor="@color/masumi_on_accent"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
                         android:accessibilityHeading="true"
                         android:text="@string/typesetting_section_title"
                         android:textAppearance="@style/TextAppearance.Masumi.Title" />
@@ -768,144 +1008,66 @@
                         android:layout_marginTop="3dp"
                         android:text="@string/typesetting_section_description"
                         android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <Button
+                        android:id="@+id/typesettingButton"
+                        style="@style/Widget.Masumi.Button.Primary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:enabled="false"
+                        android:text="@string/start_typesetting" />
+
+                    <Button
+                        android:id="@+id/cancelTypesettingButton"
+                        style="@style/Widget.Masumi.Button.Danger"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/cancel_typesetting"
+                        android:visibility="gone" />
+
+                    <ProgressBar
+                        android:id="@+id/typesettingProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:max="1"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/typesettingStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/typesetting_status_no_cleanup" />
                 </LinearLayout>
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/typesettingButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:enabled="false"
-                android:text="@string/start_typesetting" />
-
-            <Button
-                android:id="@+id/cancelTypesettingButton"
-                style="@style/Widget.Masumi.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/cancel_typesetting"
-                android:visibility="gone" />
-
-            <ProgressBar
-                android:id="@+id/typesettingProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:indeterminate="false"
-                android:max="1"
-                android:progress="0"
-                android:progressTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/typesettingStatus"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/typesetting_status_no_cleanup" />
-
-            <ImageView
-                android:id="@+id/typesettingPreviewImage"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:adjustViewBounds="true"
-                android:contentDescription="@string/typesetting_preview_content_description"
-                android:scaleType="fitCenter"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/typesettingPreservedPageMarker"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:textColor="@color/masumi_danger"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/typesettingPageIndicator"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:gravity="center"
-                android:text="@string/typesetting_preview_empty"
-                android:textAppearance="@style/TextAppearance.Masumi.Body" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/previousTypesettingPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/previous_page" />
-
-                <Button
-                    android:id="@+id/nextTypesettingPageButton"
-                    style="@style/Widget.Masumi.Button.Secondary"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="@string/next_page" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/typesettingDetailText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text=""
-                android:textAppearance="@style/TextAppearance.Masumi.Body" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/masumi_stage_background"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/masumi_chip_background"
-                    android:importantForAccessibility="no"
-                    android:text="@string/stage_6"
-                    android:textColor="@color/masumi_on_accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
 
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/masumi_chip_background"
+                        android:importantForAccessibility="no"
+                        android:text="@string/stage_6"
+                        android:textColor="@color/masumi_on_accent"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
                         android:accessibilityHeading="true"
                         android:text="@string/quality_section_title"
                         android:textAppearance="@style/TextAppearance.Masumi.Title" />
@@ -916,132 +1078,45 @@
                         android:layout_marginTop="3dp"
                         android:text="@string/quality_section_description"
                         android:textAppearance="@style/TextAppearance.Masumi.Body" />
-                </LinearLayout>
-            </LinearLayout>
 
-            <Button
-                android:id="@+id/qualityButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:enabled="false"
-                android:text="@string/start_quality" />
-
-            <Button
-                android:id="@+id/cancelQualityButton"
-                style="@style/Widget.Masumi.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/cancel_quality"
-                android:visibility="gone" />
-
-            <ProgressBar
-                android:id="@+id/qualityProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:indeterminate="false"
-                android:max="1"
-                android:progress="0"
-                android:progressTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/qualityStatus"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/quality_status_no_typesetting" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/masumi_stage_background"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/masumi_chip_background"
-                    android:importantForAccessibility="no"
-                    android:text="@string/stage_7"
-                    android:textColor="@color/masumi_on_accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
+                    <Button
+                        android:id="@+id/qualityButton"
+                        style="@style/Widget.Masumi.Button.Primary"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:accessibilityHeading="true"
-                        android:text="@string/export_section_title"
-                        android:textAppearance="@style/TextAppearance.Masumi.Title" />
+                        android:layout_marginTop="16dp"
+                        android:enabled="false"
+                        android:text="@string/start_quality" />
 
-                    <TextView
+                    <Button
+                        android:id="@+id/cancelQualityButton"
+                        style="@style/Widget.Masumi.Button.Danger"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="3dp"
-                        android:text="@string/export_section_description"
-                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+                        android:layout_marginTop="8dp"
+                        android:text="@string/cancel_quality"
+                        android:visibility="gone" />
+
+                    <ProgressBar
+                        android:id="@+id/qualityProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:max="1"
+                        android:progress="0"
+                        android:progressTint="@color/masumi_accent"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/qualityStatus"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/quality_status_no_typesetting" />
                 </LinearLayout>
             </LinearLayout>
-
-            <Button
-                android:id="@+id/exportButton"
-                style="@style/Widget.Masumi.Button.Primary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:enabled="false"
-                android:text="@string/start_export" />
-
-            <Button
-                android:id="@+id/cancelExportButton"
-                style="@style/Widget.Masumi.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/cancel_export"
-                android:visibility="gone" />
-
-            <ProgressBar
-                android:id="@+id/exportProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:indeterminate="false"
-                android:max="1"
-                android:progress="0"
-                android:progressTint="@color/masumi_accent"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/exportStatus"
-                style="@style/Widget.Masumi.Status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/export_status_no_typesetting" />
-        </LinearLayout>
-    </LinearLayout>
-</ScrollView>
+        </ScrollView>
+    </ViewFlipper>
+</LinearLayout>
