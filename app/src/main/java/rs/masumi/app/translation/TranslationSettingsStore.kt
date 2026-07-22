@@ -9,8 +9,11 @@ data class SavedTranslationSettings(
     val model: String,
 )
 
-class TranslationSettingsStore(context: Context) {
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+class TranslationSettingsStore(
+    context: Context,
+    preferencesName: String = PREFERENCES_NAME,
+) {
+    private val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
 
     fun loadSaved(): SavedTranslationSettings? {
         val apiUrl = preferences.getString(KEY_API_URL, null)?.trim().orEmpty()

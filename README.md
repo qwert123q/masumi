@@ -79,7 +79,11 @@ adb shell am instrument -w \
   rs.masumi.app.dev.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-The commands replace-install both packages and do not uninstall application data.
+The commands replace-install both packages and do not uninstall application data. Do not use
+`connectedDebugAndroidTest` on a device that contains a working Masumi Dev installation: the
+Gradle-managed device-test lifecycle uninstalls `rs.masumi.app.dev` after the run and therefore
+deletes its private projects, downloaded models, and translation-provider settings. Use the
+direct instrumentation commands above instead.
 
 See [the foundation architecture](docs/architecture/foundation.md) for the project artifact contract and failure semantics.
 
