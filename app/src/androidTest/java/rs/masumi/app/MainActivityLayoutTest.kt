@@ -1,15 +1,23 @@
 package rs.masumi.app
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
 import android.view.View
+import android.view.View.MeasureSpec
 import android.widget.Button
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -23,12 +31,13 @@ class MainActivityLayoutTest {
         instrumentation.runOnMainSync {
             val context = ContextThemeWrapper(
                 instrumentation.targetContext,
-                android.R.style.Theme_Material_Light_NoActionBar,
+                R.style.Theme_Masumi,
             )
             root = LayoutInflater.from(context).inflate(R.layout.activity_main, null, false)
         }
 
         assertEquals("导入漫画文件夹", root.findViewById<Button>(R.id.importButton).text.toString())
+        assertEquals(true, root.findViewById<Button>(R.id.importButton).isEnabled)
         assertEquals("等待导入", root.findViewById<TextView>(R.id.statusText).text.toString())
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.importProgress).visibility)
     }
@@ -41,7 +50,7 @@ class MainActivityLayoutTest {
         instrumentation.runOnMainSync {
             val context = ContextThemeWrapper(
                 instrumentation.targetContext,
-                android.R.style.Theme_Material_Light_NoActionBar,
+                R.style.Theme_Masumi,
             )
             root = LayoutInflater.from(context).inflate(R.layout.activity_main, null, false)
         }
@@ -74,6 +83,8 @@ class MainActivityLayoutTest {
         assertEquals("", root.findViewById<TextView>(R.id.ocrDetailText).text.toString())
 
         assertEquals("保存翻译设置", root.findViewById<Button>(R.id.saveTranslationSettingsButton).text.toString())
+        assertEquals("展开翻译服务设置", root.findViewById<Button>(R.id.translationSettingsToggleButton).text.toString())
+        assertEquals(View.GONE, root.findViewById<LinearLayout>(R.id.translationSettingsContainer).visibility)
         assertEquals("开始整章翻译", root.findViewById<Button>(R.id.translationButton).text.toString())
         assertEquals(false, root.findViewById<Button>(R.id.translationButton).isEnabled)
         assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelTranslationButton).visibility)
@@ -107,5 +118,63 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelExportButton).visibility)
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.exportProgress).visibility)
         assertEquals("完成中文嵌字后可导出全部 PNG 页面", root.findViewById<TextView>(R.id.exportStatus).text.toString())
+    }
+
+    @Test
+    fun idleLayoutRendersAReadablePhoneViewport() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        lateinit var snapshot: File
+        lateinit var workflowSnapshot: File
+
+        instrumentation.runOnMainSync {
+            val context = ContextThemeWrapper(instrumentation.targetContext, R.style.Theme_Masumi)
+            val root = LayoutInflater.from(context).inflate(R.layout.activity_main, null, false) as ScrollView
+            val width = (PHONE_WIDTH_DP * context.resources.displayMetrics.density).toInt()
+            val height = (PHONE_HEIGHT_DP * context.resources.displayMetrics.density).toInt()
+            root.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+            )
+            root.layout(0, 0, width, height)
+
+            val minimumTouchTarget = (48 * context.resources.displayMetrics.density).toInt()
+            assertTrue(root.findViewById<Button>(R.id.importButton).measuredHeight >= minimumTouchTarget)
+            assertTrue(root.findViewById<Button>(R.id.analysisButton).measuredHeight >= minimumTouchTarget)
+
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.drawColor(context.getColor(R.color.masumi_background))
+            root.draw(canvas)
+            assertTrue(bitmap.getPixel(width / 2, height / 2) != Color.TRANSPARENT)
+            snapshot = File(instrumentation.targetContext.cacheDir, SNAPSHOT_NAME)
+            snapshot.outputStream().use { output -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, output) }
+            bitmap.recycle()
+
+            val content = root.getChildAt(0)
+            val workflowOffset = height
+            assertTrue(content.measuredHeight > workflowOffset + height)
+            val workflowBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val workflowCanvas = Canvas(workflowBitmap)
+            workflowCanvas.drawColor(context.getColor(R.color.masumi_background))
+            workflowCanvas.translate(0f, -workflowOffset.toFloat())
+            content.draw(workflowCanvas)
+            workflowSnapshot = File(instrumentation.targetContext.cacheDir, WORKFLOW_SNAPSHOT_NAME)
+            workflowSnapshot.outputStream().use { output ->
+                workflowBitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            }
+            workflowBitmap.recycle()
+        }
+
+        assertTrue(snapshot.isFile)
+        assertTrue(snapshot.length() > 10_000L)
+        assertTrue(workflowSnapshot.isFile)
+        assertTrue(workflowSnapshot.length() > 10_000L)
+    }
+
+    private companion object {
+        const val PHONE_WIDTH_DP = 393
+        const val PHONE_HEIGHT_DP = 852
+        const val SNAPSHOT_NAME = "masumi-main-layout.png"
+        const val WORKFLOW_SNAPSHOT_NAME = "masumi-main-workflow.png"
     }
 }

@@ -6,6 +6,7 @@ The repository now contains the complete end-to-end Android application pipeline
 
 ## Current capability
 
+- Guide users through the seven-stage localization workflow with a compact Android-native workspace, clear locked/available states, on-demand translation settings, and accessible 48 dp controls.
 - Select a folder through Android's system document picker.
 - Import direct-child JPEG, PNG, and WebP pages in natural filename order.
 - Stream each page once while computing its SHA-256 content identifier.

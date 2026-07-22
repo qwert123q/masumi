@@ -127,6 +127,8 @@ class MainActivity : Activity() {
     private lateinit var translationApiUrl: EditText
     private lateinit var translationApiKey: EditText
     private lateinit var translationModel: EditText
+    private lateinit var translationSettingsToggleButton: Button
+    private lateinit var translationSettingsContainer: View
     private lateinit var saveTranslationSettingsButton: Button
     private lateinit var translationButton: Button
     private lateinit var cancelTranslationButton: Button
@@ -294,6 +296,8 @@ class MainActivity : Activity() {
         translationApiUrl = findViewById(R.id.translationApiUrl)
         translationApiKey = findViewById(R.id.translationApiKey)
         translationModel = findViewById(R.id.translationModel)
+        translationSettingsToggleButton = findViewById(R.id.translationSettingsToggleButton)
+        translationSettingsContainer = findViewById(R.id.translationSettingsContainer)
         saveTranslationSettingsButton = findViewById(R.id.saveTranslationSettingsButton)
         translationButton = findViewById(R.id.translationButton)
         cancelTranslationButton = findViewById(R.id.cancelTranslationButton)
@@ -329,11 +333,13 @@ class MainActivity : Activity() {
         exportStatus = findViewById(R.id.exportStatus)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
-        translationSettingsStore.loadSaved()?.let { saved ->
+        val savedTranslationSettings = translationSettingsStore.loadSaved()
+        savedTranslationSettings?.let { saved ->
             translationApiUrl.setText(saved.apiUrl)
             translationApiKey.setText(saved.apiKey)
             translationModel.setText(saved.model)
         }
+        setTranslationSettingsExpanded(false)
 
         importButton.setOnClickListener { openChapterFolder() }
         analysisButton.setOnClickListener { requestAnalysisStart() }
@@ -344,6 +350,9 @@ class MainActivity : Activity() {
         cancelOcrButton.setOnClickListener { cancelOcr() }
         previousOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex - 1) }
         nextOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex + 1) }
+        translationSettingsToggleButton.setOnClickListener {
+            setTranslationSettingsExpanded(translationSettingsContainer.visibility != View.VISIBLE)
+        }
         saveTranslationSettingsButton.setOnClickListener { saveTranslationSettings() }
         translationButton.setOnClickListener { requestTranslationStart() }
         cancelTranslationButton.setOnClickListener { cancelTranslation() }
@@ -650,6 +659,7 @@ class MainActivity : Activity() {
         }
         if (result.isSuccess) {
             Toast.makeText(this, R.string.translation_settings_saved, Toast.LENGTH_SHORT).show()
+            setTranslationSettingsExpanded(false)
             refreshTranslationDurableState()
         } else {
             Toast.makeText(this, R.string.translation_settings_invalid, Toast.LENGTH_SHORT).show()
@@ -664,6 +674,7 @@ class MainActivity : Activity() {
         ) return
         if (translationSettingsStore.loadProviderSettings() == null) {
             translationStatus.setText(R.string.translation_status_settings_missing)
+            setTranslationSettingsExpanded(true)
             return
         }
         if (
@@ -699,6 +710,13 @@ class MainActivity : Activity() {
         startService(TranslationForegroundService.cancelIntent(this))
         cancelTranslationButton.isEnabled = false
         translationStatus.setText(R.string.translation_notification_cancelling)
+    }
+
+    private fun setTranslationSettingsExpanded(expanded: Boolean) {
+        translationSettingsContainer.visibility = if (expanded) View.VISIBLE else View.GONE
+        translationSettingsToggleButton.setText(
+            if (expanded) R.string.translation_settings_hide else R.string.translation_settings_show,
+        )
     }
 
     private fun requestCleanupStart() {

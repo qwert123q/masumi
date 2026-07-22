@@ -1,8 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Masumi</string>
+    <string name="main_eyebrow">本地漫画工作台</string>
     <string name="main_title">Masumi</string>
-    <string name="main_description">导入漫画章节，后台分析对白框、框内文字和游离文字，并逐页检查派生预览。源图始终保持不变。</string>
+    <string name="main_description">从日文原稿到简体中文成品，按步骤完成识别、翻译、清理、嵌字与验收。源图始终保持不变。</string>
+    <string name="workflow_title">完整工作流</string>
+    <string name="workflow_description">完成当前步骤后，下一步会自动解锁；不确定的文字区域会保留原画。</string>
+    <string name="workflow_path">导入  →  识别  →  翻译  →  清理  →  嵌字  →  验收  →  导出</string>
+    <string name="stage_1">01</string>
+    <string name="stage_2">02</string>
+    <string name="stage_3">03</string>
+    <string name="stage_4">04</string>
+    <string name="stage_5">05</string>
+    <string name="stage_6">06</string>
+    <string name="stage_7">07</string>
     <string name="battery_optimization_required">请允许 Masumi 不受电池优化限制，然后再次启动任务，避免锁屏后暂停。</string>
     <string name="battery_optimization_unavailable">无法打开电池优化设置，请在系统设置中允许 Masumi 后台无限制运行。</string>
     <string name="import_chapter">导入漫画文件夹</string>
@@ -25,6 +36,7 @@
     <string name="detection_notification_failed_unknown">页面分析意外中止，可重新启动恢复</string>
     <string name="cancel_detection">取消分析</string>
     <string name="detection_section_title">页面分析</string>
+    <string name="detection_section_description">定位对白框、框内文字与游离文字区域</string>
     <string name="start_detection">开始页面分析</string>
     <string name="detection_status_no_project">尚未导入漫画</string>
     <string name="detection_status_ready">项目已就绪，可以开始页面分析</string>
@@ -47,6 +59,7 @@
     <string name="legend_text_in_bubble">绿色：框内文字</string>
     <string name="legend_free_text">橙色：待分类游离文字</string>
     <string name="ocr_section_title">本地文字识别</string>
+    <string name="ocr_section_description">在设备上识别日文，低置信内容自动保留原画</string>
     <string name="start_ocr">开始本地 OCR</string>
     <string name="cancel_ocr">取消 OCR</string>
     <string name="ocr_status_no_detection">完成页面分析后可运行 OCR</string>
@@ -79,6 +92,10 @@
     <string name="ocr_notification_failed">OCR 失败：%1$s</string>
     <string name="ocr_notification_failed_unknown">OCR 意外中止，可重新启动恢复</string>
     <string name="translation_section_title">简体中文翻译</string>
+    <string name="translation_section_description">结合上下文翻译，异常区域保留原画</string>
+    <string name="translation_settings_show">展开翻译服务设置</string>
+    <string name="translation_settings_hide">收起翻译服务设置</string>
+    <string name="translation_settings_privacy">API Key 仅保存在本机应用私有空间</string>
     <string name="translation_api_url_hint">API 地址（OpenAI 兼容）</string>
     <string name="translation_api_key_hint">API Key</string>
     <string name="translation_model_hint">模型名称</string>
@@ -109,6 +126,7 @@
     <string name="translation_notification_settings_missing">翻译设置不完整</string>
     <string name="translation_notification_failed_unknown">翻译意外中止，可重新启动恢复</string>
     <string name="cleanup_section_title">原文清理</string>
+    <string name="cleanup_section_description">仅清除已有可靠译文对应的日文像素</string>
     <string name="start_cleanup">生成清理后页面</string>
     <string name="cancel_cleanup">取消清理</string>
     <string name="cleanup_status_no_translation">完成翻译后可清理已翻译区域的日文</string>
@@ -137,6 +155,7 @@
     <string name="cleanup_notification_failed">原文清理失败：%1$s</string>
     <string name="cleanup_notification_failed_unknown">原文清理意外中止，可重新启动恢复</string>
     <string name="typesetting_section_title">中文嵌字与排版</string>
+    <string name="typesetting_section_description">根据气泡形状自动选择横排或竖排</string>
     <string name="start_typesetting">生成嵌字成品页</string>
     <string name="cancel_typesetting">取消嵌字</string>
     <string name="typesetting_status_no_cleanup">完成原文清理后可生成中文嵌字页面</string>
@@ -165,6 +184,7 @@
     <string name="typesetting_notification_failed">中文嵌字失败：%1$s</string>
     <string name="typesetting_notification_failed_unknown">中文嵌字意外中止，可重新启动恢复</string>
     <string name="quality_section_title">自动成品验收</string>
+    <string name="quality_section_description">检查排版边界、像素改动与受保护区域</string>
     <string name="start_quality">自动检查全部成品页</string>
     <string name="cancel_quality">取消验收</string>
     <string name="quality_status_no_typesetting">完成中文嵌字后可自动验收成品</string>
@@ -191,6 +211,7 @@
     <string name="quality_notification_failed">自动验收失败：%1$s</string>
     <string name="quality_notification_failed_unknown">自动验收意外中止，可重新启动恢复</string>
     <string name="export_section_title">导出完整漫画</string>
+    <string name="export_section_description">将校验通过的页面导出为有序 PNG 文件</string>
     <string name="start_export">选择文件夹并导出全部页面</string>
     <string name="cancel_export">取消导出</string>
     <string name="export_status_no_typesetting">完成中文嵌字后可导出全部 PNG 页面</string>
