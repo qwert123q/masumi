@@ -34,7 +34,12 @@ class SafFolderExportDestination(
             throw ExportDestinationException("DESTINATION_INVALID")
         }
         parentUri = runCatching {
-            DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+            runCatching {
+                DocumentsContract.getDocumentId(treeUri)
+                treeUri
+            }.getOrElse {
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+            }
         }.getOrElse { throw ExportDestinationException("DESTINATION_INVALID") }
     }
 

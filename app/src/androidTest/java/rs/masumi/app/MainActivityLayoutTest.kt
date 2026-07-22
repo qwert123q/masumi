@@ -44,6 +44,12 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.importProgress).visibility)
         assertEquals(false, root.findViewById<Button>(R.id.processButton).isEnabled)
         assertEquals("开始自动处理", root.findViewById<Button>(R.id.processButton).text.toString())
+        assertEquals("选择漫画库文件夹", root.findViewById<Button>(R.id.chooseLibraryButton).text.toString())
+        assertEquals(
+            "尚未设置漫画库，导入前会先让你选择。",
+            root.findViewById<TextView>(R.id.libraryLocationText).text.toString(),
+        )
+        assertEquals(View.VISIBLE, root.findViewById<TextView>(R.id.libraryEmptyText).visibility)
         assertEquals(0, root.findViewById<HorizontalSwipeViewFlipper>(R.id.contentPager).displayedChild)
     }
 
@@ -147,7 +153,7 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.qualityProgress).visibility)
         assertEquals("完成中文嵌字后可自动验收成品", root.findViewById<TextView>(R.id.qualityStatus).text.toString())
 
-        assertEquals("选择文件夹并导出全部页面", root.findViewById<Button>(R.id.exportButton).text.toString())
+        assertEquals("保存全部页面到漫画库", root.findViewById<Button>(R.id.exportButton).text.toString())
         assertEquals(false, root.findViewById<Button>(R.id.exportButton).isEnabled)
         assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelExportButton).visibility)
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.exportProgress).visibility)

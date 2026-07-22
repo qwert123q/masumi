@@ -120,6 +120,59 @@
                         android:textAppearance="@style/TextAppearance.Masumi.Body" />
                 </LinearLayout>
 
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:background="@drawable/masumi_stage_background"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:accessibilityHeading="true"
+                        android:text="@string/library_title"
+                        android:textAppearance="@style/TextAppearance.Masumi.Title" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp"
+                        android:text="@string/library_description"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <TextView
+                        android:id="@+id/libraryLocationText"
+                        style="@style/Widget.Masumi.Status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/library_not_configured" />
+
+                    <Button
+                        android:id="@+id/chooseLibraryButton"
+                        style="@style/Widget.Masumi.Button.Secondary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="@string/library_choose" />
+
+                    <TextView
+                        android:id="@+id/libraryEmptyText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/library_empty"
+                        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+
+                    <LinearLayout
+                        android:id="@+id/libraryHistoryContainer"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical" />
+                </LinearLayout>
+
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

@@ -52,6 +52,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".library.MangaReaderActivity"
+            android:exported="false" />
         <service
             android:name=".detection.DetectionForegroundService"
             android:exported="false"

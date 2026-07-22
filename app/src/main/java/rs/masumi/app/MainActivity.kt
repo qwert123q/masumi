@@ -15,10 +15,12 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
@@ -47,6 +49,10 @@ import rs.masumi.app.quality.QualityForegroundService
 import rs.masumi.app.quality.QualityProgress
 import rs.masumi.app.quality.QualityResumePolicy
 import rs.masumi.app.quality.QualityStatusBroadcast
+import rs.masumi.app.library.MangaLibraryPreferences
+import rs.masumi.app.library.MangaLibraryProject
+import rs.masumi.app.library.MangaLibraryStore
+import rs.masumi.app.library.MangaReaderActivity
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
@@ -75,6 +81,7 @@ import rs.masumi.core.exporting.ExportArtifactStore
 import rs.masumi.core.exporting.ExportJobStatus
 import rs.masumi.core.exporting.ExportPageSource
 import rs.masumi.core.exporting.ExportPageState
+import rs.masumi.core.importer.ImportOutcome
 import rs.masumi.core.importer.ProjectImportException
 import rs.masumi.core.importer.ProjectImporter
 import rs.masumi.core.ocr.OcrArtifactStore
@@ -116,6 +123,10 @@ class MainActivity : Activity() {
     private lateinit var pipelineStatus: TextView
     private lateinit var translationSettingsShortcutButton: Button
     private lateinit var detailsShortcutButton: Button
+    private lateinit var libraryLocationText: TextView
+    private lateinit var chooseLibraryButton: Button
+    private lateinit var libraryEmptyText: TextView
+    private lateinit var libraryHistoryContainer: LinearLayout
     private lateinit var importButton: Button
     private lateinit var importProgress: ProgressBar
     private lateinit var statusText: TextView
@@ -179,6 +190,7 @@ class MainActivity : Activity() {
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private lateinit var catalog: ProjectCatalog
     private lateinit var translationSettingsStore: TranslationSettingsStore
+    private lateinit var libraryPreferences: MangaLibraryPreferences
 
     private var importRunning = false
     private var analysisActive = false
@@ -230,6 +242,9 @@ class MainActivity : Activity() {
     private var typesettingResumeRequestedThisProcess = false
     private var qualityResumeRequestedThisProcess = false
     private var exportResumeRequestedThisProcess = false
+    private var pendingChapterSelectionAfterLibrary = false
+    private var pendingExportAfterLibrary = false
+    private var libraryRefreshGeneration = 0
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -314,6 +329,7 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(ExportStatusBroadcast::parse) ?: return
             refreshExportDurableState(progress)
+            if (progress.status == ExportJobStatus.SUCCEEDED) refreshLibraryHistory()
             onPipelineStateChanged()
         }
     }
@@ -333,6 +349,10 @@ class MainActivity : Activity() {
         pipelineStatus = findViewById(R.id.pipelineStatus)
         translationSettingsShortcutButton = findViewById(R.id.translationSettingsShortcutButton)
         detailsShortcutButton = findViewById(R.id.detailsShortcutButton)
+        libraryLocationText = findViewById(R.id.libraryLocationText)
+        chooseLibraryButton = findViewById(R.id.chooseLibraryButton)
+        libraryEmptyText = findViewById(R.id.libraryEmptyText)
+        libraryHistoryContainer = findViewById(R.id.libraryHistoryContainer)
         importButton = findViewById(R.id.importButton)
         importProgress = findViewById(R.id.importProgress)
         statusText = findViewById(R.id.statusText)
@@ -395,6 +415,7 @@ class MainActivity : Activity() {
         exportStatus = findViewById(R.id.exportStatus)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
+        libraryPreferences = MangaLibraryPreferences(this)
         automaticPipelineRequested = getPreferences(MODE_PRIVATE)
             .getBoolean(PREF_AUTOMATIC_PIPELINE, false)
         val savedTranslationSettings = translationSettingsStore.loadSaved()
@@ -422,6 +443,7 @@ class MainActivity : Activity() {
         translationSettingsShortcutButton.setOnClickListener {
             showTranslationSettings()
         }
+        chooseLibraryButton.setOnClickListener { openLibraryFolder(continueToChapter = false) }
         processButton.setOnClickListener { startAutomaticPipeline() }
         importButton.setOnClickListener { openChapterFolder() }
         analysisButton.setOnClickListener { requestAnalysisStart() }
@@ -452,7 +474,7 @@ class MainActivity : Activity() {
         }
         qualityButton.setOnClickListener { requestQualityStart() }
         cancelQualityButton.setOnClickListener { cancelQuality() }
-        exportButton.setOnClickListener { openExportFolder() }
+        exportButton.setOnClickListener { saveCurrentProjectToLibrary() }
         cancelExportButton.setOnClickListener { cancelExport() }
         syncWorkspaceState()
     }
@@ -471,6 +493,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshDurableState()
+        refreshLibraryHistory()
         onPipelineStateChanged()
     }
 
@@ -607,9 +630,11 @@ class MainActivity : Activity() {
                 automaticPipelineRequested = false
                 showPage(PAGE_DETAILS)
             }
-            AutomaticPipelineAction.COMPLETE,
-            AutomaticPipelineAction.WAIT_FOR_IMPORT,
-            -> automaticPipelineRequested = false
+            AutomaticPipelineAction.COMPLETE -> {
+                automaticPipelineRequested = false
+                saveCurrentProjectToLibrary()
+            }
+            AutomaticPipelineAction.WAIT_FOR_IMPORT -> automaticPipelineRequested = false
             AutomaticPipelineAction.WAIT_FOR_ACTIVE_STAGE -> Unit
         }
         syncWorkspaceState()
@@ -665,6 +690,67 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun refreshLibraryHistory() {
+        val generation = ++libraryRefreshGeneration
+        val rootUri = libraryPreferences.rootUri()
+        if (rootUri == null) {
+            renderLibraryHistory(null, null, emptyList())
+            return
+        }
+        Thread({
+            val result = runCatching {
+                val store = MangaLibraryStore(contentResolver, rootUri)
+                store.rootDisplayName() to store.projects()
+            }
+            runOnUiThread {
+                if (generation != libraryRefreshGeneration) return@runOnUiThread
+                result.fold(
+                    onSuccess = { (name, projects) -> renderLibraryHistory(rootUri, name, projects) },
+                    onFailure = { renderLibraryHistory(rootUri, null, emptyList(), unavailable = true) },
+                )
+            }
+        }, LIBRARY_THREAD_NAME).start()
+    }
+
+    private fun renderLibraryHistory(
+        rootUri: Uri?,
+        displayName: String?,
+        projects: List<MangaLibraryProject>,
+        unavailable: Boolean = false,
+    ) {
+        libraryHistoryContainer.removeAllViews()
+        chooseLibraryButton.setText(
+            if (rootUri == null) R.string.library_choose else R.string.library_change,
+        )
+        libraryLocationText.text = when {
+            rootUri == null -> getString(R.string.library_not_configured)
+            unavailable -> getString(R.string.library_unavailable)
+            else -> getString(R.string.library_location, displayName ?: "Masumi", projects.size)
+        }
+        libraryEmptyText.visibility = if (projects.isEmpty() && !unavailable) View.VISIBLE else View.GONE
+        projects.forEach { project ->
+            val item = LayoutInflater.from(this).inflate(
+                R.layout.item_library_project,
+                libraryHistoryContainer,
+                false,
+            )
+            item.findViewById<TextView>(R.id.libraryProjectTitle).text = project.metadata.title
+            item.findViewById<TextView>(R.id.libraryProjectStatus).text = if (project.outputPageCount > 0) {
+                getString(R.string.library_project_status_ready, project.outputPageCount)
+            } else {
+                getString(R.string.library_project_status_processing)
+            }
+            item.findViewById<Button>(R.id.libraryProjectReadButton).apply {
+                isEnabled = project.outputPageCount > 0 && rootUri != null
+                setText(if (isEnabled) R.string.library_read else R.string.library_waiting)
+                setOnClickListener {
+                    rootUri?.let { startActivity(MangaReaderActivity.intent(this@MainActivity, it, project)) }
+                }
+            }
+            libraryHistoryContainer.addView(item)
+        }
+    }
+
     private fun automaticPipelineSnapshot(): AutomaticPipelineSnapshot {
         val qualityReady = currentQualityRun?.report?.status?.allowsExport() == true
         return AutomaticPipelineSnapshot(
@@ -687,9 +773,27 @@ class MainActivity : Activity() {
     @Deprecated("Uses the platform result API to keep the foundation dependency-free")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) {
+            if (requestCode == REQUEST_LIBRARY_FOLDER) {
+                pendingChapterSelectionAfterLibrary = false
+                pendingExportAfterLibrary = false
+            }
+            return
+        }
         val treeUri = data?.data ?: return
         when (requestCode) {
+            REQUEST_LIBRARY_FOLDER -> {
+                retainReadWritePermission(treeUri, data.flags)
+                libraryPreferences.saveRootUri(treeUri)
+                refreshLibraryHistory()
+                if (pendingChapterSelectionAfterLibrary) {
+                    pendingChapterSelectionAfterLibrary = false
+                    contentPager.post { openChapterFolder() }
+                } else if (pendingExportAfterLibrary) {
+                    pendingExportAfterLibrary = false
+                    contentPager.post { saveCurrentProjectToLibrary() }
+                }
+            }
             REQUEST_OPEN_CHAPTER -> {
                 retainReadPermission(treeUri, data.flags)
                 importChapter(treeUri)
@@ -729,11 +833,33 @@ class MainActivity : Activity() {
         ) return
         automaticPipelineRequested = false
 
+        if (libraryPreferences.rootUri() == null) {
+            openLibraryFolder(continueToChapter = true)
+            return
+        }
+
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
         startActivityForResult(intent, REQUEST_OPEN_CHAPTER)
+    }
+
+    private fun openLibraryFolder(
+        continueToChapter: Boolean,
+        continueToExport: Boolean = false,
+    ) {
+        if (hasActiveWork() || importRunning) return
+        require(!continueToChapter || !continueToExport)
+        pendingChapterSelectionAfterLibrary = continueToChapter
+        pendingExportAfterLibrary = continueToExport
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        }
+        startActivityForResult(intent, REQUEST_LIBRARY_FOLDER)
     }
 
     private fun retainReadPermission(treeUri: Uri, resultFlags: Int) {
@@ -756,6 +882,50 @@ class MainActivity : Activity() {
             addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
         }
         startActivityForResult(intent, REQUEST_EXPORT_FOLDER)
+    }
+
+    private fun saveCurrentProjectToLibrary() {
+        val project = currentProject ?: return
+        if (
+            currentQualityRun?.report?.status?.allowsExport() != true || importRunning || analysisActive ||
+            ocrActive || translationActive || cleanupActive || typesettingActive || qualityActive || exportActive
+        ) return
+        val rootUri = libraryPreferences.rootUri()
+        if (rootUri == null) {
+            Toast.makeText(this, R.string.library_export_missing, Toast.LENGTH_LONG).show()
+            openLibraryFolder(continueToChapter = false, continueToExport = true)
+            return
+        }
+        exportButton.isEnabled = false
+        exportStatus.setText(R.string.export_status_starting)
+        Thread({
+            val destination = runCatching {
+                val store = MangaLibraryStore(contentResolver, rootUri)
+                if (store.project(project.manifest.projectId) == null) {
+                    store.ensureProject(
+                        projectId = project.manifest.projectId,
+                        title = project.manifest.pages.firstOrNull()?.originalName
+                            ?.substringBeforeLast('.')
+                            .orEmpty()
+                            .ifBlank { "漫画项目 ${project.manifest.projectId.take(8)}" },
+                        createdAtEpochMillis = project.manifest.createdAtEpochMillis,
+                        sourceTreeUri = rootUri,
+                    )
+                }
+                store.ensureOutputDirectory(project.manifest.projectId)
+            }
+            runOnUiThread {
+                destination.fold(
+                    onSuccess = { uri ->
+                        if (currentProject?.manifest?.projectId == project.manifest.projectId) startExport(uri)
+                    },
+                    onFailure = {
+                        exportButton.isEnabled = true
+                        exportStatus.setText(R.string.library_unavailable)
+                    },
+                )
+            }
+        }, LIBRARY_THREAD_NAME).start()
     }
 
     private fun retainReadWritePermission(treeUri: Uri, resultFlags: Int) {
@@ -791,19 +961,36 @@ class MainActivity : Activity() {
 
         Thread({
             val result = runCatching {
+                val libraryRoot = requireNotNull(libraryPreferences.rootUri()) { "library root was not selected" }
+                val library = MangaLibraryStore(contentResolver, libraryRoot)
+                val title = library.documentDisplayName(treeUri).orEmpty().ifBlank { "未命名漫画" }
                 val sources = DocumentTreeReader(contentResolver).read(treeUri)
-                ProjectImporter(filesDir.toPath().resolve("workspace")).importProject(sources)
+                val outcome = ProjectImporter(filesDir.toPath().resolve("workspace")).importProject(sources)
+                val storedInLibrary = runCatching {
+                    library.ensureProject(
+                        projectId = outcome.manifest.projectId,
+                        title = title,
+                        createdAtEpochMillis = outcome.manifest.createdAtEpochMillis,
+                        sourceTreeUri = treeUri,
+                    )
+                }.isSuccess
+                ChapterImportResult(outcome, storedInLibrary)
             }
 
             runOnUiThread {
                 result.fold(
-                    onSuccess = { outcome ->
-                        statusText.text = getString(
-                            R.string.import_status_success,
-                            outcome.report.importedCount,
-                            outcome.report.byteCount,
-                            "projects/${outcome.manifest.projectId}/reports/${outcome.report.jobId}.json",
-                        )
+                    onSuccess = { imported ->
+                        val outcome = imported.outcome
+                        statusText.text = if (imported.storedInLibrary) {
+                            getString(
+                                R.string.import_status_success,
+                                outcome.report.importedCount,
+                                outcome.report.byteCount,
+                                "projects/${outcome.manifest.projectId}/reports/${outcome.report.jobId}.json",
+                            )
+                        } else {
+                            getString(R.string.library_project_create_failed)
+                        }
                     },
                     onFailure = { failure ->
                         statusText.text = when (failure) {
@@ -821,6 +1008,7 @@ class MainActivity : Activity() {
                 }
                 setImportRunning(false)
                 refreshDurableState()
+                refreshLibraryHistory()
                 onPipelineStateChanged()
             }
         }, IMPORT_THREAD_NAME).start()
@@ -2883,8 +3071,15 @@ class MainActivity : Activity() {
         const val REQUEST_OPEN_CHAPTER = 1001
         const val REQUEST_NOTIFICATION_PERMISSION = 1002
         const val REQUEST_EXPORT_FOLDER = 1003
+        const val REQUEST_LIBRARY_FOLDER = 1004
         const val IMPORT_THREAD_NAME = "masumi-import"
+        const val LIBRARY_THREAD_NAME = "masumi-library"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
         const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"
     }
+
+    private data class ChapterImportResult(
+        val outcome: ImportOutcome,
+        val storedInLibrary: Boolean,
+    )
 }

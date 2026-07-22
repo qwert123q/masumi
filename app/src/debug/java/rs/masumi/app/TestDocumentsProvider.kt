@@ -39,14 +39,27 @@ class TestDocumentsProvider : DocumentsProvider() {
             addDocumentRow("image-2")
             addDocumentRow("notes")
             addDocumentRow("nested")
-            synchronized(DYNAMIC_DOCUMENTS) {
-                DYNAMIC_DOCUMENTS.keys.sorted().forEach { addDocumentRow(it) }
-            }
+        }
+        synchronized(DYNAMIC_DOCUMENTS) {
+            DYNAMIC_DOCUMENTS.entries
+                .filter { it.value.parentId == parentDocumentId }
+                .sortedBy { it.key }
+                .forEach { addDocumentRow(it.key) }
         }
     }
 
     override fun isChildDocument(parentDocumentId: String, documentId: String): Boolean =
-        parentDocumentId == ROOT_ID && documentId != ROOT_ID && document(documentId) != null
+        when {
+            parentDocumentId == ROOT_ID && documentId in DOCUMENTS && documentId != ROOT_ID -> true
+            else -> synchronized(DYNAMIC_DOCUMENTS) {
+                var currentId = DYNAMIC_DOCUMENTS[documentId]?.parentId
+                while (currentId != null) {
+                    if (currentId == parentDocumentId) return@synchronized true
+                    currentId = DYNAMIC_DOCUMENTS[currentId]?.parentId
+                }
+                false
+            }
+        }
 
     override fun openDocument(
         documentId: String,
@@ -69,14 +82,14 @@ class TestDocumentsProvider : DocumentsProvider() {
     }
 
     override fun createDocument(parentDocumentId: String, mimeType: String, displayName: String): String {
-        require(parentDocumentId == ROOT_ID && displayName.isNotBlank())
+        require(document(parentDocumentId)?.mediaType == Document.MIME_TYPE_DIR && displayName.isNotBlank())
         val id = "created-${NEXT_ID.incrementAndGet()}"
         val file = File(requireNotNull(context).cacheDir, "provider-$id").apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf())
         }
         synchronized(DYNAMIC_DOCUMENTS) {
-            DYNAMIC_DOCUMENTS[id] = DynamicDocument(displayName, mimeType, file)
+            DYNAMIC_DOCUMENTS[id] = DynamicDocument(parentDocumentId, displayName, mimeType, file)
         }
         return id
     }
@@ -90,8 +103,16 @@ class TestDocumentsProvider : DocumentsProvider() {
     }
 
     override fun deleteDocument(documentId: String) {
-        val removed = synchronized(DYNAMIC_DOCUMENTS) { DYNAMIC_DOCUMENTS.remove(documentId) }
-        removed?.file?.delete()
+        val removed = synchronized(DYNAMIC_DOCUMENTS) {
+            val descendants = mutableSetOf(documentId)
+            while (true) {
+                val added = DYNAMIC_DOCUMENTS.filterValues { it.parentId in descendants }.keys - descendants
+                if (added.isEmpty()) break
+                descendants += added
+            }
+            descendants.mapNotNull(DYNAMIC_DOCUMENTS::remove)
+        }
+        removed.forEach { it.file.delete() }
     }
 
     private fun MatrixCursor.addDocumentRow(documentId: String) {
@@ -112,7 +133,12 @@ class TestDocumentsProvider : DocumentsProvider() {
                     mediaType = dynamic.mediaType,
                     byteLength = dynamic.file.length(),
                     flags = Document.FLAG_SUPPORTS_WRITE or Document.FLAG_SUPPORTS_DELETE or
-                        Document.FLAG_SUPPORTS_RENAME,
+                        Document.FLAG_SUPPORTS_RENAME or
+                        (if (dynamic.mediaType == Document.MIME_TYPE_DIR) {
+                            Document.FLAG_DIR_SUPPORTS_CREATE
+                        } else {
+                            0
+                        }),
                 )
             }
         }
@@ -125,6 +151,7 @@ class TestDocumentsProvider : DocumentsProvider() {
     )
 
     private data class DynamicDocument(
+        val parentId: String,
         val displayName: String,
         val mediaType: String,
         val file: File,

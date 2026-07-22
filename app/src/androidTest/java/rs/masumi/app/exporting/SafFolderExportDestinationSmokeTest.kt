@@ -50,6 +50,41 @@ class SafFolderExportDestinationSmokeTest {
         }
     }
 
+    @Test
+    fun publishesIntoAChildDirectoryOfTheGrantedTree() {
+        val context = InstrumentationRegistry.getInstrumentation().context
+        TestDocumentsProvider.clearDynamicDocuments(context)
+        val treeUri = DocumentsContract.buildTreeDocumentUri(
+            TestDocumentsProvider.AUTHORITY,
+            TestDocumentsProvider.ROOT_ID,
+        )
+        try {
+            val childDirectory = requireNotNull(
+                DocumentsContract.createDocument(
+                    context.contentResolver,
+                    DocumentsContract.buildDocumentUriUsingTree(
+                        treeUri,
+                        TestDocumentsProvider.ROOT_ID,
+                    ),
+                    DocumentsContract.Document.MIME_TYPE_DIR,
+                    "成品",
+                ),
+            )
+            val destination = SafFolderExportDestination(
+                context.contentResolver,
+                childDirectory.toString(),
+                "nested-folder-smoke",
+            )
+            val bytes = png(Color.WHITE)
+
+            destination.publish("0001.png", bytes, sha256(bytes)) { false }
+
+            assertTrue(destination.matches("0001.png", sha256(bytes), bytes.size.toLong()))
+        } finally {
+            TestDocumentsProvider.clearDynamicDocuments(context)
+        }
+    }
+
     private fun png(color: Int): ByteArray {
         val bitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }
         return try {
