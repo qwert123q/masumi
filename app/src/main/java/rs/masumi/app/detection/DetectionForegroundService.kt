@@ -11,6 +11,7 @@ import android.os.IBinder
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
+import rs.masumi.app.describePipelineError
 import rs.masumi.core.detection.DetectionJobStatus
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -144,7 +145,7 @@ class DetectionForegroundService : Service() {
             DetectionJobStatus.CANCELLED -> getString(R.string.detection_notification_cancelled)
             DetectionJobStatus.FAILED -> getString(
                 R.string.detection_notification_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
 
             else -> getString(

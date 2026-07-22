@@ -15,7 +15,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.MotionEvent
 import android.view.View
 import android.view.animation.AnimationUtils
 import android.widget.Button
@@ -25,7 +24,8 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import android.widget.ViewFlipper
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import rs.masumi.app.cleanup.CleanupForegroundService
 import rs.masumi.app.cleanup.CleanupProgress
 import rs.masumi.app.cleanup.CleanupResumePolicy
@@ -106,7 +106,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 class MainActivity : Activity() {
-    private lateinit var contentPager: ViewFlipper
+    private lateinit var contentPager: HorizontalSwipeViewFlipper
     private lateinit var workspacePage: ScrollView
     private lateinit var detailsPage: ScrollView
     private lateinit var workspaceTabButton: Button
@@ -177,6 +177,7 @@ class MainActivity : Activity() {
     private lateinit var cancelExportButton: Button
     private lateinit var exportProgress: ProgressBar
     private lateinit var exportStatus: TextView
+    private var backInvokedCallback: OnBackInvokedCallback? = null
     private lateinit var catalog: ProjectCatalog
     private lateinit var translationSettingsStore: TranslationSettingsStore
 
@@ -195,8 +196,6 @@ class MainActivity : Activity() {
                 getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_AUTOMATIC_PIPELINE, value).apply()
             }
         }
-    private var pageTouchDownX = 0f
-    private var pageTouchDownY = 0f
     private var receiverRegistered = false
     private var ocrReceiverRegistered = false
     private var translationReceiverRegistered = false
@@ -406,9 +405,20 @@ class MainActivity : Activity() {
             translationModel.setText(saved.model)
         }
         setTranslationSettingsExpanded(false)
-        showPage(PAGE_WORKSPACE, animate = false)
-        bindHorizontalPageSwitch(workspacePage)
-        bindHorizontalPageSwitch(detailsPage)
+        showPage(
+            PageNavigation.normalize(savedInstanceState?.getInt(STATE_SELECTED_PAGE)),
+            animate = false,
+        )
+        contentPager.onSwipe = { direction ->
+            showPage(
+                if (direction == HorizontalSwipeViewFlipper.Direction.LEFT) {
+                    PAGE_DETAILS
+                } else {
+                    PAGE_WORKSPACE
+                },
+            )
+        }
+        registerPredictiveBackCallback()
 
         workspaceTabButton.setOnClickListener { showPage(PAGE_WORKSPACE) }
         detailsTabButton.setOnClickListener { showPage(PAGE_DETAILS) }
@@ -501,6 +511,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        unregisterPredictiveBackCallback()
+        contentPager.onSwipe = null
         clearDisplayedBitmap()
         clearDisplayedOcrBitmap()
         clearDisplayedCleanupBitmap()
@@ -508,50 +520,68 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt(STATE_SELECTED_PAGE, contentPager.displayedChild)
+        super.onSaveInstanceState(outState)
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun onBackPressed() {
+        if (returnToWorkspaceIfNeeded()) return
+        super.onBackPressed()
+    }
+
+    private fun registerPredictiveBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val callback = OnBackInvokedCallback {
+            if (!returnToWorkspaceIfNeeded()) finishAfterTransition()
+        }
+        backInvokedCallback = callback
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            callback,
+        )
+    }
+
+    private fun unregisterPredictiveBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        backInvokedCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+        backInvokedCallback = null
+    }
+
+    private fun returnToWorkspaceIfNeeded(): Boolean {
+        val destination = PageNavigation.backDestination(contentPager.displayedChild) ?: return false
+        showPage(destination)
+        return true
+    }
+
     private fun showPage(page: Int, animate: Boolean = true) {
         val target = page.coerceIn(PAGE_WORKSPACE, PAGE_DETAILS)
         val current = contentPager.displayedChild
-        if (animate && current != target) {
-            val movingForward = target > current
-            contentPager.inAnimation = AnimationUtils.loadAnimation(
-                this,
-                if (movingForward) R.anim.masumi_slide_in_right else R.anim.masumi_slide_in_left,
-            )
-            contentPager.outAnimation = AnimationUtils.loadAnimation(
-                this,
-                if (movingForward) R.anim.masumi_slide_out_left else R.anim.masumi_slide_out_right,
-            )
-        } else if (!animate) {
+        if (!animate) {
             contentPager.inAnimation = null
             contentPager.outAnimation = null
         }
-        contentPager.displayedChild = target
+        if (current != target) {
+            repeat(contentPager.childCount) { index ->
+                contentPager.getChildAt(index).clearAnimation()
+            }
+            if (animate) {
+                val movingForward = target > current
+                contentPager.inAnimation = AnimationUtils.loadAnimation(
+                    this,
+                    if (movingForward) R.anim.masumi_slide_in_right else R.anim.masumi_slide_in_left,
+                )
+                contentPager.outAnimation = AnimationUtils.loadAnimation(
+                    this,
+                    if (movingForward) R.anim.masumi_slide_out_left else R.anim.masumi_slide_out_right,
+                )
+            }
+            contentPager.displayedChild = target
+        }
         workspaceTabButton.isSelected = target == PAGE_WORKSPACE
         detailsTabButton.isSelected = target == PAGE_DETAILS
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun bindHorizontalPageSwitch(page: View) {
-        val minimumSwipe = 72f * resources.displayMetrics.density
-        page.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    pageTouchDownX = event.x
-                    pageTouchDownY = event.y
-                }
-                MotionEvent.ACTION_UP -> {
-                    val horizontalDistance = event.x - pageTouchDownX
-                    val verticalDistance = event.y - pageTouchDownY
-                    if (
-                        kotlin.math.abs(horizontalDistance) >= minimumSwipe &&
-                        kotlin.math.abs(horizontalDistance) > kotlin.math.abs(verticalDistance) * 1.25f
-                    ) {
-                        showPage(if (horizontalDistance < 0f) PAGE_DETAILS else PAGE_WORKSPACE)
-                    }
-                }
-            }
-            false
-        }
     }
 
     private fun showTranslationSettings() {
@@ -1802,7 +1832,7 @@ class MainActivity : Activity() {
             DetectionJobStatus.CANCELLED -> getString(R.string.detection_status_cancelled)
             DetectionJobStatus.FAILED -> getString(
                 R.string.detection_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1839,7 +1869,7 @@ class MainActivity : Activity() {
             OcrJobStatus.CANCELLED -> getString(R.string.ocr_status_cancelled)
             OcrJobStatus.FAILED -> getString(
                 R.string.ocr_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1877,7 +1907,7 @@ class MainActivity : Activity() {
             TranslationJobStatus.CANCELLED -> getString(R.string.translation_status_cancelled)
             TranslationJobStatus.FAILED -> getString(
                 R.string.translation_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1913,7 +1943,7 @@ class MainActivity : Activity() {
             CleanupJobStatus.CANCELLED -> getString(R.string.cleanup_status_cancelled)
             CleanupJobStatus.FAILED -> getString(
                 R.string.cleanup_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1967,7 +1997,7 @@ class MainActivity : Activity() {
         cleanupPreservedPageMarker.text = when {
             entry.state == CleanupPageState.PRESERVED_SOURCE -> getString(
                 R.string.cleanup_preview_preserved_page,
-                entry.error?.code.orEmpty(),
+                describePipelineError(entry.error?.code),
             )
             bitmap == null -> getString(R.string.preview_unavailable)
             preservedCount > 0 -> getString(R.string.cleanup_preview_protected_regions, preservedCount)
@@ -2033,7 +2063,7 @@ class MainActivity : Activity() {
             TypesettingJobStatus.CANCELLED -> getString(R.string.typesetting_status_cancelled)
             TypesettingJobStatus.FAILED -> getString(
                 R.string.typesetting_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -2082,7 +2112,7 @@ class MainActivity : Activity() {
             QualityJobStatus.CANCELLED -> getString(R.string.quality_status_cancelled)
             QualityJobStatus.FAILED -> getString(
                 R.string.quality_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -2114,7 +2144,7 @@ class MainActivity : Activity() {
             ExportJobStatus.CANCELLED -> getString(R.string.export_status_cancelled)
             ExportJobStatus.FAILED -> getString(
                 R.string.export_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -2174,7 +2204,7 @@ class MainActivity : Activity() {
         typesettingPreservedPageMarker.text = when {
             entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> getString(
                 R.string.typesetting_preview_preserved_page,
-                entry.error?.code.orEmpty(),
+                describePipelineError(entry.error?.code),
             )
             bitmap == null -> getString(R.string.preview_unavailable)
             preservedCount > 0 -> getString(R.string.typesetting_preview_protected_regions, preservedCount)
@@ -2250,7 +2280,10 @@ class MainActivity : Activity() {
             View.GONE
         }
         preservedPageMarker.text = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
-            getString(R.string.preview_preserved_page, entry.error?.code.orEmpty())
+            getString(
+                R.string.preview_preserved_page,
+                describePipelineError(entry.error?.code),
+            )
         } else {
             getString(R.string.preview_unavailable)
         }
@@ -2324,7 +2357,7 @@ class MainActivity : Activity() {
         ocrPreservedPageMarker.text = when {
             entry.state == OcrPageState.PRESERVED_SOURCE -> getString(
                 R.string.ocr_preview_preserved_page,
-                entry.error?.code.orEmpty(),
+                describePipelineError(entry.error?.code),
             )
             bitmap == null -> getString(R.string.preview_unavailable)
             protectedCount > 0 -> getString(
@@ -2867,8 +2900,9 @@ class MainActivity : Activity() {
     }
 
     private companion object {
-        const val PAGE_WORKSPACE = 0
-        const val PAGE_DETAILS = 1
+        const val PAGE_WORKSPACE = PageNavigation.WORKSPACE
+        const val PAGE_DETAILS = PageNavigation.DETAILS
+        const val STATE_SELECTED_PAGE = "selected_page"
         const val REQUEST_OPEN_CHAPTER = 1001
         const val REQUEST_NOTIFICATION_PERMISSION = 1002
         const val REQUEST_EXPORT_FOLDER = 1003

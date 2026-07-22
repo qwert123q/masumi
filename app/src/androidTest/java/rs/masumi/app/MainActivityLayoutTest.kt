@@ -12,7 +12,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.ViewFlipper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -42,7 +41,7 @@ class MainActivityLayoutTest {
         assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.importProgress).visibility)
         assertEquals(false, root.findViewById<Button>(R.id.processButton).isEnabled)
         assertEquals("开始自动处理", root.findViewById<Button>(R.id.processButton).text.toString())
-        assertEquals(0, root.findViewById<ViewFlipper>(R.id.contentPager).displayedChild)
+        assertEquals(0, root.findViewById<HorizontalSwipeViewFlipper>(R.id.contentPager).displayedChild)
     }
 
     @Test
@@ -55,7 +54,7 @@ class MainActivityLayoutTest {
             root = LayoutInflater.from(context).inflate(R.layout.activity_main, null, false)
         }
 
-        val pager = root.findViewById<ViewFlipper>(R.id.contentPager)
+        val pager = root.findViewById<HorizontalSwipeViewFlipper>(R.id.contentPager)
         assertEquals(2, pager.childCount)
         assertEquals(0, pager.displayedChild)
         pager.displayedChild = 1
@@ -175,7 +174,7 @@ class MainActivityLayoutTest {
             snapshot.outputStream().use { output -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, output) }
             bitmap.recycle()
 
-            val pager = root.findViewById<ViewFlipper>(R.id.contentPager)
+            val pager = root.findViewById<HorizontalSwipeViewFlipper>(R.id.contentPager)
             pager.displayedChild = 1
             root.measure(
                 MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),

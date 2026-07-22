@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
+import rs.masumi.app.describePipelineError
 import rs.masumi.core.quality.QualityJobStatus
 
 class QualityForegroundService : Service() {
@@ -139,7 +140,7 @@ class QualityForegroundService : Service() {
             QualityJobStatus.CANCELLED -> getString(R.string.quality_notification_cancelled)
             QualityJobStatus.FAILED -> getString(
                 R.string.quality_notification_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
         val maximum = progress.totalPageCount.coerceAtLeast(1)

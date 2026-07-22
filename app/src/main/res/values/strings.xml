@@ -76,6 +76,14 @@
     <string name="detection_status_succeeded_preserved">页面分析完成：%1$d 页成功，%2$d 页保留原图</string>
     <string name="detection_status_cancelled">分析已取消，点击开始可从断点继续</string>
     <string name="detection_status_failed">分析失败：%1$s</string>
+    <string name="pipeline_error_model">模型文件不可用，请检查网络和设备剩余空间后重试（%1$s）</string>
+    <string name="pipeline_error_network">连接服务失败，请检查网络和服务地址后重试（%1$s）</string>
+    <string name="pipeline_error_credentials">服务拒绝了请求，请检查 API 密钥和模型名称（%1$s）</string>
+    <string name="pipeline_error_storage">无法读写项目文件，请检查设备空间和文件夹权限（%1$s）</string>
+    <string name="pipeline_error_source">原稿或中间文件已经变化，请重新导入后再试（%1$s）</string>
+    <string name="pipeline_error_device">本机处理引擎未能启动，请重试或重新打开应用（%1$s）</string>
+    <string name="pipeline_error_unknown">处理未完成，请重试；如仍失败，请在反馈中附上错误代码 %1$s</string>
+    <string name="pipeline_error_without_code">处理未完成，请重试</string>
     <string name="preview_section_title">页面预览</string>
     <string name="preview_content_description">页面检测标注预览</string>
     <string name="preview_empty">尚无分析结果</string>

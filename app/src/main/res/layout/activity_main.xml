@@ -65,7 +65,7 @@
         </LinearLayout>
     </LinearLayout>
 
-    <ViewFlipper
+    <rs.masumi.app.HorizontalSwipeViewFlipper
         android:id="@+id/contentPager"
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -1118,5 +1118,5 @@
                 </LinearLayout>
             </LinearLayout>
         </ScrollView>
-    </ViewFlipper>
+    </rs.masumi.app.HorizontalSwipeViewFlipper>
 </LinearLayout>

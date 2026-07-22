@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
+import rs.masumi.app.describePipelineError
 import rs.masumi.core.translation.TranslationJobStatus
 
 class TranslationForegroundService : Service() {
@@ -128,7 +129,7 @@ class TranslationForegroundService : Service() {
             TranslationJobStatus.CANCELLED -> getString(R.string.translation_notification_cancelled)
             TranslationJobStatus.FAILED -> getString(
                 R.string.translation_notification_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
         val maximum = progress.totalWindowCount.coerceAtLeast(1)

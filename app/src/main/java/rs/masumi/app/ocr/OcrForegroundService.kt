@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
+import rs.masumi.app.describePipelineError
 import rs.masumi.app.detection.PageBitmapDecoder
 import rs.masumi.core.ocr.OcrJobStatus
 
@@ -170,7 +171,7 @@ class OcrForegroundService : Service() {
             OcrJobStatus.CANCELLED -> getString(R.string.ocr_notification_cancelled)
             OcrJobStatus.FAILED -> getString(
                 R.string.ocr_notification_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
             OcrJobStatus.QUEUED -> getString(R.string.ocr_notification_starting)
         }

@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
+import rs.masumi.app.describePipelineError
 import rs.masumi.core.typesetting.TypesettingJobStatus
 
 class TypesettingForegroundService : Service() {
@@ -127,7 +128,7 @@ class TypesettingForegroundService : Service() {
             TypesettingJobStatus.CANCELLED -> getString(R.string.typesetting_notification_cancelled)
             TypesettingJobStatus.FAILED -> getString(
                 R.string.typesetting_notification_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
         val maximum = progress.totalPageCount.coerceAtLeast(1)
