@@ -76,7 +76,7 @@ Source integrity, model-package, checkpoint-write, and final-publication failure
 1. Strictly load the current published detection run and include its identity in every OCR cache key.
 2. Consolidate overlapping text proposals without proximity-only merging, retain their provenance, associate dialogue-box context, and assign deterministic reading order. Before inference, discard only low-confidence free-text candidates that are implausibly narrow for that page or touch a page edge; in-box text is never removed by this gate.
 3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify the canonical BF16 digests, deterministically normalize both files to F16 in unpublished staging, verify the installed digests, then validate the pair through the CPU native path before publication.
-4. Prefer one Vulkan engine for the job and retry initialization once with CPU when no usable accelerator can open. If the Vulkan device is lost during inference, contain the native exception, reopen CPU once, and retry the same crop. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
+4. Prefer one Vulkan engine for the job and retry initialization with CPU when no usable accelerator can open. If the Vulkan device is lost during inference, contain the native exception, finish the same crop on CPU, record a bounded cooldown marker, and probe Vulkan again after that cooldown instead of pinning the whole job to CPU. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
 5. Render padded, tight, and contextual crops at their actual dimensions. The projector selects a crop-adaptive workload within the pinned 64–2048 visual-token range. Record raw and normalized text, actual backend, token probabilities, dimensions, stop flags, timings, and sanitized errors for every attempt.
 6. Accept a result only when the quality policy has sufficient token probability or agreement between attempts. Low-confidence free-text proposals also require Han, Hiragana, or Katakana before agreement can accept them, so repeated digit/symbol hallucinations remain preserved. Confirmed empty regions are explicit; uncertain and failed regions retain the source artwork.
 7. Atomically checkpoint each terminal region before starting the next one, then commit page JSON and preview only after every candidate is terminal.
@@ -221,11 +221,13 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - In-box text is a mandatory dialogue candidate. Free text is explicitly classified as narration, sound effect, or other text before policy is applied.
 - The default policy translates dialogue and narration, preserves sound effects, and completes without manual approval.
 - Structured responses are reconciled by stable ID. A missing or invalid item preserves its source pixels without discarding valid sibling results.
-- Chapter windows are greedily filled under a versioned estimated-token budget, carry only bounded preceding context, and never truncate one oversized source item.
+- Chapter windows are greedily filled under a versioned estimated-token budget and a 12-item response bound, carry only bounded preceding context, and never truncate one oversized source item.
 - Prompt context IDs are read-only. Only IDs from the current item array may appear in a response, exactly once each.
 - Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
 - Android stores the endpoint, key, and model in application-private preferences and runs translation in its own foreground service with structured progress, cancellation, and automatic interrupted-job recovery.
-- Translation network calls use bounded OkHttp timeouts, retry only network/timeout/`408`/`429`/`5xx` failures, and expose no raw response or underlying exception text on failure.
+- Detection, OCR, translation, cleanup, typesetting, quality repair, and export foreground services hold a bounded partial wake lock only while work is active. Before new work, the UI requests Android's battery-optimization exemption because some OEM schedulers disable ordinary wake locks for non-exempt apps. Every service releases its lock on terminal completion, cancellation teardown, or destruction.
+- Translation network calls use bounded OkHttp timeouts, retry network/timeout/`408`/`429`/`5xx` and malformed structured responses within the configured attempt limit, and expose no raw response or underlying exception text on failure.
+- A chapter with no successful provider window fails without publication so a later retry cannot reuse a terminal all-source-preserved cache. Isolated provider or validation failures remain protected while valid sibling results publish normally.
 - Translation windows are checkpointed before their job journal advances; recovery discards only an unjournaled active window and retains all earlier committed results and token usage.
 - A published translation run atomically contains strict page artifacts, its final normalized glossary, dependency record, and terminal usage/protection report.
 
@@ -245,6 +247,7 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Per-page detection and OCR always use each source page and crop's real dimensions; a later webtoon reading mode cannot alter OCR geometry or cache identity.
 - Unknown OCR JSON fields are rejected, and all stored paths remain inside the project or model-package roots.
 - Cleanup changes pixels only inside an accepted glyph mask for a region with a valid translation; protected or unsafe regions retain source pixels.
+- Cleanup releases the decoded source immediately after creating its mutable page copy, bounds inpainting frontier allocations with primitive buffers, and runs with the Android large-image heap to avoid high-resolution page OOM fallback.
 - Cleanup identity includes the exact translation run and every policy field. A committed cleanup page has validated JSON and a digest-verified PNG.
 - Cleanup cancellation and process recovery discard only the active page and never repeat OCR or translation.
 - Typesetting changes only regions with accepted translation and committed cleanup. A layout below the readability floor preserves its cleaned pixels.

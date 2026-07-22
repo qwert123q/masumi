@@ -7,6 +7,8 @@ import java.security.MessageDigest
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import rs.masumi.app.detection.PageBitmapDecoder
 import rs.masumi.app.detection.PageDecodeException
 import rs.masumi.app.detection.ProjectCatalog
@@ -87,11 +89,29 @@ class OcrRunner(
     private val cropPolicy = OcrCropPolicy(dependencies.crop)
     private val qualityEvaluator = OcrQualityEvaluator(dependencies.quality)
     private val activeEngine = AtomicReference<OcrEngine?>()
+    private val activeStore = AtomicReference<OcrArtifactStore?>()
+    private val activeJob = AtomicReference<OcrJobRecord?>()
+    private val stateWriteLock = ReentrantLock()
     private val externallyCancelled = AtomicBoolean(false)
 
-    fun cancel() {
+    fun cancel(): OcrProgress? {
         externallyCancelled.set(true)
+        val progress = stateWriteLock.withLock {
+            val store = activeStore.get() ?: return@withLock null
+            val job = activeJob.get() ?: return@withLock null
+            if (!job.status.isNonTerminal()) return@withLock job.toProgress()
+            val requested = if (job.cancelRequested) {
+                job
+            } else {
+                OcrJobReducer.requestCancel(job, clock.millis())
+            }
+            val cancelled = OcrJobReducer.finishCancellation(requested, clock.millis())
+            store.writeJob(cancelled)
+            activeJob.set(cancelled)
+            cancelled.toProgress()
+        }
         activeEngine.get()?.cancel()
+        return progress
     }
 
     fun run(
@@ -128,6 +148,8 @@ class OcrRunner(
             pageKeys = pageKeys,
             runKey = runKey,
         )
+        activeStore.set(store)
+        activeJob.set(job)
         store.prepareRun(job)
         val pageArtifacts = mutableMapOf<String, rs.masumi.core.ocr.PageOcrArtifact>()
 
@@ -139,15 +161,26 @@ class OcrRunner(
             currentPageId: String? = null,
             currentRegionId: String? = null,
         ): OcrJobRecord {
-            store.writeJob(updated)
+            val persisted = stateWriteLock.withLock {
+                val current = activeJob.get()
+                if (current?.jobId == updated.jobId && !current.status.isNonTerminal() &&
+                    updated.status.isNonTerminal()
+                ) {
+                    current
+                } else {
+                    store.writeJob(updated)
+                    activeJob.set(updated)
+                    updated
+                }
+            }
             onProgress(
-                updated.toProgress(
+                persisted.toProgress(
                     currentOrder = currentOrder,
                     currentPageId = currentPageId,
                     currentRegionId = currentRegionId,
                 ),
             )
-            return updated
+            return persisted
         }
 
         try {
@@ -229,21 +262,34 @@ class OcrRunner(
                         candidate = candidate,
                         cancellation = ::isCancelled,
                     )
-                    val activePage = job.pages.first { it.pageId == sourcePage.pageId }
-                    val checkpointPath = store.commitRegion(job, activePage, artifact)
-                    job = persist(
+                    job = stateWriteLock.withLock {
+                        val current = activeJob.get()
+                            ?.takeIf { it.jobId == job.jobId }
+                            ?: throw OcrCancellationSignal()
+                        if (isCancelled() || !current.status.isNonTerminal()) {
+                            throw OcrCancellationSignal()
+                        }
+                        val activePage = current.pages.first { it.pageId == sourcePage.pageId }
+                        val checkpointPath = store.commitRegion(current, activePage, artifact)
                         OcrJobReducer.commitTerminalRegion(
-                            job = job,
+                            job = current,
                             pageId = sourcePage.pageId,
                             ocrRegionId = candidate.ocrRegionId,
                             state = artifact.state,
                             checkpointPath = checkpointPath,
                             error = artifact.error,
                             nowEpochMillis = clock.millis(),
+                        ).also { committed ->
+                            store.writeJob(committed)
+                            activeJob.set(committed)
+                        }
+                    }
+                    onProgress(
+                        job.toProgress(
+                            currentOrder = selectedPages.minOf(OcrJobPage::order),
+                            currentPageId = sourcePage.pageId,
+                            currentRegionId = candidate.ocrRegionId,
                         ),
-                        currentOrder = selectedPages.minOf(OcrJobPage::order),
-                        currentPageId = sourcePage.pageId,
-                        currentRegionId = candidate.ocrRegionId,
                     )
                     regionArtifacts += artifact
                 }
@@ -270,31 +316,57 @@ class OcrRunner(
                     decoded.bitmap.takeUnless(Bitmap::isRecycled)?.recycle()
                 }
                 val orders = selectedPages.map(OcrJobPage::order)
-                store.commitPage(job, pageArtifact, preview, orders)
-                job = persist(
+                job = stateWriteLock.withLock {
+                    val current = activeJob.get()
+                        ?.takeIf { it.jobId == job.jobId }
+                        ?: throw OcrCancellationSignal()
+                    if (isCancelled() || !current.status.isNonTerminal()) {
+                        throw OcrCancellationSignal()
+                    }
+                    store.commitPage(current, pageArtifact, preview, orders)
                     OcrJobReducer.commitPage(
-                        job = job,
+                        job = current,
                         pageId = sourcePage.pageId,
                         artifactPath = "pages/${sourcePage.pageId}/ocr.json",
                         previewPaths = orders.associateWith { order ->
                             "previews/${order.toString().padStart(4, '0')}.png"
                         },
                         nowEpochMillis = clock.millis(),
+                    ).also { committed ->
+                        store.writeJob(committed)
+                        activeJob.set(committed)
+                    }
+                }
+                onProgress(
+                    job.toProgress(
+                        currentOrder = orders.minOrNull(),
+                        currentPageId = sourcePage.pageId,
                     ),
-                    currentOrder = orders.minOrNull(),
-                    currentPageId = sourcePage.pageId,
                 )
                 pageArtifacts[sourcePage.pageId] = pageArtifact
             }
 
             val finishedAt = clock.millis()
-            val terminal = OcrJobReducer.finishSuccess(job, finishedAt)
-            val runArtifact = terminal.toRunArtifact(finishedAt)
-            val report = terminal.toReport(finishedAt, pageArtifacts)
-            val published = store.publishRun(terminal, runArtifact, report)
-            job = persist(terminal)
-            return OcrRunResult(job, runArtifact, report, published)
+            val result = stateWriteLock.withLock {
+                val current = activeJob.get()
+                    ?.takeIf { it.jobId == job.jobId }
+                    ?: throw OcrCancellationSignal()
+                if (isCancelled() || !current.status.isNonTerminal()) {
+                    throw OcrCancellationSignal()
+                }
+                val terminal = OcrJobReducer.finishSuccess(current, finishedAt)
+                val runArtifact = terminal.toRunArtifact(finishedAt)
+                val report = terminal.toReport(finishedAt, pageArtifacts)
+                val published = store.publishRun(terminal, runArtifact, report)
+                store.writeJob(terminal)
+                activeJob.set(terminal)
+                OcrRunResult(terminal, runArtifact, report, published)
+            }
+            job = result.job
+            onProgress(job.toProgress())
+            return result
         } catch (_: OcrCancellationSignal) {
+            activeJob.get()?.takeIf { it.jobId == job.jobId }?.let { job = it }
             activeEngine.get()?.cancel()
             if (job.status.isNonTerminal()) {
                 if (!job.cancelRequested) {
@@ -304,15 +376,23 @@ class OcrRunner(
             }
             return OcrRunResult(job)
         } catch (failure: Throwable) {
+            activeJob.get()?.takeIf { it.jobId == job.jobId }?.let { job = it }
+            if (!job.status.isNonTerminal()) {
+                onProgress(job.toProgress())
+                return OcrRunResult(job)
+            }
             val error = failure.toFatalError()
-            if (job.status.isNonTerminal()) {
-                job = OcrJobReducer.failJob(job, error, clock.millis())
+            job = OcrJobReducer.failJob(job, error, clock.millis())
+            stateWriteLock.withLock {
                 store.writeJob(job)
+                activeJob.set(job)
             }
             onProgress(job.toProgress(errorCode = error.code))
             return OcrRunResult(job)
         } finally {
             activeEngine.getAndSet(null)?.let { engine -> runCatching { engine.close() } }
+            activeStore.set(null)
+            activeJob.set(null)
         }
     }
 
@@ -355,6 +435,7 @@ class OcrRunner(
                     ),
                     cancellation,
                 )
+                if (cancellation()) throw OcrCancellationSignal()
                 result.toAttempt(
                     descriptor,
                     qualityEvaluator.normalize(result.rawText),
@@ -365,6 +446,11 @@ class OcrRunner(
                     (failure is OcrEngineException && failure.code == OcrEngineErrorCode.CANCELLED)
                 ) {
                     throw OcrCancellationSignal()
+                }
+                if (failure is OcrEngineException &&
+                    failure.code == OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE
+                ) {
+                    throw failure
                 }
                 failure.toFailedAttempt(descriptor, rendered, engine.executionBackend)
             }
@@ -475,12 +561,25 @@ class OcrRunner(
         pageKeys: Map<String, String>,
         runKey: String,
     ): OcrJobRecord {
-        val candidate = store.findResumableJob()?.takeIf { job ->
-            job.projectId == manifest.projectId &&
+        val candidate = store.findRecoveryCandidates()
+            .filter { job ->
+                job.projectId == manifest.projectId &&
                 job.detectionRunArtifactKey == detectionRun.artifact.runArtifactKey &&
                 job.runArtifactKey == runKey &&
                 job.dependencies == dependencies
-        }
+            }
+            .maxWithOrNull(
+                compareBy<OcrJobRecord> { job ->
+                    job.pages.distinctBy(OcrJobPage::pageId).sumOf { page ->
+                        page.regions.count { it.state.isTerminal() }
+                    }
+                }.thenBy { job ->
+                    job.pages.distinctBy(OcrJobPage::pageId).count { page ->
+                        page.state == OcrPageState.COMMITTED ||
+                            page.state == OcrPageState.PRESERVED_SOURCE
+                    }
+                }.thenBy(OcrJobRecord::updatedAtEpochMillis).thenBy(OcrJobRecord::jobId),
+            )
         if (candidate != null) {
             candidate.pages
                 .flatMap { page -> page.regions.filter { it.state == OcrRegionState.RUNNING }.map { page.pageId to it.ocrRegionId } }
@@ -493,7 +592,8 @@ class OcrRunner(
                 OcrJobStatus.LOADING_MODEL,
                 OcrJobStatus.RUNNING,
                 -> OcrJobReducer.recoverInterrupted(candidate, clock.millis())
-                else -> error("terminal OCR job cannot be resumed")
+                OcrJobStatus.FAILED -> OcrJobReducer.retryFailed(candidate, clock.millis())
+                else -> error("successful OCR job cannot be resumed")
             }
             store.writeJob(recovered)
             return recovered

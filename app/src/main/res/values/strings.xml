@@ -3,6 +3,8 @@
     <string name="app_name">Masumi</string>
     <string name="main_title">Masumi</string>
     <string name="main_description">导入漫画章节，后台分析对白框、框内文字和游离文字，并逐页检查派生预览。源图始终保持不变。</string>
+    <string name="battery_optimization_required">请允许 Masumi 不受电池优化限制，然后再次启动任务，避免锁屏后暂停。</string>
+    <string name="battery_optimization_unavailable">无法打开电池优化设置，请在系统设置中允许 Masumi 后台无限制运行。</string>
     <string name="import_chapter">导入漫画文件夹</string>
     <string name="import_status_idle">等待导入</string>
     <string name="import_status_running">正在导入并校验源图…</string>

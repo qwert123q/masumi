@@ -14,6 +14,7 @@ local.properties
 *.keystore
 *.log
 /.private/
+/local-testdata/
 
 models/
 local-models/

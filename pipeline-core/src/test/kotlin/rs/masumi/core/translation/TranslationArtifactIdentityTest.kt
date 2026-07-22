@@ -12,6 +12,7 @@ class TranslationArtifactIdentityTest {
         val changed = listOf(
             base.copy(provider = base.provider.copy(modelId = "other-model")),
             base.copy(batching = base.batching.copy(maximumContextItems = 12)),
+            base.copy(batching = base.batching.copy(maximumItemsPerWindow = 8)),
             base.copy(initialGlossarySha256 = "f".repeat(64)),
         ).map { TranslationArtifactIdentity.pageArtifactKey("b".repeat(64), it) }
 

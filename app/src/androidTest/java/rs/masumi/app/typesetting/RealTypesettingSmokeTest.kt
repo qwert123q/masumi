@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.nio.file.Files
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -87,6 +88,11 @@ class RealTypesettingSmokeTest {
                 val cleanedIds = cleaned.regions
                     .filter { it.state == CleanupRegionState.CLEANED }
                     .mapTo(mutableSetOf()) { it.ocrRegionId }
+                val cleanupPreservedByReason = cleaned.regions
+                    .filter { it.state != CleanupRegionState.CLEANED }
+                    .groupingBy { it.preserveReason?.name ?: "UNKNOWN" }
+                    .eachCount()
+                assertEquals(cleanupTargets.size, cleanedIds.size + cleanupPreservedByReason.values.sum())
                 assertTrue(cleanedIds.isNotEmpty())
                 val targets = recognized.mapNotNull { region ->
                     val candidate = region.candidate
@@ -109,6 +115,7 @@ class RealTypesettingSmokeTest {
                     println(
                         "REAL_TYPESETTING_METRICS translated=${translations.size} " +
                             "cleanupTargets=${cleanupTargets.size} cleaned=${cleanedIds.size} " +
+                            "cleanupPreserved=${cleanupPreservedByReason.values.sum()} " +
                             "typeset=${rendered.regions.count { it.state == TypesettingRegionState.TYPESET }} " +
                             "preserved=${rendered.regions.count { it.state != TypesettingRegionState.TYPESET }}",
                     )
@@ -122,6 +129,11 @@ class RealTypesettingSmokeTest {
                         .put("translated", translations.size)
                         .put("cleanupTargets", cleanupTargets.size)
                         .put("cleaned", cleanedIds.size)
+                        .put("cleanupPreserved", cleanupPreservedByReason.values.sum())
+                        .put(
+                            "cleanupPreservedByReason",
+                            JSONObject(cleanupPreservedByReason.mapValues { it.value as Any }),
+                        )
                         .put("typeset", rendered.regions.count { it.state == TypesettingRegionState.TYPESET })
                         .put(
                             "preservedByReason",

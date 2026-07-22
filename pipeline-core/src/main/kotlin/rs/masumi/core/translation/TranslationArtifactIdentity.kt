@@ -65,6 +65,7 @@ object TranslationArtifactIdentity {
         add("responseSchemaRevision" to value.prompt.responseSchemaRevision)
         add("batchingRevision" to value.batching.revision)
         add("maximumEstimatedInputTokens" to value.batching.maximumEstimatedInputTokens.toString())
+        add("maximumItemsPerWindow" to value.batching.maximumItemsPerWindow.toString())
         add("maximumContextItems" to value.batching.maximumContextItems.toString())
         add("providerProtocol" to value.provider.protocolRevision)
         add("modelId" to value.provider.modelId)

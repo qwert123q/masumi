@@ -21,5 +21,5 @@
 
 ## Task 4: Verify
 
-- [ ] Run core, Android build, lint, and instrumentation suites.
-- [ ] Verify no private corpus, device, environment, or credential data is added.
+- [x] Run core, Android build, lint, and instrumentation suites.
+- [x] Verify no private corpus, device, environment, or credential data is added.

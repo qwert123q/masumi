@@ -168,7 +168,7 @@ class OpenAiCompatibleTranslationProvider(
 
         private fun malformed(attempt: Int) = TranslationProviderException(
             code = TranslationProviderErrorCode.MALFORMED_RESPONSE,
-            retryable = false,
+            retryable = true,
             attemptCount = attempt,
         )
 

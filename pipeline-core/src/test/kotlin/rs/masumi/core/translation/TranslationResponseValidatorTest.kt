@@ -43,19 +43,21 @@ class TranslationResponseValidatorTest {
                 TranslationResultState.PRESERVED_SOURCE,
                 TranslationResultState.PRESERVED_SOURCE,
                 TranslationResultState.PRESERVED_SOURCE,
-                TranslationResultState.PRESERVED_SOURCE,
+                TranslationResultState.TRANSLATED,
                 TranslationResultState.PRESERVED_SOURCE,
             ),
             result.items.map { it.state },
         )
         assertEquals("对白", result.items[0].translatedText)
         assertEquals("旁白", result.items[1].translatedText)
+        assertEquals("错误", result.items[5].translatedText)
+        assertEquals(TranslationRole.DIALOGUE, result.items[5].role)
         assertEquals(
             listOf(
                 TranslationPreserveReason.POLICY_PRESERVED,
                 TranslationPreserveReason.MISSING_RESPONSE,
                 TranslationPreserveReason.DUPLICATE_RESPONSE,
-                TranslationPreserveReason.INVALID_ROLE,
+                null,
                 TranslationPreserveReason.BLANK_TRANSLATION,
             ),
             result.items.drop(2).map { it.preserveReason },

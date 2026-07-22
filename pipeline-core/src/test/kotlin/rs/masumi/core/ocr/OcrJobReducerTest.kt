@@ -85,6 +85,25 @@ class OcrJobReducerTest {
     }
 
     @Test
+    fun `retrying a failed job resets only its active region`() {
+        val failed = OcrJobReducer.failJob(
+            runningJob(
+                OcrRegionCheckpoint(REGION_ONE, OcrRegionState.RECOGNIZED, 1, "pages/$PAGE_ID/regions/$REGION_ONE.json"),
+                OcrRegionCheckpoint(REGION_TWO, OcrRegionState.RUNNING, 1),
+            ),
+            OcrError("ENGINE_ACCELERATOR_UNAVAILABLE", "accelerator unavailable"),
+            10L,
+        )
+
+        val retried = OcrJobReducer.retryFailed(failed, 11L)
+
+        assertEquals(OcrJobStatus.QUEUED, retried.status)
+        assertEquals(null, retried.error)
+        assertEquals(OcrRegionState.RECOGNIZED, retried.pages.single().regions[0].state)
+        assertEquals(OcrRegionState.PENDING, retried.pages.single().regions[1].state)
+    }
+
+    @Test
     fun `illegal transition leaves original job unchanged`() {
         val queued = job()
 

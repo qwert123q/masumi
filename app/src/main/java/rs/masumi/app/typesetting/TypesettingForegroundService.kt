@@ -14,11 +14,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
+import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.core.typesetting.TypesettingJobStatus
 
 class TypesettingForegroundService : Service() {
     private lateinit var executor: ExecutorService
     private lateinit var notificationManager: NotificationManager
+    private lateinit var taskWakeLock: ForegroundTaskWakeLock
     private val cancellation = AtomicBoolean(false)
 
     @Volatile private var runner: TypesettingRunner? = null
@@ -27,6 +29,7 @@ class TypesettingForegroundService : Service() {
         super.onCreate()
         executor = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
         notificationManager = getSystemService(NotificationManager::class.java)
+        taskWakeLock = ForegroundTaskWakeLock(this, "typesetting")
         notificationManager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
@@ -73,12 +76,14 @@ class TypesettingForegroundService : Service() {
         cancellation.set(true)
         runner?.cancel()
         executor.shutdownNow()
+        taskWakeLock.release()
         super.onDestroy()
     }
 
     private fun startTypesetting(projectId: String): Boolean {
         if (!ACTIVE_PROJECT.compareAndSet(null, projectId)) return false
         cancellation.set(false)
+        taskWakeLock.acquire()
         executor.execute {
             try {
                 val active = TypesettingRunner(filesDir.toPath().resolve("workspace"))
@@ -94,6 +99,7 @@ class TypesettingForegroundService : Service() {
             } finally {
                 runner = null
                 ACTIVE_PROJECT.compareAndSet(projectId, null)
+                taskWakeLock.release()
                 stopForeground(STOP_FOREGROUND_DETACH)
                 stopSelf()
             }

@@ -13,6 +13,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -500,6 +502,7 @@ class MainActivity : Activity() {
     }
 
     private fun startExport(treeUri: Uri) {
+        if (!ensureUnrestrictedBackgroundExecution()) return
         val projectId = currentProject?.manifest?.projectId ?: return
         exportResumeRequestedThisProcess = true
         startForegroundService(ExportForegroundService.startIntent(this, projectId, treeUri))
@@ -575,6 +578,7 @@ class MainActivity : Activity() {
     }
 
     private fun startAnalysis(projectId: String) {
+        if (!ensureUnrestrictedBackgroundExecution()) return
         val intent = DetectionForegroundService.startIntent(this, projectId)
         resumeRequestedThisProcess = true
         startForegroundService(intent)
@@ -616,6 +620,7 @@ class MainActivity : Activity() {
     }
 
     private fun startOcr(projectId: String) {
+        if (!ensureUnrestrictedBackgroundExecution()) return
         ocrResumeRequestedThisProcess = true
         startForegroundService(OcrForegroundService.startIntent(this, projectId))
         setOcrActive(true)
@@ -678,6 +683,7 @@ class MainActivity : Activity() {
     }
 
     private fun startTranslation(projectId: String) {
+        if (!ensureUnrestrictedBackgroundExecution()) return
         translationResumeRequestedThisProcess = true
         startForegroundService(TranslationForegroundService.startIntent(this, projectId))
         setTranslationActive(true)
@@ -718,6 +724,7 @@ class MainActivity : Activity() {
     }
 
     private fun startCleanup(projectId: String) {
+        if (!ensureUnrestrictedBackgroundExecution()) return
         cleanupResumeRequestedThisProcess = true
         startForegroundService(CleanupForegroundService.startIntent(this, projectId))
         setCleanupActive(true)
@@ -758,6 +765,7 @@ class MainActivity : Activity() {
     }
 
     private fun startTypesetting(projectId: String) {
+        if (!ensureUnrestrictedBackgroundExecution()) return
         typesettingResumeRequestedThisProcess = true
         startForegroundService(TypesettingForegroundService.startIntent(this, projectId))
         setTypesettingActive(true)
@@ -798,6 +806,7 @@ class MainActivity : Activity() {
     }
 
     private fun startQuality(projectId: String) {
+        if (!ensureUnrestrictedBackgroundExecution()) return
         qualityResumeRequestedThisProcess = true
         startForegroundService(QualityForegroundService.startIntent(this, projectId))
         setQualityActive(true)
@@ -813,6 +822,27 @@ class MainActivity : Activity() {
         startService(QualityForegroundService.cancelIntent(this))
         cancelQualityButton.isEnabled = false
         qualityStatus.setText(R.string.quality_notification_cancelling)
+    }
+
+    private fun ensureUnrestrictedBackgroundExecution(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        val powerManager = getSystemService(PowerManager::class.java)
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) return true
+        val packageUri = Uri.parse("package:$packageName")
+        val requested = runCatching {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(packageUri),
+            )
+        }.recoverCatching {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }.isSuccess
+        Toast.makeText(
+            this,
+            if (requested) R.string.battery_optimization_required else R.string.battery_optimization_unavailable,
+            Toast.LENGTH_LONG,
+        ).show()
+        return false
     }
 
     private fun refreshDurableState(progressOverride: DetectionProgress? = null) {

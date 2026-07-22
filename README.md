@@ -2,7 +2,7 @@
 
 Masumi is an Android-first manga localization project. The current foundation imports a chapter, detects comic text regions, recognizes them locally with PaddleOCR-VL, translates trusted Japanese text into Simplified Chinese, removes accepted source glyphs, lays out translated text, automatically validates the flattened pages, and exports a complete folder of PNG pages without modifying the source files.
 
-This repository is at an early stage. Conservative source-text cleanup, Chinese typesetting, deterministic visual validation, and direct folder export are implemented. Targeted automatic repair remains active work.
+The repository now contains the complete end-to-end Android application pipeline. Conservative source-text cleanup, Chinese typesetting, deterministic visual validation, one-pass quality-directed typesetting repair, and direct folder export are implemented; uncertain regions are deliberately preserved instead of guessed or destructively rewritten.
 
 ## Current capability
 
@@ -13,6 +13,8 @@ This repository is at an early stage. Conservative source-text cleanup, Chinese 
 - Publish a project only after every artifact has been staged successfully.
 - Acquire and verify a revision- and SHA-pinned comic detector package.
 - Run the local ONNX detector sequentially in a foreground service.
+- Keep every long-running pipeline foreground service CPU-awake with a bounded partial wake lock, request Android's battery-optimization exemption before new work, and release the lock on completion, cancellation, or service teardown.
+- The debug variant exposes explicit pipeline-service entry points only to the ADB shell through the system `android.permission.DUMP` permission; release services remain non-exported.
 - Retain all 300 model queries while separating dialogue-box candidates, in-box text, and protected free text.
 - Retry one failed page with a rebuilt detector session, then preserve its source and continue.
 - Resume cancelled or interrupted work from committed page checkpoints.
@@ -22,18 +24,20 @@ This repository is at an early stage. Conservative source-text cleanup, Chinese 
 - Consolidate overlapping text proposals, associate bubble context, and assign deterministic Japanese reading order.
 - Skip only low-confidence free-text candidates whose page-relative geometry is clearly implausible, while never filtering in-box dialogue at this gate.
 - Normalize canonical BF16 GGUF files to verified F16 during installation, then run sequential arm64 Vulkan-preferred OCR with deterministic CPU fallback.
-- Contain Vulkan inference device loss at the native boundary, reopen the CPU backend once, and retry the same crop without discarding committed OCR checkpoints.
+- Contain Vulkan inference device loss at the native boundary, finish the same crop on CPU, and automatically probe Vulkan again after a bounded cooldown without discarding committed OCR checkpoints.
 - Size the vision workload from each real crop's width, height, and aspect ratio within a quality-tested adaptive range instead of forcing one fixed text-box size.
 - Try up to three deterministic crops per region and accept text only when token quality or cross-crop agreement passes the recorded policy.
 - Preserve the original artwork for uncertain or failed regions instead of publishing guessed text.
 - Checkpoint every terminal region, resume cancellation or interruption without repeating committed regions, and publish strict OCR JSON, previews, and a report atomically.
 - Review recognized text and protected regions page by page inside the app; no manual approval is required to finish a run.
 - Convert terminal OCR pages into strict, ordered translation inputs while carrying uncertain regions forward as protected artwork.
-- Build deterministic chapter translation windows with bounded context and validate structured model output by stable region ID so one malformed item cannot discard valid siblings.
-- Call OpenAI-compatible translation endpoints through a cancellable OkHttp boundary with bounded transient retries, strict structured-response parsing, safe errors, and token-usage capture.
+- Build deterministic chapter translation windows with bounded context and at most 12 requested items, then validate structured model output by stable region ID so one malformed item cannot discard valid siblings.
+- Call OpenAI-compatible translation endpoints through a cancellable OkHttp boundary with bounded network, timeout, transient HTTP, and malformed-response retries, strict structured parsing, safe errors, and token-usage capture.
+- Refuse to publish a run when every provider window failed, while still publishing useful partial results when only isolated items must retain their source.
 - Checkpoint translation windows and pages atomically, recover only an interrupted active window, and publish strict page results, final glossary, usage totals, and protection report as one versioned run.
 - Save provider credentials only in application-private settings, then start, cancel, monitor, or resume whole-chapter translation from the Android UI without rerunning OCR.
-- Clean only regions with accepted translations, using local background fill for bubble text and boundary-propagated inpainting for translated free text.
+- Clean only regions with accepted translations, using local background fill for bubble text and allocation-bounded boundary-propagated inpainting for translated free text.
+- Recycle decoded source pages as soon as the mutable cleanup copy exists and use Android's large image-processing heap to keep high-resolution chapters below the runtime memory ceiling.
 - Reject empty or unsafe glyph masks, preserve protected regions and complete failed pages, and record every cleanup outcome without manual approval.
 - Checkpoint cleaned PNG and strict page JSON together, resume interrupted pages without repeating OCR or translation, and preview the published result in the app.
 - Lay out accepted Simplified Chinese translations in centered horizontal lines or right-to-left vertical columns according to each region's real geometry.

@@ -52,7 +52,7 @@ enum class TranslationPreserveReason {
 
 @Serializable
 data class TranslationPolicy(
-    val revision: String = "ja-zh-hans-v1",
+    val revision: String = "ja-zh-hans-v2",
     val sourceLanguage: TranslationSourceLanguage = TranslationSourceLanguage.JA,
     val targetLanguage: TranslationTargetLanguage = TranslationTargetLanguage.ZH_HANS,
     val translateDialogue: Boolean = true,
@@ -117,12 +117,14 @@ data class TranslationModelResponse(
 
 @Serializable
 data class TranslationBatchingConfig(
-    val revision: String = "chapter-window-v1",
+    val revision: String = "chapter-window-v3",
     val maximumEstimatedInputTokens: Int = 6_000,
+    val maximumItemsPerWindow: Int = 12,
     val maximumContextItems: Int = 24,
 ) {
     init {
         require(maximumEstimatedInputTokens > 0) { "maximumEstimatedInputTokens must be positive" }
+        require(maximumItemsPerWindow > 0) { "maximumItemsPerWindow must be positive" }
         require(maximumContextItems >= 0) { "maximumContextItems must not be negative" }
     }
 }

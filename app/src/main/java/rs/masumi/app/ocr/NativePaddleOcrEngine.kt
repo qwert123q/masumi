@@ -2,6 +2,8 @@ package rs.masumi.app.ocr
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.FileTime
+import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -204,11 +206,7 @@ class NativePaddleOcrEngine internal constructor(
             if (!Files.isRegularFile(projector)) {
                 throw OcrEngineException(OcrEngineErrorCode.PROJECTOR_LOAD)
             }
-            return try {
-                openSingle(model, projector, bridge, OcrExecutionBackend.VULKAN)
-            } catch (_: OcrEngineException) {
-                openSingle(model, projector, bridge, OcrExecutionBackend.CPU)
-            }
+            return openSingle(model, projector, bridge, OcrExecutionBackend.VULKAN)
         }
 
         internal fun openCpuOnlyWithBridge(
@@ -277,11 +275,11 @@ internal class ResilientPaddleOcrEngine private constructor(
     private val model: Path,
     private val projector: Path,
     private val bridge: NativeOcrBridge,
-    private val backendHealth: OcrBackendHealthStore?,
     initialEngine: NativePaddleOcrEngine,
 ) : OcrEngine {
     private val closed = AtomicBoolean(false)
     private val fallbackLock = ReentrantLock()
+    private var acceleratorRestartUsed = false
 
     @Volatile
     private var activeEngine = initialEngine
@@ -304,10 +302,11 @@ internal class ResilientPaddleOcrEngine private constructor(
             }
             fallbackLock.withLock {
                 if (closed.get() || cancellation()) throw OcrEngineException(OcrEngineErrorCode.CANCELLED)
+                if (acceleratorRestartUsed) throw failure
                 if (activeEngine === selected) {
-                    backendHealth?.markVulkanUnavailable()
+                    acceleratorRestartUsed = true
                     selected.close()
-                    activeEngine = NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
+                    activeEngine = NativePaddleOcrEngine.openWithBridge(model, projector, bridge)
                 }
                 activeEngine.recognize(request, cancellation)
             }
@@ -328,43 +327,166 @@ internal class ResilientPaddleOcrEngine private constructor(
         fun open(
             model: Path,
             projector: Path,
-            backendHealth: OcrBackendHealthStore? = null,
         ): OcrEngine = openWithBridge(
             model,
             projector,
             JniNativeOcrBridge,
-            backendHealth,
         )
 
         internal fun openWithBridge(
             model: Path,
             projector: Path,
             bridge: NativeOcrBridge,
-            backendHealth: OcrBackendHealthStore? = null,
         ): OcrEngine = ResilientPaddleOcrEngine(
             model = model,
             projector = projector,
             bridge = bridge,
-            backendHealth = backendHealth,
-            initialEngine = if (backendHealth?.shouldPreferVulkan() != false) {
-                NativePaddleOcrEngine.openWithBridge(model, projector, bridge)
-            } else {
-                NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
-            },
+            initialEngine = NativePaddleOcrEngine.openWithBridge(model, projector, bridge),
         )
+    }
+}
+
+internal object DevicePaddleOcrEngine {
+    fun open(
+        model: Path,
+        projector: Path,
+        backendHealth: OcrBackendHealthStore,
+    ): OcrEngine = openWithBridge(model, projector, JniNativeOcrBridge, backendHealth)
+
+    internal fun openWithBridge(
+        model: Path,
+        projector: Path,
+        bridge: NativeOcrBridge,
+        backendHealth: OcrBackendHealthStore,
+    ): OcrEngine {
+        val initialEngine = if (backendHealth.shouldPreferVulkan()) {
+            try {
+                ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge)
+            } catch (failure: OcrEngineException) {
+                if (failure.code != OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE) throw failure
+                backendHealth.markVulkanUnavailable()
+                NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
+            }
+        } else {
+            NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
+        }
+        return BackendHealthRecordingEngine(
+            model = model,
+            projector = projector,
+            bridge = bridge,
+            backendHealth = backendHealth,
+            initialEngine = initialEngine,
+        )
+    }
+}
+
+private class BackendHealthRecordingEngine(
+    private val model: Path,
+    private val projector: Path,
+    private val bridge: NativeOcrBridge,
+    private val backendHealth: OcrBackendHealthStore,
+    initialEngine: OcrEngine,
+) : OcrEngine {
+    private val closed = AtomicBoolean(false)
+    private val fallbackLock = ReentrantLock()
+
+    @Volatile
+    private var activeEngine = initialEngine
+
+    override val executionBackend: OcrExecutionBackend
+        get() = activeEngine.executionBackend
+
+    override fun recognize(
+        request: OcrEngineRequest,
+        cancellation: () -> Boolean,
+    ): OcrEngineResult {
+        promoteCpuAfterCooldown(cancellation)
+        val selected = activeEngine
+        return try {
+            selected.recognize(request, cancellation)
+        } catch (failure: OcrEngineException) {
+            if (failure.code != OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE ||
+                selected.executionBackend != OcrExecutionBackend.VULKAN
+            ) {
+                throw failure
+            }
+            fallbackLock.withLock {
+                if (closed.get() || cancellation()) throw OcrEngineException(OcrEngineErrorCode.CANCELLED)
+                if (activeEngine === selected) {
+                    backendHealth.markVulkanUnavailable()
+                    selected.close()
+                    activeEngine = NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
+                }
+                activeEngine.recognize(request, cancellation)
+            }
+        }
+    }
+
+    private fun promoteCpuAfterCooldown(cancellation: () -> Boolean) {
+        if (activeEngine.executionBackend != OcrExecutionBackend.CPU ||
+            !backendHealth.shouldPreferVulkan()
+        ) {
+            return
+        }
+        fallbackLock.withLock {
+            if (closed.get() || cancellation()) throw OcrEngineException(OcrEngineErrorCode.CANCELLED)
+            val selected = activeEngine
+            if (selected.executionBackend != OcrExecutionBackend.CPU) return@withLock
+            val promoted = try {
+                ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge)
+            } catch (failure: OcrEngineException) {
+                if (failure.code != OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE) throw failure
+                backendHealth.markVulkanUnavailable()
+                return@withLock
+            }
+            activeEngine = promoted
+            selected.close()
+        }
+    }
+
+    override fun cancel() {
+        activeEngine.cancel()
+    }
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            fallbackLock.withLock { activeEngine.close() }
+        }
     }
 }
 
 internal class OcrBackendHealthStore(
     private val unavailableMarker: Path,
+    private val clock: Clock = Clock.systemUTC(),
+    private val retryDelayMillis: Long = DEFAULT_RETRY_DELAY_MILLIS,
 ) {
-    fun shouldPreferVulkan(): Boolean = !Files.isRegularFile(unavailableMarker)
+    init {
+        require(retryDelayMillis >= 0L)
+    }
+
+    fun shouldPreferVulkan(): Boolean {
+        if (!Files.isRegularFile(unavailableMarker)) return true
+        val unavailableAt = runCatching {
+            Files.getLastModifiedTime(unavailableMarker).toMillis()
+        }.getOrNull() ?: return false
+        val elapsed = (clock.millis() - unavailableAt).coerceAtLeast(0L)
+        if (elapsed < retryDelayMillis) return false
+        return runCatching {
+            Files.deleteIfExists(unavailableMarker)
+            true
+        }.getOrDefault(false)
+    }
 
     fun markVulkanUnavailable() {
         runCatching {
             Files.createDirectories(requireNotNull(unavailableMarker.parent))
             if (!Files.exists(unavailableMarker)) Files.createFile(unavailableMarker)
+            Files.setLastModifiedTime(unavailableMarker, FileTime.fromMillis(clock.millis()))
         }
+    }
+
+    private companion object {
+        const val DEFAULT_RETRY_DELAY_MILLIS = 5L * 60L * 1_000L
     }
 }
 

@@ -147,6 +147,18 @@ class OcrArtifactStoreTest {
     }
 
     @Test
+    fun `failed OCR jobs remain available as recovery candidates`() {
+        val failed = runningJob().copy(
+            jobId = "ocr-job-failed",
+            status = OcrJobStatus.FAILED,
+            error = OcrError("ENGINE_ACCELERATOR_UNAVAILABLE", "accelerator unavailable"),
+        )
+        store.writeJob(failed)
+
+        assertEquals(listOf(failed), store.findRecoveryCandidates())
+    }
+
+    @Test
     fun `recovery removes only the unjournaled running region checkpoint`() {
         val job = runningJob()
         val artifact = regionArtifact(REGION_ONE, OcrRegionState.RECOGNIZED)

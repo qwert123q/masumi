@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.IBinder
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
+import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.core.detection.DetectionJobStatus
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -18,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class DetectionForegroundService : Service() {
     private lateinit var executor: ExecutorService
     private lateinit var notificationManager: NotificationManager
+    private lateinit var taskWakeLock: ForegroundTaskWakeLock
     private val cancellation = AtomicBoolean(false)
     private val stateLock = Any()
 
@@ -30,6 +32,7 @@ class DetectionForegroundService : Service() {
             Thread(task, WORKER_THREAD_NAME)
         }
         notificationManager = getSystemService(NotificationManager::class.java)
+        taskWakeLock = ForegroundTaskWakeLock(this, "detection")
         createNotificationChannel()
     }
 
@@ -67,6 +70,7 @@ class DetectionForegroundService : Service() {
     override fun onDestroy() {
         cancellation.set(true)
         executor.shutdownNow()
+        taskWakeLock.release()
         super.onDestroy()
     }
 
@@ -76,6 +80,7 @@ class DetectionForegroundService : Service() {
             activeProjectId = projectId
             cancellation.set(false)
         }
+        taskWakeLock.acquire()
 
         executor.execute {
             try {
@@ -88,6 +93,7 @@ class DetectionForegroundService : Service() {
                 synchronized(stateLock) {
                     activeProjectId = null
                 }
+                taskWakeLock.release()
                 stopForeground(STOP_FOREGROUND_DETACH)
                 stopSelf()
             }

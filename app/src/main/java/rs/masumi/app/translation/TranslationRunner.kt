@@ -219,6 +219,8 @@ class TranslationRunner(
                 windowArtifacts += artifact
             }
 
+            failWhenEveryProviderWindowWasPreserved(job)
+
             occurrenceInputs.sortedBy(PageTranslationInput::pageOrder).forEach { input ->
                 val checkpoint = job.pages.single { it.pageOrder == input.pageOrder }
                 if (checkpoint.state == TranslationPageState.COMMITTED) return@forEach
@@ -475,6 +477,21 @@ class TranslationRunner(
             .sortedWith(compareBy(TranslationGlossaryEntry::source, TranslationGlossaryEntry::translation))
     }
 
+    private fun failWhenEveryProviderWindowWasPreserved(job: TranslationJobRecord) {
+        if (job.windows.isEmpty()) return
+        val failures = job.windows.mapNotNull { window ->
+            window.error?.takeIf {
+                window.state == TranslationWindowState.PRESERVED_SOURCE &&
+                    it.code in PROVIDER_FAILURE_CODES
+            }
+        }
+        if (failures.size != job.windows.size) return
+        val commonCode = failures.map(TranslationError::code).distinct().singleOrNull()
+            ?: "ALL_WINDOWS_PROVIDER_FAILED"
+        val commonHttpStatus = failures.map(TranslationError::httpStatus).distinct().singleOrNull()
+        throw TerminalProviderFailure(TranslationError(commonCode, commonHttpStatus))
+    }
+
     private fun TranslationJobRecord.toRunArtifact(createdAt: Long): TranslationRunArtifact =
         TranslationRunArtifact(
             runArtifactKey = runArtifactKey,
@@ -553,6 +570,7 @@ class TranslationRunner(
     }
 
     private fun Throwable.toFatalError(): TranslationError = when (this) {
+        is TerminalProviderFailure -> error
         is FatalTranslationException -> TranslationError(code)
         is IllegalArgumentException -> TranslationError("PROJECT_INVALID")
         else -> TranslationError("TRANSLATION_RUN_FAILED")
@@ -560,8 +578,10 @@ class TranslationRunner(
 
     private class TranslationCancellationSignal : RuntimeException()
     private class FatalTranslationException(val code: String) : RuntimeException(code)
+    private class TerminalProviderFailure(val error: TranslationError) : RuntimeException(error.code)
 
     private companion object {
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
+        val PROVIDER_FAILURE_CODES = TranslationProviderErrorCode.entries.mapTo(mutableSetOf()) { it.name }
     }
 }

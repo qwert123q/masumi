@@ -74,6 +74,28 @@ class TranslationBatchPlannerTest {
     }
 
     @Test
+    fun `planner caps short items per window while preserving stable order and context`() {
+        val inputs = (0 until 35).map { rank ->
+            TranslationFixtures.input("id-$rank", rank, source = "短文")
+        }
+        val windows = TranslationBatchPlanner(
+            TranslationBatchingConfig(
+                maximumEstimatedInputTokens = 100_000,
+                maximumItemsPerWindow = 12,
+                maximumContextItems = 3,
+            ),
+        ).plan(listOf(TranslationFixtures.page(0, inputs)))
+
+        assertEquals(listOf(12, 12, 11), windows.map { it.items.size })
+        assertEquals(inputs.map { it.translationRegionId }, windows.flatMap { window ->
+            window.items.map { it.input.translationRegionId }
+        })
+        assertEquals(listOf("id-21", "id-22", "id-23"), windows.last().contextItems.map {
+            it.input.translationRegionId
+        })
+    }
+
+    @Test
     fun `planner rejects duplicate ids and inconsistent chapter policy`() {
         val duplicate = TranslationFixtures.input("same", 0)
         assertFailsWith<IllegalArgumentException> {
@@ -88,6 +110,9 @@ class TranslationBatchPlannerTest {
                     TranslationFixtures.page(1, emptyList(), TranslationPolicy(translateSoundEffects = true)),
                 ),
             )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            TranslationBatchingConfig(maximumItemsPerWindow = 0)
         }
     }
 }

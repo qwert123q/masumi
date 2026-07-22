@@ -102,6 +102,26 @@ class SourceCleanupEngineTest {
         }
     }
 
+    @Test
+    fun consumingModeReleasesTheSourceAfterCreatingTheMutableCopy() {
+        val source = Bitmap.createBitmap(24, 24, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+
+        val cleaned = SourceCleanupEngine().clean(
+            source,
+            emptyList(),
+            CleanupPolicy(),
+            recycleSourceAfterCopy = true,
+        )
+
+        try {
+            assertTrue(source.isRecycled)
+            assertEquals(24, cleaned.bitmap.width)
+            assertEquals(Color.WHITE, cleaned.bitmap.getPixel(0, 0))
+        } finally {
+            cleaned.bitmap.recycle()
+        }
+    }
+
     private fun target(
         box: PixelBox,
         strategy: CleanupStrategy = CleanupStrategy.FLAT_LOCAL_FILL,

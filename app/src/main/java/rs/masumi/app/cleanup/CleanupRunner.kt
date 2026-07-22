@@ -244,7 +244,13 @@ class CleanupRunner(
                 require(decoded.bitmap.width == ocrPage.visibleWidth && decoded.bitmap.height == ocrPage.visibleHeight)
                 require(decoded.orientation == ocrPage.orientation)
             }
-            val cleaned = engine.clean(decoded.bitmap, targets, policy, cancellation)
+            val cleaned = engine.clean(
+                decoded.bitmap,
+                targets,
+                policy,
+                cancellation,
+                recycleSourceAfterCopy = true,
+            )
             try {
                 val cleanedByTranslationId = cleaned.regions.associateBy { it.translationRegionId }
                 val outcomes = translationPage.items.map { item ->
@@ -472,6 +478,7 @@ class CleanupRunner(
 
     private fun Throwable.safePageErrorCode(): String = when (this) {
         is FatalCleanupException -> code
+        is OutOfMemoryError -> "PAGE_OUT_OF_MEMORY"
         is IllegalArgumentException -> "PAGE_INPUT_INVALID"
         else -> "PAGE_CLEANUP_FAILED"
     }

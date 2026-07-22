@@ -202,6 +202,15 @@ object OcrJobReducer {
         )
     }
 
+    fun retryFailed(job: OcrJobRecord, nowEpochMillis: Long): OcrJobRecord {
+        require(job.status == OcrJobStatus.FAILED) { "job must be failed" }
+        return resetActiveRegions(job, nowEpochMillis).copy(
+            status = OcrJobStatus.QUEUED,
+            cancelRequested = false,
+            error = null,
+        )
+    }
+
     fun finishSuccess(job: OcrJobRecord, nowEpochMillis: Long): OcrJobRecord {
         require(job.status == OcrJobStatus.RUNNING) { "job must be running" }
         require(!job.cancelRequested) { "cancelled job cannot finish successfully" }

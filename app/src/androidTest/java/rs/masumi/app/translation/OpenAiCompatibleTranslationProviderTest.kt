@@ -118,16 +118,30 @@ class OpenAiCompatibleTranslationProviderTest {
     }
 
     @Test
-    fun malformedSuccessfulResponseIsNotRetried() {
+    fun malformedSuccessfulResponseIsRetriedWithinTheConfiguredBound() {
         server.enqueue(MockResponse().setResponseCode(200).setBody(envelope("not-json")))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(successBody()))
+
+        val result = provider().newCall(settings(maximumAttempts = 3), messages()).execute()
+
+        assertEquals(2, result.attemptCount)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun malformedResponsesStopAtTheConfiguredAttemptLimit() {
+        repeat(3) {
+            server.enqueue(MockResponse().setResponseCode(200).setBody(envelope("not-json")))
+        }
 
         val failure = captureFailure {
             provider().newCall(settings(maximumAttempts = 3), messages()).execute()
         }
 
         assertEquals(TranslationProviderErrorCode.MALFORMED_RESPONSE, failure.code)
-        assertEquals(1, failure.attemptCount)
-        assertEquals(1, server.requestCount)
+        assertTrue(failure.retryable)
+        assertEquals(3, failure.attemptCount)
+        assertEquals(3, server.requestCount)
         assertNull(failure.cause)
     }
 

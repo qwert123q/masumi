@@ -55,7 +55,7 @@ class TranslationBatchPlanner(
             }
 
             var cursor = start + 1
-            while (cursor < allItems.size) {
+            while (cursor < allItems.size && selected.size < config.maximumItemsPerWindow) {
                 val expanded = selected + allItems[cursor]
                 val expandedDraft = draft(windows.size, policy, prompt, glossary, context, expanded)
                 val expandedEstimate = promptBuilder.estimateInputTokens(expandedDraft)

@@ -15,11 +15,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
+import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.core.exporting.ExportJobStatus
 
 class ExportForegroundService : Service() {
     private lateinit var executor: ExecutorService
     private lateinit var notificationManager: NotificationManager
+    private lateinit var taskWakeLock: ForegroundTaskWakeLock
     private val cancellation = AtomicBoolean(false)
 
     @Volatile private var runner: ExportRunner? = null
@@ -28,6 +30,7 @@ class ExportForegroundService : Service() {
         super.onCreate()
         executor = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
         notificationManager = getSystemService(NotificationManager::class.java)
+        taskWakeLock = ForegroundTaskWakeLock(this, "export")
         notificationManager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
@@ -75,12 +78,14 @@ class ExportForegroundService : Service() {
         cancellation.set(true)
         runner?.cancel()
         executor.shutdownNow()
+        taskWakeLock.release()
         super.onDestroy()
     }
 
     private fun startExport(projectId: String, destinationUri: String?): Boolean {
         if (!ACTIVE_PROJECT.compareAndSet(null, projectId)) return false
         cancellation.set(false)
+        taskWakeLock.acquire()
         executor.execute {
             try {
                 val active = ExportRunner(
@@ -101,6 +106,7 @@ class ExportForegroundService : Service() {
             } finally {
                 runner = null
                 ACTIVE_PROJECT.compareAndSet(projectId, null)
+                taskWakeLock.release()
                 stopForeground(STOP_FOREGROUND_DETACH)
                 stopSelf()
             }

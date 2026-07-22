@@ -2,7 +2,6 @@ package rs.masumi.app.cleanup
 
 import android.graphics.Bitmap
 import android.graphics.Color
-import java.util.ArrayDeque
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
@@ -33,14 +32,16 @@ class SourceCleanupEngine {
         targets: List<CleanupTarget>,
         policy: CleanupPolicy,
         cancellation: () -> Boolean = { false },
+        recycleSourceAfterCopy: Boolean = false,
     ): CleanedPage {
         require(!source.isRecycled)
         val output = source.copy(Bitmap.Config.ARGB_8888, true)
             ?: throw IllegalStateException("source bitmap could not be copied")
-        val pixels = IntArray(output.width * output.height)
-        output.getPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
-        val artifacts = mutableListOf<CleanupRegionArtifact>()
+        if (recycleSourceAfterCopy) source.recycle()
         try {
+            val pixels = IntArray(Math.multiplyExact(output.width, output.height))
+            output.getPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
+            val artifacts = mutableListOf<CleanupRegionArtifact>()
             targets.forEach { target ->
                 if (cancellation()) throw CleanupCancellationSignal()
                 artifacts += cleanTarget(pixels, output.width, output.height, target, policy, cancellation)
@@ -89,21 +90,27 @@ class SourceCleanupEngine {
         if (coverage > policy.maximumMaskCoverage) {
             return target.preserved(CleanupPreserveReason.MASK_UNSAFE, roiPixelCount, maskCount)
         }
-        val before = IntArray(roiPixelCount) { local ->
+        val maskedLocals = IntArray(maskCount)
+        val before = IntArray(maskCount)
+        var maskedIndex = 0
+        for (local in dilated.indices) {
+            if (!dilated[local]) continue
             val x = roi.left + local % roi.width
             val y = roi.top + local / roi.width
-            pixels[y * width + x]
+            maskedLocals[maskedIndex] = local
+            before[maskedIndex] = pixels[y * width + x]
+            maskedIndex += 1
         }
         when (target.strategy) {
             CleanupStrategy.FLAT_LOCAL_FILL -> fillFlat(pixels, width, roi, dilated, background)
             CleanupStrategy.LOCAL_BOUNDARY_INPAINT -> inpaintBoundary(pixels, width, roi, dilated, cancellation)
         }
         var changed = 0
-        dilated.indices.forEach { local ->
-            if (!dilated[local]) return@forEach
+        for (index in maskedLocals.indices) {
+            val local = maskedLocals[index]
             val x = roi.left + local % roi.width
             val y = roi.top + local / roi.width
-            if (pixels[y * width + x] != before[local]) changed += 1
+            if (pixels[y * width + x] != before[index]) changed += 1
         }
         if (changed == 0) return target.preserved(CleanupPreserveReason.ENGINE_FAILED, roiPixelCount, maskCount)
         return CleanupRegionArtifact(
@@ -141,29 +148,53 @@ class SourceCleanupEngine {
         cancellation: () -> Boolean,
     ) {
         val unknown = mask.copyOf()
-        val queue = ArrayDeque<Int>()
-        unknown.indices.filterTo(queue) { local -> unknown[local] && hasKnownNeighbor(local, unknown, roi.width, roi.height) }
-        while (queue.isNotEmpty()) {
+        val queued = BooleanArray(unknown.size)
+        var current = IntArray(unknown.size)
+        var next = IntArray(unknown.size)
+        var currentSize = 0
+        for (local in unknown.indices) {
+            if (unknown[local] && hasKnownNeighbor(local, unknown, roi.width, roi.height)) {
+                current[currentSize++] = local
+                queued[local] = true
+            }
+        }
+        val resolvedLocals = IntArray(unknown.size)
+        val resolvedColors = IntArray(unknown.size)
+        while (currentSize > 0) {
             if (cancellation()) throw CleanupCancellationSignal()
-            val passSize = queue.size
-            val resolved = mutableListOf<Pair<Int, Int>>()
-            repeat(passSize) {
-                val local = queue.removeFirst()
-                if (!unknown[local]) return@repeat
+            var resolvedSize = 0
+            for (index in 0 until currentSize) {
+                val local = current[index]
+                queued[local] = false
+                if (!unknown[local]) continue
                 averageKnownNeighbors(local, unknown, pixels, stride, roi)?.let { color ->
-                    resolved += local to color
+                    resolvedLocals[resolvedSize] = local
+                    resolvedColors[resolvedSize] = color
+                    resolvedSize += 1
                 }
             }
-            if (resolved.isEmpty()) break
-            resolved.forEach { (local, color) ->
+            if (resolvedSize == 0) break
+            for (index in 0 until resolvedSize) {
+                val local = resolvedLocals[index]
                 val x = roi.left + local % roi.width
                 val y = roi.top + local / roi.width
-                pixels[y * stride + x] = color
+                pixels[y * stride + x] = resolvedColors[index]
                 unknown[local] = false
             }
-            resolved.forEach { (local, _) ->
-                neighbors(local, roi.width, roi.height).filter { unknown[it] }.forEach(queue::addLast)
+            var nextSize = 0
+            for (index in 0 until resolvedSize) {
+                val local = resolvedLocals[index]
+                forEachNeighbor(local, roi.width, roi.height) { neighbor ->
+                    if (unknown[neighbor] && !queued[neighbor]) {
+                        next[nextSize++] = neighbor
+                        queued[neighbor] = true
+                    }
+                }
             }
+            val swap = current
+            current = next
+            next = swap
+            currentSize = nextSize
         }
         if (unknown.any { it }) {
             val fallback = estimatePerimeterMedian(pixels, stride, roi)
@@ -178,44 +209,50 @@ class SourceCleanupEngine {
         stride: Int,
         roi: IntBox,
     ): Int? {
-        val known = neighbors(local, roi.width, roi.height).filterNot { unknown[it] }
-        if (known.size < 2) return null
+        var knownCount = 0
         var alpha = 0
         var red = 0
         var green = 0
         var blue = 0
-        known.forEach { neighbor ->
+        forEachNeighbor(local, roi.width, roi.height) { neighbor ->
+            if (unknown[neighbor]) return@forEachNeighbor
             val x = roi.left + neighbor % roi.width
             val y = roi.top + neighbor / roi.width
             val color = pixels[y * stride + x]
+            knownCount += 1
             alpha += Color.alpha(color)
             red += Color.red(color)
             green += Color.green(color)
             blue += Color.blue(color)
         }
-        return Color.argb(alpha / known.size, red / known.size, green / known.size, blue / known.size)
+        if (knownCount < 2) return null
+        return Color.argb(alpha / knownCount, red / knownCount, green / knownCount, blue / knownCount)
     }
 
-    private fun hasKnownNeighbor(local: Int, unknown: BooleanArray, width: Int, height: Int): Boolean =
-        neighbors(local, width, height).any { !unknown[it] }
+    private fun hasKnownNeighbor(local: Int, unknown: BooleanArray, width: Int, height: Int): Boolean {
+        var found = false
+        forEachNeighbor(local, width, height) { neighbor ->
+            if (!unknown[neighbor]) found = true
+        }
+        return found
+    }
 
-    private fun neighbors(local: Int, width: Int, height: Int): List<Int> {
+    private inline fun forEachNeighbor(local: Int, width: Int, height: Int, action: (Int) -> Unit) {
         val x = local % width
         val y = local / width
-        val result = ArrayList<Int>(8)
         for (dy in -1..1) for (dx in -1..1) {
             if (dx == 0 && dy == 0) continue
             val nx = x + dx
             val ny = y + dy
-            if (nx in 0 until width && ny in 0 until height) result += ny * width + nx
+            if (nx in 0 until width && ny in 0 until height) action(ny * width + nx)
         }
-        return result
     }
 
     private fun dilate(source: BooleanArray, width: Int, height: Int, radius: Int): BooleanArray {
         if (radius <= 0) return source
         val output = source.copyOf()
-        source.indices.filter { source[it] }.forEach { local ->
+        for (local in source.indices) {
+            if (!source[local]) continue
             val x = local % width
             val y = local / width
             for (dy in -radius..radius) for (dx in -radius..radius) {

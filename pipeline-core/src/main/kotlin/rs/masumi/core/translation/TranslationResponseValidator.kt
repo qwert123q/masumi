@@ -41,20 +41,22 @@ class TranslationResponseValidator {
         if (responses.isEmpty()) return preserved(requested, null, TranslationPreserveReason.MISSING_RESPONSE)
         if (responses.size > 1) return preserved(requested, null, TranslationPreserveReason.DUPLICATE_RESPONSE)
         val response = responses.single()
-        if (requested.roleHint == TranslationRoleHint.DIALOGUE && response.role != TranslationRole.DIALOGUE) {
-            return preserved(requested, response.role, TranslationPreserveReason.INVALID_ROLE)
+        val effectiveRole = if (requested.roleHint == TranslationRoleHint.DIALOGUE) {
+            TranslationRole.DIALOGUE
+        } else {
+            response.role
         }
-        if (!shouldTranslate(policy, response.role)) {
-            return preserved(requested, response.role, TranslationPreserveReason.POLICY_PRESERVED)
+        if (!shouldTranslate(policy, effectiveRole)) {
+            return preserved(requested, effectiveRole, TranslationPreserveReason.POLICY_PRESERVED)
         }
         val translatedText = response.translation?.trim().orEmpty()
         if (translatedText.isBlank()) {
-            return preserved(requested, response.role, TranslationPreserveReason.BLANK_TRANSLATION)
+            return preserved(requested, effectiveRole, TranslationPreserveReason.BLANK_TRANSLATION)
         }
         return ValidatedTranslationItem(
             translationRegionId = requested.translationRegionId,
             ocrRegionId = requested.ocrRegionId,
-            role = response.role,
+            role = effectiveRole,
             translatedText = translatedText,
             state = TranslationResultState.TRANSLATED,
             preserveReason = null,

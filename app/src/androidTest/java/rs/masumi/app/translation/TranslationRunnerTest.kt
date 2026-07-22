@@ -6,6 +6,7 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import rs.masumi.core.detection.DetectorClass
@@ -34,6 +35,7 @@ import rs.masumi.core.ocr.PageOcrArtifact
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.translation.TranslationJobStatus
+import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationModelItem
 import rs.masumi.core.translation.TranslationModelResponse
 import rs.masumi.core.translation.TranslationRole
@@ -76,6 +78,70 @@ class TranslationRunnerTest {
 
             assertEquals(TranslationJobStatus.SUCCEEDED, cached.job.status)
             assertEquals(1, provider.callCount)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun allProviderFailuresAreNotPublishedAndCanBeRetried() {
+        val workspace = Files.createTempDirectory("masumi-translation-retry")
+        try {
+            publishOcr(workspace)
+            val provider = FailOnceProvider()
+            var nextJobId = 0
+            val runner = TranslationRunner(
+                workspaceRoot = workspace,
+                provider = provider,
+                idSource = IdSource { "translation-retry-${++nextJobId}" },
+            )
+            val settings = TranslationProviderSettings(
+                apiUrl = "https://example.invalid/v1",
+                apiKey = "secret-not-for-artifacts",
+                model = "model-safe",
+            )
+
+            val failed = runner.run(PROJECT_ID, settings, { false }) { }
+
+            assertEquals(TranslationJobStatus.FAILED, failed.job.status)
+            assertEquals("NETWORK", failed.job.error?.code)
+            assertNull(failed.runArtifact)
+            assertNull(failed.publishedDirectory)
+
+            val retried = runner.run(PROJECT_ID, settings, { false }) { }
+
+            assertEquals(TranslationJobStatus.SUCCEEDED, retried.job.status)
+            assertEquals(2, provider.callCount)
+            assertNotNull(retried.publishedDirectory)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun oversizedOnlyChapterPublishesProtectedOutputWithoutCallingProvider() {
+        val workspace = Files.createTempDirectory("masumi-translation-oversized")
+        try {
+            publishOcr(workspace)
+            val provider = RecordingProvider()
+            val runner = TranslationRunner(
+                workspaceRoot = workspace,
+                provider = provider,
+                batching = TranslationBatchingConfig(maximumEstimatedInputTokens = 1),
+                idSource = IdSource { "translation-oversized" },
+            )
+            val settings = TranslationProviderSettings(
+                apiUrl = "https://example.invalid/v1",
+                apiKey = "secret-not-for-artifacts",
+                model = "model-safe",
+            )
+
+            val result = runner.run(PROJECT_ID, settings, { false }) { }
+
+            assertEquals(TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS, result.job.status)
+            assertEquals(0, provider.callCount)
+            assertEquals(1, result.report?.preservedItemCount)
+            assertNotNull(result.publishedDirectory)
         } finally {
             workspace.toFile().deleteRecursively()
         }
@@ -219,6 +285,39 @@ class TranslationRunnerTest {
         ): TranslationProviderCall = object : TranslationProviderCall {
             override fun execute(): TranslationProviderResult {
                 callCount += 1
+                val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                    .findAll(messages.user).last().groupValues[1]
+                return TranslationProviderResult(
+                    response = TranslationModelResponse(
+                        items = listOf(TranslationModelItem(id, TranslationRole.DIALOGUE, "今天")),
+                    ),
+                    usage = TranslationProviderUsage(10, 5, 15),
+                    modelId = "model-safe",
+                    attemptCount = 1,
+                    durationMillis = 1L,
+                )
+            }
+
+            override fun cancel() = Unit
+        }
+    }
+
+    private class FailOnceProvider : TranslationProvider {
+        var callCount: Int = 0
+
+        override fun newCall(
+            settings: TranslationProviderSettings,
+            messages: rs.masumi.core.translation.TranslationPromptMessages,
+        ): TranslationProviderCall = object : TranslationProviderCall {
+            override fun execute(): TranslationProviderResult {
+                callCount += 1
+                if (callCount == 1) {
+                    throw TranslationProviderException(
+                        code = TranslationProviderErrorCode.NETWORK,
+                        retryable = true,
+                        attemptCount = 3,
+                    )
+                }
                 val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
                     .findAll(messages.user).last().groupValues[1]
                 return TranslationProviderResult(

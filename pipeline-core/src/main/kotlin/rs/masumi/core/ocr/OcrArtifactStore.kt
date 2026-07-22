@@ -37,6 +37,10 @@ class OcrArtifactStore(
         .filter { it.status.isResumable() }
         .maxWithOrNull(compareBy<OcrJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
 
+    fun findRecoveryCandidates(): List<OcrJobRecord> = readAllJobs()
+        .filterNot { it.status.isSuccessful() }
+        .toList()
+
     fun prepareRun(job: OcrJobRecord) {
         requireSafeId(job.jobId, "jobId")
         requireSha256(job.runArtifactKey, "runArtifactKey")

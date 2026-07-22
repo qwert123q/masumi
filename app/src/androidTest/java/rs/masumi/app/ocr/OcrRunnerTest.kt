@@ -11,7 +11,10 @@ import java.security.MessageDigest
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -34,6 +37,7 @@ import rs.masumi.core.modelpackage.InstalledOcrModelPackage
 import rs.masumi.core.modelpackage.OcrModelCapabilities
 import rs.masumi.core.modelpackage.OcrModelPackageMetadata
 import rs.masumi.core.modelpackage.PinnedPaddleOcrVl
+import rs.masumi.core.ocr.OcrArtifactStore
 import rs.masumi.core.ocr.OcrJobStatus
 import rs.masumi.core.ocr.OcrRegionState
 import rs.masumi.core.serialization.OcrJson
@@ -41,6 +45,41 @@ import rs.masumi.core.serialization.ProjectJson
 
 @RunWith(AndroidJUnit4::class)
 class OcrRunnerTest {
+    @Test
+    fun explicitCancelBecomesDurableWhileNativeRecognitionIsStillBlocked() {
+        withWorkspace { workspace ->
+            createProjectAndDetection(workspace, candidateCount = 1, duplicatePage = false)
+            val recognitionStarted = CountDownLatch(1)
+            val releaseRecognition = CountDownLatch(1)
+            val runner = runner(workspace) {
+                recognitionStarted.countDown()
+                releaseRecognition.await(5, TimeUnit.SECONDS)
+                result("不会提交", 0.9)
+            }
+            val completed = AtomicReference<OcrRunResult?>()
+            val worker = Thread {
+                completed.set(runner.run(PROJECT_ID, { false }) { })
+            }
+
+            worker.start()
+            assertTrue(recognitionStarted.await(5, TimeUnit.SECONDS))
+            val cancelled = runner.cancel()
+
+            assertEquals(OcrJobStatus.CANCELLED, cancelled?.status)
+            val durable = OcrArtifactStore(
+                workspace.resolve("projects/$PROJECT_ID"),
+            ).findLatestJob()
+            assertEquals(OcrJobStatus.CANCELLED, durable?.status)
+            assertTrue(durable?.cancelRequested == true)
+            assertEquals(OcrRegionState.PENDING, durable?.pages?.single()?.regions?.single()?.state)
+
+            releaseRecognition.countDown()
+            worker.join(5_000)
+            assertEquals(OcrJobStatus.CANCELLED, completed.get()?.job?.status)
+            assertTrue(!worker.isAlive)
+        }
+    }
+
     @Test
     fun cancelledRunReusesTerminalRegionAndDuplicatePageWorkOnResume() {
         withWorkspace { workspace ->
@@ -119,6 +158,34 @@ class OcrRunnerTest {
             assertEquals(4, calls)
             assertEquals(1, completed.report?.preservedRegionCount)
             assertEquals(1, completed.report?.recognizedRegionCount)
+        }
+    }
+
+    @Test
+    fun acceleratorFailureResumesFromEarlierTerminalRegion() {
+        withWorkspace { workspace ->
+            createProjectAndDetection(workspace, candidateCount = 2, duplicatePage = false)
+            var calls = 0
+            val firstRunner = runner(workspace) {
+                calls += 1
+                if (calls == 2) throw OcrEngineException(OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE)
+                result("保留的断点", 0.9)
+            }
+
+            val failed = firstRunner.run(PROJECT_ID, { false }) { }
+
+            assertEquals(OcrJobStatus.FAILED, failed.job.status)
+            assertEquals(OcrRegionState.RECOGNIZED, failed.job.pages.single().regions[0].state)
+            assertEquals(OcrRegionState.RUNNING, failed.job.pages.single().regions[1].state)
+
+            val resumed = runner(workspace) {
+                calls += 1
+                result("恢复后完成", 0.9)
+            }.run(PROJECT_ID, { false }) { }
+
+            assertEquals(OcrJobStatus.SUCCEEDED, resumed.job.status)
+            assertEquals(3, calls)
+            assertTrue(resumed.job.pages.single().regions.all { it.state == OcrRegionState.RECOGNIZED })
         }
     }
 
