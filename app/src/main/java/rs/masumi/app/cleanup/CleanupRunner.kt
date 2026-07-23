@@ -236,6 +236,9 @@ class CleanupRunner(
                 ocrRegionId = item.ocrRegionId,
                 box = ocrRegion.candidate.box,
                 strategy = ocrRegion.cleanupStrategy(),
+                expectedGlyphCount = ocrRegion.selectedText()
+                    ?.count { !it.isWhitespace() && !it.isISOControl() }
+                    ?.coerceAtLeast(1),
             )
         }
         val decoded = decoder.decode(resolveSource(project.directory, sourcePage))
@@ -401,6 +404,9 @@ class CleanupRunner(
         } else {
             CleanupStrategy.LOCAL_BOUNDARY_INPAINT
         }
+
+    private fun OcrRegionArtifact.selectedText(): String? =
+        selectedAttemptIndex?.let(attempts::getOrNull)?.normalizedText
 
     private fun CleanupJobRecord.toRunArtifact(createdAt: Long): CleanupRunArtifact = CleanupRunArtifact(
         runArtifactKey = runArtifactKey,
