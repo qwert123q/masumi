@@ -162,30 +162,40 @@ class OcrRunnerTest {
     }
 
     @Test
-    fun acceleratorFailureResumesFromEarlierTerminalRegion() {
+    fun timedOutRegionIsPreservedAfterOneAttemptAndTheNextRegionContinues() {
         withWorkspace { workspace ->
             createProjectAndDetection(workspace, candidateCount = 2, duplicatePage = false)
             var calls = 0
-            val firstRunner = runner(workspace) {
+            val runner = runner(workspace) {
                 calls += 1
-                if (calls == 2) throw OcrEngineException(OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE)
-                result("保留的断点", 0.9)
+                if (calls == 1) throw OcrEngineException(OcrEngineErrorCode.TIMEOUT)
+                result("次の台詞", 0.9)
             }
 
-            val failed = firstRunner.run(PROJECT_ID, { false }) { }
+            val completed = runner.run(PROJECT_ID, { false }) { }
 
-            assertEquals(OcrJobStatus.FAILED, failed.job.status)
-            assertEquals(OcrRegionState.RECOGNIZED, failed.job.pages.single().regions[0].state)
-            assertEquals(OcrRegionState.RUNNING, failed.job.pages.single().regions[1].state)
+            assertEquals(OcrJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS, completed.job.status)
+            assertEquals(2, calls)
+            assertEquals(1, completed.report?.preservedRegionCount)
+            assertEquals(1, completed.report?.recognizedRegionCount)
+        }
+    }
 
-            val resumed = runner(workspace) {
+    @Test
+    fun acceleratorFailurePreservesOnlyTheAffectedRegionAndContinues() {
+        withWorkspace { workspace ->
+            createProjectAndDetection(workspace, candidateCount = 2, duplicatePage = false)
+            var calls = 0
+            val completed = runner(workspace) {
                 calls += 1
-                result("恢复后完成", 0.9)
+                if (calls == 1) throw OcrEngineException(OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE)
+                result("下一个区域继续", 0.9)
             }.run(PROJECT_ID, { false }) { }
 
-            assertEquals(OcrJobStatus.SUCCEEDED, resumed.job.status)
-            assertEquals(3, calls)
-            assertTrue(resumed.job.pages.single().regions.all { it.state == OcrRegionState.RECOGNIZED })
+            assertEquals(OcrJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS, completed.job.status)
+            assertEquals(2, calls)
+            assertEquals(OcrRegionState.PRESERVED_SOURCE, completed.job.pages.single().regions[0].state)
+            assertEquals(OcrRegionState.RECOGNIZED, completed.job.pages.single().regions[1].state)
         }
     }
 

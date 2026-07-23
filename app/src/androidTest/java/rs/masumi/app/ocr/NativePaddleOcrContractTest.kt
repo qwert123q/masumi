@@ -178,23 +178,29 @@ class NativePaddleOcrContractTest {
     }
 
     @Test
-    fun deviceSelectionFallsBackToCpuAfterRepeatedVulkanDeviceLoss() = withModelFiles { model, projector ->
+    fun repeatedRuntimeVulkanLossFailsFastInsteadOfStallingOnCpu() = withModelFiles { model, projector ->
         val bridge = DeviceLossBridge(failEveryRecognition = true)
         val backendHealth = OcrBackendHealthStore(model.parent.resolve("vulkan-unavailable"))
 
-        DevicePaddleOcrEngine.openWithBridge(model, projector, bridge, backendHealth).use { engine ->
-            val result = engine.recognize(
-                OcrEngineRequest(rgb = byteArrayOf(1, 2, 3), width = 1, height = 1),
-                cancellation = { false },
-            )
-
-            assertEquals("成功", result.rawText)
-            assertEquals(OcrExecutionBackend.CPU, engine.executionBackend)
+        val failure = DevicePaddleOcrEngine.openWithBridge(
+            model,
+            projector,
+            bridge,
+            backendHealth,
+        ).use { engine ->
+            try {
+                engine.recognize(TEST_REQUEST) { false }
+                fail("Expected repeated accelerator failure")
+                throw AssertionError("unreachable")
+            } catch (error: OcrEngineException) {
+                error
+            }
         }
 
-        assertFalse(backendHealth.shouldPreferVulkan())
-        assertEquals(listOf(true, true, false), bridge.createPreferences)
-        assertEquals(listOf(11L, 13L, 12L), bridge.recognizedHandles)
+        assertEquals(OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE, failure.code)
+        assertTrue(backendHealth.shouldPreferVulkan())
+        assertEquals(listOf(true, true), bridge.createPreferences)
+        assertEquals(listOf(11L, 13L), bridge.recognizedHandles)
     }
 
     @Test

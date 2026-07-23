@@ -28,7 +28,12 @@ constexpr uint32_t kContextSize = 8192;
 constexpr uint32_t kBatchSize = 512;
 constexpr int kMaximumGeneratedTokens = 256;
 constexpr int kImageMinTokens = 64;
-constexpr int kImageMaxTokens = 2048;
+// Large vertical manga captions can span most of a page. Keeping their visual
+// budget below the desktop-oriented default avoids exhausting mobile Vulkan
+// drivers while retaining ample resolution for the oversized glyphs.
+constexpr int kImageMaxTokens = 128;
+constexpr int64_t kVulkanInferenceTimeoutMillis = 75'000;
+constexpr int64_t kCpuInferenceTimeoutMillis = 30'000;
 
 void silent_log(enum ggml_log_level, const char *, void *) {}
 
@@ -42,6 +47,7 @@ struct EngineHandle {
     mtmd_context * vision = nullptr;
     ExecutionBackend backend = ExecutionBackend::Cpu;
     std::atomic<bool> cancelled{false};
+    std::atomic<int64_t> deadline_nanos{0};
     std::mutex inference_mutex;
 
     ~EngineHandle() {
@@ -99,8 +105,24 @@ bool has_accelerator_device() {
     return false;
 }
 
+int64_t steady_nanos() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool deadline_exceeded(const EngineHandle * handle) {
+    const int64_t deadline = handle->deadline_nanos.load();
+    return deadline > 0 && steady_nanos() >= deadline;
+}
+
+const char * abort_error(const EngineHandle * handle) {
+    if (handle->cancelled.load()) return "CANCELLED";
+    if (deadline_exceeded(handle)) return "TIMEOUT";
+    return nullptr;
+}
+
 bool abort_requested(void * user_data) {
-    return static_cast<EngineHandle *>(user_data)->cancelled.load();
+    return abort_error(static_cast<EngineHandle *>(user_data)) != nullptr;
 }
 
 jstring error_json(JNIEnv * env, const char * code) {
@@ -272,6 +294,14 @@ const char * run_inference(
     double repetition_penalty,
     InferenceResult * result) {
     handle->cancelled.store(false);
+    const int64_t timeout_millis = handle->backend == ExecutionBackend::Vulkan
+        ? kVulkanInferenceTimeoutMillis
+        : kCpuInferenceTimeoutMillis;
+    handle->deadline_nanos.store(steady_nanos() + timeout_millis * 1'000'000);
+    struct DeadlineReset {
+        EngineHandle * handle;
+        ~DeadlineReset() { handle->deadline_nanos.store(0); }
+    } deadline_reset{handle};
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx = kContextSize;
     context_params.n_batch = kBatchSize;
@@ -301,7 +331,7 @@ const char * run_inference(
     ChunksPtr chunks(mtmd_input_chunks_init());
     if (!chunks) return "CONTEXT";
     const mtmd_bitmap * bitmap_pointer = bitmap.get();
-    if (handle->cancelled.load()) return "CANCELLED";
+    if (const char * abort = abort_error(handle)) return abort;
     if (mtmd_tokenize(
             handle->vision,
             chunks.get(),
@@ -316,7 +346,7 @@ const char * run_inference(
             result->visual_token_count += static_cast<int>(mtmd_input_chunk_get_n_tokens(chunk));
         }
     }
-    if (handle->cancelled.load()) return "CANCELLED";
+    if (const char * abort = abort_error(handle)) return abort;
     llama_pos n_past = 0;
     const auto prompt_start = std::chrono::steady_clock::now();
     const int32_t eval_result = mtmd_helper_eval_chunks(
@@ -330,7 +360,10 @@ const char * run_inference(
         &n_past);
     result->prompt_evaluation_millis = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - prompt_start).count();
-    if (eval_result != 0) return handle->cancelled.load() ? "CANCELLED" : "DECODE";
+    if (eval_result != 0) {
+        if (const char * abort = abort_error(handle)) return abort;
+        return "DECODE";
+    }
 
     const llama_vocab * vocab = llama_model_get_vocab(handle->model);
     llama_batch batch = llama_batch_init(1, 0, 1);
@@ -338,8 +371,8 @@ const char * run_inference(
     const int generation_limit = std::min(maximum_generated_tokens, kMaximumGeneratedTokens);
     const char * error = nullptr;
     for (int generated_count = 0; generated_count < generation_limit; ++generated_count) {
-        if (handle->cancelled.load()) {
-            error = "CANCELLED";
+        if (const char * abort = abort_error(handle)) {
+            error = abort;
             break;
         }
         llama_token token = 0;
@@ -377,7 +410,8 @@ const char * run_inference(
         batch.logits[0] = 1;
         const int32_t decode_result = llama_decode(context.get(), batch);
         if (decode_result != 0) {
-            error = handle->cancelled.load() ? "CANCELLED" : "DECODE";
+            error = abort_error(handle);
+            if (error == nullptr) error = "DECODE";
             break;
         }
     }

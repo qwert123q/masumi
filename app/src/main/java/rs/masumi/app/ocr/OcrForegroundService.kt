@@ -20,6 +20,8 @@ import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
 import rs.masumi.app.detection.PageBitmapDecoder
+import rs.masumi.app.library.MangaLibraryModelCache
+import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.core.ocr.OcrJobStatus
 
 class OcrForegroundService : Service() {
@@ -133,6 +135,9 @@ class OcrForegroundService : Service() {
             modelProvider = DefaultOcrModelProvider(
                 workspaceRoot = workspace,
                 capabilityValidator = NativePaddleOcrCapabilityValidator(),
+                persistentCache = MangaLibraryPreferences(this).rootUri()?.let { root ->
+                    MangaLibraryModelCache(contentResolver, root)
+                },
             ),
             engineFactory = OcrEngineFactory { model, projector ->
                 DevicePaddleOcrEngine.open(model, projector, backendHealth)

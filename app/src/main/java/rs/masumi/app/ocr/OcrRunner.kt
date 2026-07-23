@@ -413,6 +413,7 @@ class OcrRunner(
         descriptors.forEach { descriptor ->
             if (cancellation()) throw OcrCancellationSignal()
             var rendered: RenderedOcrCrop? = null
+            var inferenceShouldPreserveRegion = false
             val attempt = try {
                 val decoded = decoder.decode(resolveSource(projectDirectory, sourcePage))
                 try {
@@ -447,14 +448,24 @@ class OcrRunner(
                 ) {
                     throw OcrCancellationSignal()
                 }
-                if (failure is OcrEngineException &&
-                    failure.code == OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE
-                ) {
-                    throw failure
-                }
+                inferenceShouldPreserveRegion = failure is OcrEngineException &&
+                    (
+                        failure.code == OcrEngineErrorCode.TIMEOUT ||
+                            failure.code == OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE
+                        )
                 failure.toFailedAttempt(descriptor, rendered, engine.executionBackend)
             }
             attempts += attempt
+            if (inferenceShouldPreserveRegion) {
+                return OcrRegionArtifact(
+                    candidate = candidate,
+                    attempts = attempts,
+                    selectedAttemptIndex = null,
+                    quality = null,
+                    state = OcrRegionState.PRESERVED_SOURCE,
+                    error = attempt.error,
+                )
+            }
             val successfulAttempts = attempts.filter { it.error == null }
             if (successfulAttempts.isNotEmpty()) {
                 val decision = qualityEvaluator.evaluate(

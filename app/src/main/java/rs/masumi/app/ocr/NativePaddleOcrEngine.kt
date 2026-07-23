@@ -413,11 +413,15 @@ private class BackendHealthRecordingEngine(
             fallbackLock.withLock {
                 if (closed.get() || cancellation()) throw OcrEngineException(OcrEngineErrorCode.CANCELLED)
                 if (activeEngine === selected) {
-                    backendHealth.markVulkanUnavailable()
+                    val replacement = try {
+                        ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge)
+                    } catch (_: OcrEngineException) {
+                        throw failure
+                    }
+                    activeEngine = replacement
                     selected.close()
-                    activeEngine = NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
                 }
-                activeEngine.recognize(request, cancellation)
+                throw failure
             }
         }
     }

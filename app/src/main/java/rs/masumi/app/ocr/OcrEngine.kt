@@ -50,6 +50,7 @@ enum class OcrEngineErrorCode(val safeMessage: String) {
     CONTEXT("OCR inference context could not be created"),
     ACCELERATOR_UNAVAILABLE("OCR accelerator was unavailable"),
     DECODE("OCR inference could not decode the crop"),
+    TIMEOUT("OCR inference exceeded the safe time limit"),
     UTF8("OCR output was not valid UTF-8"),
     CANCELLED("OCR inference was cancelled"),
     CLOSED("OCR engine is already closed"),

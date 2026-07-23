@@ -50,6 +50,8 @@ import rs.masumi.app.quality.QualityProgress
 import rs.masumi.app.quality.QualityResumePolicy
 import rs.masumi.app.quality.QualityStatusBroadcast
 import rs.masumi.app.library.MangaLibraryPreferences
+import rs.masumi.app.library.MangaLibraryInstalledModelSynchronizer
+import rs.masumi.app.library.MangaLibraryModelCache
 import rs.masumi.app.library.MangaLibraryProject
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.library.MangaReaderActivity
@@ -245,6 +247,7 @@ class MainActivity : Activity() {
     private var pendingChapterSelectionAfterLibrary = false
     private var pendingExportAfterLibrary = false
     private var libraryRefreshGeneration = 0
+    private var synchronizedModelLibraryRoot: String? = null
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -494,6 +497,7 @@ class MainActivity : Activity() {
         super.onResume()
         refreshDurableState()
         refreshLibraryHistory()
+        syncInstalledModelsToLibrary()
         onPipelineStateChanged()
     }
 
@@ -785,7 +789,9 @@ class MainActivity : Activity() {
             REQUEST_LIBRARY_FOLDER -> {
                 retainReadWritePermission(treeUri, data.flags)
                 libraryPreferences.saveRootUri(treeUri)
+                synchronizedModelLibraryRoot = null
                 refreshLibraryHistory()
+                syncInstalledModelsToLibrary()
                 if (pendingChapterSelectionAfterLibrary) {
                     pendingChapterSelectionAfterLibrary = false
                     contentPager.post { openChapterFolder() }
@@ -860,6 +866,19 @@ class MainActivity : Activity() {
             addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
         }
         startActivityForResult(intent, REQUEST_LIBRARY_FOLDER)
+    }
+
+    private fun syncInstalledModelsToLibrary() {
+        val rootUri = libraryPreferences.rootUri() ?: return
+        val rootKey = rootUri.toString()
+        if (synchronizedModelLibraryRoot == rootKey) return
+        synchronizedModelLibraryRoot = rootKey
+        Thread({
+            MangaLibraryInstalledModelSynchronizer(
+                workspaceRoot = filesDir.toPath().resolve("workspace"),
+                cache = MangaLibraryModelCache(contentResolver, rootUri),
+            ).sync()
+        }, MODEL_LIBRARY_SYNC_THREAD_NAME).start()
     }
 
     private fun retainReadPermission(treeUri: Uri, resultFlags: Int) {
@@ -3074,6 +3093,7 @@ class MainActivity : Activity() {
         const val REQUEST_LIBRARY_FOLDER = 1004
         const val IMPORT_THREAD_NAME = "masumi-import"
         const val LIBRARY_THREAD_NAME = "masumi-library"
+        const val MODEL_LIBRARY_SYNC_THREAD_NAME = "masumi-model-library-sync"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
         const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"
     }

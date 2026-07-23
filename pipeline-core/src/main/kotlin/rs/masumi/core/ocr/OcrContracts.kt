@@ -115,7 +115,7 @@ data class OcrReadingOrderConfig(
 
 @Serializable
 data class OcrCropConfig(
-    val revision: String = "three-crops-v1",
+    val revision: String = "three-crops-mobile-v3",
     val paddedTextFraction: Double = 0.12,
     val tightTextFraction: Double = 0.04,
     val contextTextFraction: Double = 0.24,

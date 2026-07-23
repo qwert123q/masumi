@@ -10,7 +10,7 @@
     <string name="workspace_title">当前章节</string>
     <string name="workspace_description">所有处理都在本机完成；原始图片不会被改写。</string>
     <string name="library_title">我的漫画库</string>
-    <string name="library_description">固定一个文件夹长期保存项目记录和成品；处理缓存仍留在 App 内，可随时重建。</string>
+    <string name="library_description">固定一个文件夹长期保存项目、成品和本地模型；后续处理会直接复用，不再重复下载。</string>
     <string name="library_choose">选择漫画库文件夹</string>
     <string name="library_change">更换漫画库文件夹</string>
     <string name="library_not_configured">尚未设置漫画库，导入前会先让你选择。</string>

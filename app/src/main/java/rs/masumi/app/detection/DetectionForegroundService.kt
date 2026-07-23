@@ -12,6 +12,8 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.library.MangaLibraryModelCache
+import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.core.detection.DetectionJobStatus
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -109,6 +111,9 @@ class DetectionForegroundService : Service() {
             modelProvider = DefaultDetectorModelProvider(
                 workspaceRoot = workspace,
                 signatureValidator = OnnxModelSignatureValidator(),
+                persistentCache = MangaLibraryPreferences(this).rootUri()?.let { root ->
+                    MangaLibraryModelCache(contentResolver, root)
+                },
             ),
             detectorFactory = OnnxComicDetectorFactory(),
             decoder = PageBitmapDecoder(),

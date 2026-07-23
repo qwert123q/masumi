@@ -27,7 +27,7 @@ class DevicePaddleOcrEngineTest {
     }
 
     @Test
-    fun `repeated Vulkan loss switches device policy to CPU for the same request`() =
+    fun `repeated runtime Vulkan loss refreshes Vulkan for the next region without using CPU`() =
         withModelFiles { model, projector ->
             val bridge = RecordingBridge(initialVulkanUnavailable = false)
             val health = OcrBackendHealthStore(model.parent.resolve("vulkan-unavailable"))
@@ -40,13 +40,13 @@ class DevicePaddleOcrEngineTest {
                     )
                 }.exceptionOrNull() as OcrEngineException
 
-                assertEquals(OcrEngineErrorCode.TOKENIZE, failure.code)
-                assertEquals(OcrExecutionBackend.CPU, engine.executionBackend)
+                assertEquals(OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE, failure.code)
+                assertEquals(OcrExecutionBackend.VULKAN, engine.executionBackend)
             }
 
-            assertFalse(health.shouldPreferVulkan())
-            assertEquals(listOf(true, true, false), bridge.createPreferences)
-            assertEquals(listOf(11L, 13L, 12L), bridge.recognizedHandles)
+            assertTrue(health.shouldPreferVulkan())
+            assertEquals(listOf(true, true, true), bridge.createPreferences)
+            assertEquals(listOf(11L, 13L), bridge.recognizedHandles)
         }
 
     @Test
