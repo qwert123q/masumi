@@ -24,8 +24,8 @@
 namespace {
 
 constexpr int kThreadCount = 6;
-constexpr uint32_t kContextSize = 8192;
-constexpr uint32_t kBatchSize = 512;
+constexpr uint32_t kContextSize = 1024;
+constexpr uint32_t kBatchSize = 128;
 constexpr int kMaximumGeneratedTokens = 256;
 constexpr int kImageMinTokens = 64;
 // Large vertical manga captions can span most of a page. Keeping their visual
@@ -45,20 +45,16 @@ enum class ExecutionBackend {
 struct EngineHandle {
     llama_model * model = nullptr;
     mtmd_context * vision = nullptr;
+    llama_context * context = nullptr;
     ExecutionBackend backend = ExecutionBackend::Cpu;
     std::atomic<bool> cancelled{false};
     std::atomic<int64_t> deadline_nanos{0};
     std::mutex inference_mutex;
 
     ~EngineHandle() {
+        if (context != nullptr) llama_free(context);
         if (vision != nullptr) mtmd_free(vision);
         if (model != nullptr) llama_model_free(model);
-    }
-};
-
-struct ContextDeleter {
-    void operator()(llama_context * value) const {
-        if (value != nullptr) llama_free(value);
     }
 };
 
@@ -74,7 +70,6 @@ struct ChunksDeleter {
     }
 };
 
-using ContextPtr = std::unique_ptr<llama_context, ContextDeleter>;
 using BitmapPtr = std::unique_ptr<mtmd_bitmap, BitmapDeleter>;
 using ChunksPtr = std::unique_ptr<mtmd_input_chunks, ChunksDeleter>;
 
@@ -302,18 +297,8 @@ const char * run_inference(
         EngineHandle * handle;
         ~DeadlineReset() { handle->deadline_nanos.store(0); }
     } deadline_reset{handle};
-    llama_context_params context_params = llama_context_default_params();
-    context_params.n_ctx = kContextSize;
-    context_params.n_batch = kBatchSize;
-    context_params.n_ubatch = kBatchSize;
-    context_params.n_seq_max = 1;
-    context_params.n_threads = kThreadCount;
-    context_params.n_threads_batch = kThreadCount;
-    context_params.offload_kqv = handle->backend == ExecutionBackend::Vulkan;
-    context_params.abort_callback = abort_requested;
-    context_params.abort_callback_data = handle;
-    ContextPtr context(llama_init_from_model(handle->model, context_params));
-    if (!context) return "CONTEXT";
+    llama_memory_clear(llama_get_memory(handle->context), false);
+    llama_set_causal_attn(handle->context, true);
 
     BitmapPtr bitmap(mtmd_bitmap_init(
         static_cast<uint32_t>(width),
@@ -351,7 +336,7 @@ const char * run_inference(
     const auto prompt_start = std::chrono::steady_clock::now();
     const int32_t eval_result = mtmd_helper_eval_chunks(
         handle->vision,
-        context.get(),
+        handle->context,
         chunks.get(),
         0,
         0,
@@ -378,7 +363,7 @@ const char * run_inference(
         llama_token token = 0;
         double probability = 0.0;
         if (!select_greedy_token(
-                context.get(),
+                handle->context,
                 vocab,
                 result->token_ids,
                 repetition_penalty,
@@ -408,7 +393,7 @@ const char * run_inference(
         batch.n_seq_id[0] = 1;
         batch.seq_id[0][0] = 0;
         batch.logits[0] = 1;
-        const int32_t decode_result = llama_decode(context.get(), batch);
+        const int32_t decode_result = llama_decode(handle->context, batch);
         if (decode_result != 0) {
             error = abort_error(handle);
             if (error == nullptr) error = "DECODE";
@@ -511,6 +496,18 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
         handle->vision = mtmd_init_from_file(projector_file.c_str(), handle->model, vision_params);
         if (handle->vision == nullptr) return -2;
         if (!mtmd_support_vision(handle->vision)) return -3;
+        llama_context_params context_params = llama_context_default_params();
+        context_params.n_ctx = kContextSize;
+        context_params.n_batch = kBatchSize;
+        context_params.n_ubatch = kBatchSize;
+        context_params.n_seq_max = 1;
+        context_params.n_threads = kThreadCount;
+        context_params.n_threads_batch = kThreadCount;
+        context_params.offload_kqv = prefer_gpu;
+        context_params.abort_callback = abort_requested;
+        context_params.abort_callback_data = handle.get();
+        handle->context = llama_init_from_model(handle->model, context_params);
+        if (handle->context == nullptr) return 0;
         return reinterpret_cast<jlong>(handle.release());
     } catch (...) {
         return prefer_gpu ? -5 : -1;

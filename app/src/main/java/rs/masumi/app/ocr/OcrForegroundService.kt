@@ -94,6 +94,7 @@ class OcrForegroundService : Service() {
         taskWakeLock.acquire()
         executor.execute {
             try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                 val activeRunner = createRunner()
                 runner = activeRunner
                 activeRunner.run(projectId, cancellation::get, ::publishProgress)

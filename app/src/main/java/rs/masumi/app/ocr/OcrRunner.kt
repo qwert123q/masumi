@@ -222,46 +222,95 @@ class OcrRunner(
                 val detectionPage = detectionPages[sourcePage.pageId]
                     ?: throw FatalOcrException("DETECTION_PAGE_INVALID")
                 val pageCandidates = candidates.getValue(sourcePage.pageId)
-                if (pageCandidates.isEmpty()) {
-                    job = persist(
-                        OcrJobReducer.startEmptyPage(job, sourcePage.pageId, clock.millis()),
-                        currentOrder = selectedPages.minOf(OcrJobPage::order),
-                        currentPageId = sourcePage.pageId,
-                    )
-                }
-
-                val regionArtifacts = mutableListOf<OcrRegionArtifact>()
-                pageCandidates.sortedBy(OcrCandidate::readingOrderRank).forEach { candidate ->
-                    val checkpoint = job.pages.first { it.pageId == sourcePage.pageId }
-                        .regions.single { it.ocrRegionId == candidate.ocrRegionId }
-                    if (checkpoint.state.isTerminal()) {
-                        regionArtifacts += store.readRegionCheckpoint(
-                            job,
-                            selectedPages.first(),
-                            candidate.ocrRegionId,
-                        ) ?: throw FatalOcrException("COMMITTED_REGION_INVALID")
-                        return@forEach
+                val decoded = decoder.decode(resolveSource(project.directory, sourcePage))
+                try {
+                    require(decoded.bitmap.width == detectionPage.visibleWidth)
+                    require(decoded.bitmap.height == detectionPage.visibleHeight)
+                    require(decoded.orientation == detectionPage.orientation)
+                    if (pageCandidates.isEmpty()) {
+                        job = persist(
+                            OcrJobReducer.startEmptyPage(job, sourcePage.pageId, clock.millis()),
+                            currentOrder = selectedPages.minOf(OcrJobPage::order),
+                            currentPageId = sourcePage.pageId,
+                        )
                     }
-                    if (isCancelled()) throw OcrCancellationSignal()
-                    job = persist(
-                        OcrJobReducer.startRegion(
-                            job,
-                            sourcePage.pageId,
-                            candidate.ocrRegionId,
-                            clock.millis(),
-                        ),
-                        currentOrder = selectedPages.minOf(OcrJobPage::order),
-                        currentPageId = sourcePage.pageId,
-                        currentRegionId = candidate.ocrRegionId,
+
+                    val regionArtifacts = mutableListOf<OcrRegionArtifact>()
+                    pageCandidates.sortedBy(OcrCandidate::readingOrderRank).forEach { candidate ->
+                        val checkpoint = job.pages.first { it.pageId == sourcePage.pageId }
+                            .regions.single { it.ocrRegionId == candidate.ocrRegionId }
+                        if (checkpoint.state.isTerminal()) {
+                            regionArtifacts += store.readRegionCheckpoint(
+                                job,
+                                selectedPages.first(),
+                                candidate.ocrRegionId,
+                            ) ?: throw FatalOcrException("COMMITTED_REGION_INVALID")
+                            return@forEach
+                        }
+                        if (isCancelled()) throw OcrCancellationSignal()
+                        job = persist(
+                            OcrJobReducer.startRegion(
+                                job,
+                                sourcePage.pageId,
+                                candidate.ocrRegionId,
+                                clock.millis(),
+                            ),
+                            currentOrder = selectedPages.minOf(OcrJobPage::order),
+                            currentPageId = sourcePage.pageId,
+                            currentRegionId = candidate.ocrRegionId,
+                        )
+                        val artifact = recognizeRegion(
+                            engine = engine,
+                            page = decoded.bitmap,
+                            detectionPage = detectionPage,
+                            candidate = candidate,
+                            cancellation = ::isCancelled,
+                        )
+                        job = stateWriteLock.withLock {
+                            val current = activeJob.get()
+                                ?.takeIf { it.jobId == job.jobId }
+                                ?: throw OcrCancellationSignal()
+                            if (isCancelled() || !current.status.isNonTerminal()) {
+                                throw OcrCancellationSignal()
+                            }
+                            val activePage = current.pages.first { it.pageId == sourcePage.pageId }
+                            val checkpointPath = store.commitRegion(current, activePage, artifact)
+                            OcrJobReducer.commitTerminalRegion(
+                                job = current,
+                                pageId = sourcePage.pageId,
+                                ocrRegionId = candidate.ocrRegionId,
+                                state = artifact.state,
+                                checkpointPath = checkpointPath,
+                                error = artifact.error,
+                                nowEpochMillis = clock.millis(),
+                            ).also { committed ->
+                                store.writeJob(committed)
+                                activeJob.set(committed)
+                            }
+                        }
+                        onProgress(
+                            job.toProgress(
+                                currentOrder = selectedPages.minOf(OcrJobPage::order),
+                                currentPageId = sourcePage.pageId,
+                                currentRegionId = candidate.ocrRegionId,
+                            ),
+                        )
+                        regionArtifacts += artifact
+                    }
+
+                    val pageArtifact = rs.masumi.core.ocr.PageOcrArtifact(
+                        pageId = sourcePage.pageId,
+                        sourceSha256 = sourcePage.sourceSha256,
+                        detectionPageArtifactKey = detectionPage.pageArtifactKey,
+                        pageArtifactKey = pageKeys.getValue(sourcePage.pageId),
+                        visibleWidth = detectionPage.visibleWidth,
+                        visibleHeight = detectionPage.visibleHeight,
+                        orientation = detectionPage.orientation,
+                        dependencies = dependencies,
+                        regions = regionArtifacts.sortedBy { it.candidate.readingOrderRank },
                     )
-                    val artifact = recognizeRegion(
-                        engine = engine,
-                        projectDirectory = project.directory,
-                        sourcePage = sourcePage,
-                        detectionPage = detectionPage,
-                        candidate = candidate,
-                        cancellation = ::isCancelled,
-                    )
+                    val preview = previewRenderer.renderPng(decoded.bitmap, pageArtifact)
+                    val orders = selectedPages.map(OcrJobPage::order)
                     job = stateWriteLock.withLock {
                         val current = activeJob.get()
                             ?.takeIf { it.jobId == job.jobId }
@@ -269,15 +318,14 @@ class OcrRunner(
                         if (isCancelled() || !current.status.isNonTerminal()) {
                             throw OcrCancellationSignal()
                         }
-                        val activePage = current.pages.first { it.pageId == sourcePage.pageId }
-                        val checkpointPath = store.commitRegion(current, activePage, artifact)
-                        OcrJobReducer.commitTerminalRegion(
+                        store.commitPage(current, pageArtifact, preview, orders)
+                        OcrJobReducer.commitPage(
                             job = current,
                             pageId = sourcePage.pageId,
-                            ocrRegionId = candidate.ocrRegionId,
-                            state = artifact.state,
-                            checkpointPath = checkpointPath,
-                            error = artifact.error,
+                            artifactPath = "pages/${sourcePage.pageId}/ocr.json",
+                            previewPaths = orders.associateWith { order ->
+                                "previews/${order.toString().padStart(4, '0')}.png"
+                            },
                             nowEpochMillis = clock.millis(),
                         ).also { committed ->
                             store.writeJob(committed)
@@ -286,64 +334,14 @@ class OcrRunner(
                     }
                     onProgress(
                         job.toProgress(
-                            currentOrder = selectedPages.minOf(OcrJobPage::order),
+                            currentOrder = orders.minOrNull(),
                             currentPageId = sourcePage.pageId,
-                            currentRegionId = candidate.ocrRegionId,
                         ),
                     )
-                    regionArtifacts += artifact
-                }
-
-                val pageArtifact = rs.masumi.core.ocr.PageOcrArtifact(
-                    pageId = sourcePage.pageId,
-                    sourceSha256 = sourcePage.sourceSha256,
-                    detectionPageArtifactKey = detectionPage.pageArtifactKey,
-                    pageArtifactKey = pageKeys.getValue(sourcePage.pageId),
-                    visibleWidth = detectionPage.visibleWidth,
-                    visibleHeight = detectionPage.visibleHeight,
-                    orientation = detectionPage.orientation,
-                    dependencies = dependencies,
-                    regions = regionArtifacts.sortedBy { it.candidate.readingOrderRank },
-                )
-                val sourcePath = resolveSource(project.directory, sourcePage)
-                val decoded = decoder.decode(sourcePath)
-                val preview = try {
-                    require(decoded.bitmap.width == detectionPage.visibleWidth)
-                    require(decoded.bitmap.height == detectionPage.visibleHeight)
-                    require(decoded.orientation == detectionPage.orientation)
-                    previewRenderer.renderPng(decoded.bitmap, pageArtifact)
+                    pageArtifacts[sourcePage.pageId] = pageArtifact
                 } finally {
                     decoded.bitmap.takeUnless(Bitmap::isRecycled)?.recycle()
                 }
-                val orders = selectedPages.map(OcrJobPage::order)
-                job = stateWriteLock.withLock {
-                    val current = activeJob.get()
-                        ?.takeIf { it.jobId == job.jobId }
-                        ?: throw OcrCancellationSignal()
-                    if (isCancelled() || !current.status.isNonTerminal()) {
-                        throw OcrCancellationSignal()
-                    }
-                    store.commitPage(current, pageArtifact, preview, orders)
-                    OcrJobReducer.commitPage(
-                        job = current,
-                        pageId = sourcePage.pageId,
-                        artifactPath = "pages/${sourcePage.pageId}/ocr.json",
-                        previewPaths = orders.associateWith { order ->
-                            "previews/${order.toString().padStart(4, '0')}.png"
-                        },
-                        nowEpochMillis = clock.millis(),
-                    ).also { committed ->
-                        store.writeJob(committed)
-                        activeJob.set(committed)
-                    }
-                }
-                onProgress(
-                    job.toProgress(
-                        currentOrder = orders.minOrNull(),
-                        currentPageId = sourcePage.pageId,
-                    ),
-                )
-                pageArtifacts[sourcePage.pageId] = pageArtifact
             }
 
             val finishedAt = clock.millis()
@@ -398,8 +396,7 @@ class OcrRunner(
 
     private fun recognizeRegion(
         engine: OcrEngine,
-        projectDirectory: Path,
-        sourcePage: PageRecord,
+        page: Bitmap,
         detectionPage: PageDetectionArtifact,
         candidate: OcrCandidate,
         cancellation: () -> Boolean,
@@ -415,15 +412,7 @@ class OcrRunner(
             var rendered: RenderedOcrCrop? = null
             var inferenceShouldPreserveRegion = false
             val attempt = try {
-                val decoded = decoder.decode(resolveSource(projectDirectory, sourcePage))
-                try {
-                    require(decoded.bitmap.width == detectionPage.visibleWidth)
-                    require(decoded.bitmap.height == detectionPage.visibleHeight)
-                    require(decoded.orientation == detectionPage.orientation)
-                    rendered = cropRenderer.render(decoded.bitmap, descriptor)
-                } finally {
-                    decoded.bitmap.takeUnless(Bitmap::isRecycled)?.recycle()
-                }
+                rendered = cropRenderer.render(page, descriptor)
                 val crop = requireNotNull(rendered)
                 val result = engine.recognize(
                     OcrEngineRequest(
