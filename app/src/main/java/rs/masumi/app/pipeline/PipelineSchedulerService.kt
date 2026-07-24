@@ -1,5 +1,6 @@
 package rs.masumi.app.pipeline
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -48,6 +49,7 @@ class PipelineSchedulerService : Service() {
     private lateinit var stateReader: ProjectPipelineStateReader
     private val running = ConcurrentHashMap<String, TrackedTask>()
     private val stateCache = ConcurrentHashMap<String, ProjectPipelineState>()
+    private val processDeaths = PipelineProcessDeathTracker()
 
     private val stageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -162,6 +164,11 @@ class PipelineSchedulerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
+
     override fun onDestroy() {
         runCatching { unregisterReceiver(stageReceiver) }
         scheduler.shutdownNow()
@@ -196,7 +203,10 @@ class PipelineSchedulerService : Service() {
             entry to state
         }
 
-        reconcileRunning(states.associate { it.first.projectId to it.second }, now)
+        val newlyPaused = reconcileRunning(
+            states.associate { it.first.projectId to it.second },
+            now,
+        )
         val hasSettings = TranslationSettingsStore(this).loadProviderSettings() != null
         val projects = states.map { (entry, state) ->
             ScheduledProject(
@@ -205,7 +215,9 @@ class PipelineSchedulerService : Service() {
                 pageCount = state.pageCount,
                 nextStage = state.nextStage,
                 waitingForSettings = state.nextStage == PipelineStage.TRANSLATION && !hasSettings,
-                blocked = entry.status == PipelineQueueStatus.PAUSED || state.blocked,
+                blocked = entry.status == PipelineQueueStatus.PAUSED ||
+                    state.blocked ||
+                    entry.projectId in newlyPaused,
             )
         }
         val launches = PipelineSchedulePlanner.plan(
@@ -243,17 +255,42 @@ class PipelineSchedulerService : Service() {
         }
     }
 
-    private fun reconcileRunning(states: Map<String, ProjectPipelineState>, now: Long) {
+    private fun reconcileRunning(
+        states: Map<String, ProjectPipelineState>,
+        now: Long,
+    ): Set<String> {
+        val newlyPaused = mutableSetOf<String>()
+        val ocrProcessAlive = isOcrProcessAlive()
         running.entries.removeIf { (projectId, tracked) ->
             val state = states[projectId]
-            state == null ||
+            val stageChanged = state == null ||
                 state.complete ||
                 state.blocked ||
-                (state.nextStage != tracked.stage) ||
+                state.nextStage != tracked.stage
+            if (stageChanged) {
+                processDeaths.clear(projectId)
+                return@removeIf true
+            }
+            val processDied = tracked.stage == PipelineStage.OCR &&
+                tracked.confirmed &&
+                now - tracked.lastProgressAtEpochMillis > PROCESS_DEATH_GRACE_MILLIS &&
+                !ocrProcessAlive
+            if (processDied && processDeaths.record(projectId)) {
+                queueStore.pause(projectId, "OCR_PROCESS_DIED")
+                newlyPaused += projectId
+            }
+            processDied ||
                 (!tracked.confirmed && now - tracked.lastProgressAtEpochMillis > LAUNCH_CONFIRM_TIMEOUT_MILLIS) ||
                 (tracked.confirmed && now - tracked.lastProgressAtEpochMillis > STALL_RECOVERY_TIMEOUT_MILLIS)
         }
+        return newlyPaused
     }
+
+    private fun isOcrProcessAlive(): Boolean =
+        getSystemService(ActivityManager::class.java)
+            .runningAppProcesses
+            ?.any { it.processName == "$packageName:ocr" }
+            ?: true
 
     private fun launch(launch: PipelineLaunch): Boolean = runCatching {
         when (launch.stage) {
@@ -300,6 +337,7 @@ class PipelineSchedulerService : Service() {
         } else {
             running.remove(projectId)
             stateCache.remove(projectId)
+            processDeaths.clear(projectId)
             when {
                 failure -> queueStore.pause(projectId, errorCode ?: "STAGE_FAILED")
                 success && stage == PipelineStage.EXPORT -> queueStore.remove(projectId)
@@ -383,6 +421,7 @@ class PipelineSchedulerService : Service() {
         private const val WORKER_THREAD_NAME = "masumi-pipeline-scheduler"
         private const val RECONCILE_INTERVAL_SECONDS = 2L
         private const val LAUNCH_CONFIRM_TIMEOUT_MILLIS = 15_000L
+        private const val PROCESS_DEATH_GRACE_MILLIS = 3_000L
         private const val STALL_RECOVERY_TIMEOUT_MILLIS = 15L * 60L * 1_000L
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         private val DETECTION_ACTIVE = setOf(

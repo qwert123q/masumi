@@ -5,14 +5,14 @@
         <service
             android:name="rs.masumi.app.detection.DetectionForegroundService"
             android:exported="true"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="specialUse"
             android:permission="android.permission.DUMP"
             android:stopWithTask="false"
             tools:replace="android:exported" />
         <service
             android:name="rs.masumi.app.ocr.OcrForegroundService"
             android:exported="true"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="specialUse"
             android:permission="android.permission.DUMP"
             android:process=":ocr"
             android:stopWithTask="false"
@@ -27,21 +27,21 @@
         <service
             android:name="rs.masumi.app.cleanup.CleanupForegroundService"
             android:exported="true"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="specialUse"
             android:permission="android.permission.DUMP"
             android:stopWithTask="false"
             tools:replace="android:exported" />
         <service
             android:name="rs.masumi.app.typesetting.TypesettingForegroundService"
             android:exported="true"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="specialUse"
             android:permission="android.permission.DUMP"
             android:stopWithTask="false"
             tools:replace="android:exported" />
         <service
             android:name="rs.masumi.app.quality.QualityForegroundService"
             android:exported="true"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="specialUse"
             android:permission="android.permission.DUMP"
             android:stopWithTask="false"
             tools:replace="android:exported" />

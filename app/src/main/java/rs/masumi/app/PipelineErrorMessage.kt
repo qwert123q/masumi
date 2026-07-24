@@ -29,7 +29,7 @@ internal fun classifyPipelineError(errorCode: String?): PipelineErrorAdvice {
         code.contains("SOURCE") || code.contains("HASH") || code.contains("DEPENDENCY") ||
             code.contains("STALE") || code.contains("DECODE") -> PipelineErrorAdvice.SOURCE
         code.contains("ACCELERATOR") || code.contains("SESSION_CREATE") ||
-            code.contains("CONTEXT") -> PipelineErrorAdvice.DEVICE
+            code.contains("CONTEXT") || code.contains("PROCESS_DIED") -> PipelineErrorAdvice.DEVICE
         else -> PipelineErrorAdvice.UNKNOWN
     }
 }

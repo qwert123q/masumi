@@ -14,6 +14,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
@@ -32,7 +34,10 @@ class OcrForegroundService : Service() {
     private lateinit var taskWakeLock: ForegroundTaskWakeLock
     private val cancellation = AtomicBoolean(false)
     private val forcedCancellationScheduled = AtomicBoolean(false)
+    private val idleGeneration = AtomicLong(0L)
+    private val latestStartId = AtomicInteger(0)
     private val progressThrottle = OcrProgressThrottle()
+    private lateinit var engineCache: OcrEngineSessionCache
 
     @Volatile
     private var runner: OcrRunner? = null
@@ -45,10 +50,20 @@ class OcrForegroundService : Service() {
         }
         taskWakeLock = ForegroundTaskWakeLock(this, "ocr")
         notificationManager = getSystemService(NotificationManager::class.java)
+        val workspace = filesDir.toPath().resolve("workspace")
+        val backendHealth = OcrBackendHealthStore(
+            workspace.resolve("runtime/ocr-vulkan-unavailable"),
+        )
+        engineCache = OcrEngineSessionCache(
+            OcrEngineFactory { model, projector ->
+                DevicePaddleOcrEngine.open(model, projector, backendHealth)
+            },
+        )
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId.set(startId)
         when (intent?.action) {
             ACTION_START -> {
                 startForeground(NOTIFICATION_ID, idleNotification())
@@ -79,17 +94,28 @@ class OcrForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        cancellation.set(true)
+        runner?.cancel()
+        idleGeneration.incrementAndGet()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
+
     override fun onDestroy() {
         cancellation.set(true)
         runner?.cancel()
+        idleGeneration.incrementAndGet()
         executor.shutdownNow()
         cancellationWatchdog.shutdownNow()
+        engineCache.close()
         taskWakeLock.release()
         super.onDestroy()
     }
 
     private fun startOcr(projectId: String): Boolean {
         if (!ACTIVE_PROJECT.compareAndSet(null, projectId)) return false
+        idleGeneration.incrementAndGet()
         cancellation.set(false)
         forcedCancellationScheduled.set(false)
         taskWakeLock.acquire()
@@ -108,8 +134,8 @@ class OcrForegroundService : Service() {
                 runner = null
                 ACTIVE_PROJECT.compareAndSet(projectId, null)
                 taskWakeLock.release()
-                stopForeground(STOP_FOREGROUND_DETACH)
-                stopSelf()
+                notificationManager.notify(NOTIFICATION_ID, modelReadyNotification())
+                scheduleIdleShutdown()
             }
         }
         return true
@@ -130,11 +156,23 @@ class OcrForegroundService : Service() {
         )
     }
 
+    private fun scheduleIdleShutdown() {
+        val generation = idleGeneration.incrementAndGet()
+        val startId = latestStartId.get()
+        cancellationWatchdog.schedule(
+            {
+                if (generation != idleGeneration.get() || ACTIVE_PROJECT.get() != null) return@schedule
+                if (stopSelfResult(startId)) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                }
+            },
+            ENGINE_IDLE_TIMEOUT_MILLIS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
     private fun createRunner(): OcrRunner {
         val workspace = filesDir.toPath().resolve("workspace")
-        val backendHealth = OcrBackendHealthStore(
-            workspace.resolve("runtime/ocr-vulkan-unavailable"),
-        )
         return OcrRunner(
             workspaceRoot = workspace,
             modelProvider = DefaultOcrModelProvider(
@@ -145,7 +183,7 @@ class OcrForegroundService : Service() {
                 },
             ),
             engineFactory = OcrEngineFactory { model, projector ->
-                DevicePaddleOcrEngine.open(model, projector, backendHealth)
+                engineCache.open(model, projector)
             },
             decoder = PageBitmapDecoder(),
             cropRenderer = OcrCropRenderer(),
@@ -198,6 +236,10 @@ class OcrForegroundService : Service() {
 
     private fun busyNotification(): Notification = baseNotification(
         getString(R.string.ocr_notification_busy),
+    ).setOngoing(true).build()
+
+    private fun modelReadyNotification(): Notification = baseNotification(
+        getString(R.string.ocr_notification_model_ready),
     ).setOngoing(true).build()
 
     private fun cancellingNotification(): Notification = baseNotification(
@@ -286,6 +328,7 @@ class OcrForegroundService : Service() {
         private const val WORKER_THREAD_NAME = "masumi-ocr"
         private const val CANCELLATION_WATCHDOG_THREAD_NAME = "masumi-ocr-cancel-watchdog"
         private const val FORCED_CANCELLATION_GRACE_MILLIS = 1_500L
+        private const val ENGINE_IDLE_TIMEOUT_MILLIS = 60_000L
         private val ACTIVE_PROJECT = AtomicReference<String?>()
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     }

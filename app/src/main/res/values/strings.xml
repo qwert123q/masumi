@@ -167,6 +167,7 @@
     <string name="ocr_notification_cancelling">正在取消当前 OCR 区域…</string>
     <string name="ocr_notification_downloading">正在准备 OCR 模型：%1$d / %2$d 字节</string>
     <string name="ocr_notification_loading">正在加载本地 OCR 模型…</string>
+    <string name="ocr_notification_model_ready">OCR 模型已就绪，等待下一个项目</string>
     <string name="ocr_notification_progress">已识别 %1$d / %2$d 个区域</string>
     <string name="ocr_notification_succeeded">本地 OCR 完成</string>
     <string name="ocr_notification_succeeded_preserved">本地 OCR 完成，部分区域保留原画</string>
