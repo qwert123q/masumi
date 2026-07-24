@@ -16,6 +16,7 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.pipeline.PipelineResourceLease
 import rs.masumi.core.typesetting.TypesettingJobStatus
 
 class TypesettingForegroundService : Service() {
@@ -87,9 +88,12 @@ class TypesettingForegroundService : Service() {
         taskWakeLock.acquire()
         executor.execute {
             try {
-                val active = TypesettingRunner(filesDir.toPath().resolve("workspace"))
-                runner = active
-                active.run(projectId, cancellation::get, ::publishProgress)
+                val workspace = filesDir.toPath().resolve("workspace")
+                PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
+                    val active = TypesettingRunner(workspace)
+                    runner = active
+                    active.run(projectId, cancellation::get, ::publishProgress)
+                }
             } catch (_: Throwable) {
                 notificationManager.notify(
                     NOTIFICATION_ID,

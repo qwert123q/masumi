@@ -64,6 +64,11 @@
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
         <service
+            android:name=".pipeline.PipelineSchedulerService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+        <service
             android:name=".ocr.OcrForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync"

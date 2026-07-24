@@ -7,6 +7,8 @@ The repository now contains the complete end-to-end Android application pipeline
 ## Current capability
 
 - Open into a library-first Android home with source-cover thumbnails, whole-chapter status, and direct continue-processing or continue-reading actions.
+- Queue multiple imported chapters in a persistent background scheduler instead of tying automatic processing to one project screen.
+- Keep one memory-intensive local image/OCR task active while overlapping up to two network translations on capable, thermally healthy phones; automatically reduce translation concurrency on smaller or hot devices.
 - Keep each chapter in a dedicated project screen; move the seven technical stages behind a processing-record entry instead of presenting them as top-level navigation.
 - Automatically save a completed chapter into the fixed manga library without requiring a manual review or export step.
 - Prefetch names, honorifics, places, and recurring terms for each translation window, then translate against the merged chapter glossary.

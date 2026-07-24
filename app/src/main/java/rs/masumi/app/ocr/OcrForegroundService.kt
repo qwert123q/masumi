@@ -22,6 +22,7 @@ import rs.masumi.app.describePipelineError
 import rs.masumi.app.detection.PageBitmapDecoder
 import rs.masumi.app.library.MangaLibraryModelCache
 import rs.masumi.app.library.MangaLibraryPreferences
+import rs.masumi.app.pipeline.PipelineResourceLease
 import rs.masumi.core.ocr.OcrJobStatus
 
 class OcrForegroundService : Service() {
@@ -95,9 +96,12 @@ class OcrForegroundService : Service() {
         executor.execute {
             try {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-                val activeRunner = createRunner()
-                runner = activeRunner
-                activeRunner.run(projectId, cancellation::get, ::publishProgress)
+                val workspace = filesDir.toPath().resolve("workspace")
+                PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
+                    val activeRunner = createRunner()
+                    runner = activeRunner
+                    activeRunner.run(projectId, cancellation::get, ::publishProgress)
+                }
             } catch (_: Throwable) {
                 notificationManager.notify(NOTIFICATION_ID, unexpectedFailureNotification())
             } finally {

@@ -49,6 +49,8 @@ import rs.masumi.app.quality.QualityForegroundService
 import rs.masumi.app.quality.QualityProgress
 import rs.masumi.app.quality.QualityResumePolicy
 import rs.masumi.app.quality.QualityStatusBroadcast
+import rs.masumi.app.pipeline.PipelineQueueStore
+import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.app.library.MangaLibraryInstalledModelSynchronizer
 import rs.masumi.app.library.MangaLibraryModelCache
@@ -202,6 +204,7 @@ class MainActivity : Activity() {
     private lateinit var catalog: ProjectCatalog
     private lateinit var translationSettingsStore: TranslationSettingsStore
     private lateinit var libraryPreferences: MangaLibraryPreferences
+    private lateinit var pipelineQueueStore: PipelineQueueStore
 
     private var importRunning = false
     private var analysisActive = false
@@ -444,6 +447,7 @@ class MainActivity : Activity() {
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
         libraryPreferences = MangaLibraryPreferences(this)
+        pipelineQueueStore = PipelineQueueStore(this)
         requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
             ?.takeIf(SAFE_PROJECT_ID::matches)
         automaticPipelineRequested = getPreferences(MODE_PRIVATE)
@@ -531,10 +535,9 @@ class MainActivity : Activity() {
             intent.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) &&
             currentProject != null &&
             currentQualityRun?.report?.status?.allowsExport() != true &&
-            translationSettingsStore.loadProviderSettings() != null &&
-            !hasActiveWork()
+            translationSettingsStore.loadProviderSettings() != null
         ) {
-            automaticPipelineRequested = true
+            enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
         }
         refreshLibraryHistory()
         syncInstalledModelsToLibrary()
@@ -653,44 +656,32 @@ class MainActivity : Activity() {
             showPage(PAGE_DETAILS)
             return
         }
-        automaticPipelineRequested = true
-        advanceAutomaticPipeline()
-    }
-
-    private fun advanceAutomaticPipeline() {
-        if (!automaticPipelineRequested) return
-        when (AutomaticPipelinePlanner.next(automaticPipelineSnapshot())) {
-            AutomaticPipelineAction.START_DETECTION -> requestAnalysisStart()
-            AutomaticPipelineAction.START_OCR -> requestOcrStart()
-            AutomaticPipelineAction.START_TRANSLATION -> requestTranslationStart()
-            AutomaticPipelineAction.START_CLEANUP -> requestCleanupStart()
-            AutomaticPipelineAction.START_TYPESETTING -> requestTypesettingStart()
-            AutomaticPipelineAction.START_QUALITY -> requestQualityStart()
-            AutomaticPipelineAction.CONFIGURE_TRANSLATION -> {
-                automaticPipelineRequested = false
-                showTranslationSettings()
-            }
-            AutomaticPipelineAction.REVIEW_QUALITY -> {
-                automaticPipelineRequested = false
-                showPage(PAGE_DETAILS)
-            }
-            AutomaticPipelineAction.COMPLETE -> {
-                automaticPipelineRequested = false
-                saveCurrentProjectToLibrary()
-            }
-            AutomaticPipelineAction.WAIT_FOR_IMPORT -> automaticPipelineRequested = false
-            AutomaticPipelineAction.WAIT_FOR_ACTIVE_STAGE -> Unit
-        }
-        syncWorkspaceState()
+        enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
     }
 
     private fun onPipelineStateChanged() {
+        automaticPipelineRequested = currentProject?.manifest?.projectId
+            ?.let(pipelineQueueStore::isActive)
+            ?: false
         syncWorkspaceState()
         if (automaticPipelineRequested) {
-            contentPager.post { advanceAutomaticPipeline() }
+            contentPager.post { startForegroundService(PipelineSchedulerService.wakeIntent(this)) }
         } else {
             contentPager.post { autoSaveCompletedProjectIfNeeded() }
         }
+    }
+
+    private fun enqueueAutomaticPipeline(projectId: String) {
+        pipelineQueueStore.enqueue(projectId)
+        automaticPipelineRequested = true
+        startForegroundService(PipelineSchedulerService.wakeIntent(this))
+        syncWorkspaceState()
+    }
+
+    private fun pauseAutomaticPipeline(projectId: String) {
+        pipelineQueueStore.pause(projectId, "USER_PAUSED")
+        automaticPipelineRequested = false
+        startService(PipelineSchedulerService.pauseIntent(this, projectId))
     }
 
     private fun syncWorkspaceState() {
@@ -941,10 +932,7 @@ class MainActivity : Activity() {
     }
 
     private fun openChapterFolder() {
-        if (
-            importRunning || analysisActive || ocrActive || translationActive || cleanupActive ||
-            typesettingActive || qualityActive || exportActive
-        ) return
+        if (importRunning) return
         automaticPipelineRequested = false
 
         if (libraryPreferences.rootUri() == null) {
@@ -1079,6 +1067,7 @@ class MainActivity : Activity() {
 
     private fun cancelExport() {
         if (!exportActive) return
+        currentProject?.manifest?.projectId?.let(::pauseAutomaticPipeline)
         startService(ExportForegroundService.cancelIntent(this))
         cancelExportButton.isEnabled = false
         exportStatus.setText(R.string.export_notification_cancelling)
@@ -1133,7 +1122,7 @@ class MainActivity : Activity() {
                     },
                 )
                 if (result.isSuccess && translationSettingsStore.loadProviderSettings() != null) {
-                    automaticPipelineRequested = true
+                    enqueueAutomaticPipeline(requireNotNull(result.getOrNull()).outcome.manifest.projectId)
                 }
                 setImportRunning(false)
                 refreshDurableState()
@@ -1177,6 +1166,7 @@ class MainActivity : Activity() {
 
     private fun cancelAnalysis() {
         if (!analysisActive) return
+        currentProject?.manifest?.projectId?.let(::pauseAutomaticPipeline)
         startService(DetectionForegroundService.cancelIntent(this))
         cancelAnalysisButton.isEnabled = false
         detectionStatus.setText(R.string.detection_notification_cancelling)
@@ -1218,6 +1208,7 @@ class MainActivity : Activity() {
 
     private fun cancelOcr() {
         if (!ocrActive) return
+        currentProject?.manifest?.projectId?.let(::pauseAutomaticPipeline)
         startService(OcrForegroundService.cancelIntent(this))
         cancelOcrButton.isEnabled = false
         ocrStatus.setText(R.string.ocr_notification_cancelling)
@@ -1238,8 +1229,10 @@ class MainActivity : Activity() {
             setTranslationSettingsExpanded(false)
             refreshTranslationDurableState()
             if (currentProject != null && currentQualityRun?.report?.status?.allowsExport() != true) {
-                automaticPipelineRequested = true
+                enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
                 onPipelineStateChanged()
+            } else {
+                startForegroundService(PipelineSchedulerService.wakeIntent(this))
             }
         } else {
             Toast.makeText(this, R.string.translation_settings_invalid, Toast.LENGTH_SHORT).show()
@@ -1287,7 +1280,9 @@ class MainActivity : Activity() {
 
     private fun cancelTranslation() {
         if (!translationActive) return
-        startService(TranslationForegroundService.cancelIntent(this))
+        val projectId = currentProject?.manifest?.projectId
+        projectId?.let(::pauseAutomaticPipeline)
+        startService(TranslationForegroundService.cancelIntent(this, projectId))
         cancelTranslationButton.isEnabled = false
         translationStatus.setText(R.string.translation_notification_cancelling)
     }
@@ -1335,6 +1330,7 @@ class MainActivity : Activity() {
 
     private fun cancelCleanup() {
         if (!cleanupActive) return
+        currentProject?.manifest?.projectId?.let(::pauseAutomaticPipeline)
         startService(CleanupForegroundService.cancelIntent(this))
         cancelCleanupButton.isEnabled = false
         cleanupStatus.setText(R.string.cleanup_notification_cancelling)
@@ -1376,6 +1372,7 @@ class MainActivity : Activity() {
 
     private fun cancelTypesetting() {
         if (!typesettingActive) return
+        currentProject?.manifest?.projectId?.let(::pauseAutomaticPipeline)
         startService(TypesettingForegroundService.cancelIntent(this))
         cancelTypesettingButton.isEnabled = false
         typesettingStatus.setText(R.string.typesetting_notification_cancelling)
@@ -1417,6 +1414,7 @@ class MainActivity : Activity() {
 
     private fun cancelQuality() {
         if (!qualityActive) return
+        currentProject?.manifest?.projectId?.let(::pauseAutomaticPipeline)
         startService(QualityForegroundService.cancelIntent(this))
         cancelQualityButton.isEnabled = false
         qualityStatus.setText(R.string.quality_notification_cancelling)
@@ -1470,6 +1468,7 @@ class MainActivity : Activity() {
             renderProgress(durableProgress)
             if (
                 progressOverride == null &&
+                !pipelineQueueStore.contains(project.manifest.projectId) &&
                 DetectionResumePolicy.shouldResume(
                     durableProgress.status,
                     resumeRequestedThisProcess,
@@ -1516,6 +1515,7 @@ class MainActivity : Activity() {
             renderOcrProgress(durableProgress)
             if (
                 progressOverride == null &&
+                !pipelineQueueStore.contains(project.manifest.projectId) &&
                 !OcrForegroundService.isTaskActive() &&
                 OcrResumePolicy.shouldResume(
                     durableProgress.status,
@@ -1561,7 +1561,8 @@ class MainActivity : Activity() {
             renderTranslationProgress(durableProgress)
             if (
                 progressOverride == null &&
-                !TranslationForegroundService.isTaskActive() &&
+                !pipelineQueueStore.contains(project.manifest.projectId) &&
+                !TranslationForegroundService.isTaskActive(project.manifest.projectId) &&
                 translationSettingsStore.loadProviderSettings() != null &&
                 TranslationResumePolicy.shouldResume(
                     durableProgress.status,
@@ -1613,6 +1614,7 @@ class MainActivity : Activity() {
             renderCleanupProgress(durableProgress)
             if (
                 progressOverride == null &&
+                !pipelineQueueStore.contains(project.manifest.projectId) &&
                 !CleanupForegroundService.isTaskActive() &&
                 CleanupResumePolicy.shouldResume(
                     durableProgress.status,
@@ -1657,6 +1659,7 @@ class MainActivity : Activity() {
             renderTypesettingProgress(durableProgress)
             if (
                 progressOverride == null &&
+                !pipelineQueueStore.contains(project.manifest.projectId) &&
                 !TypesettingForegroundService.isTaskActive() &&
                 TypesettingResumePolicy.shouldResume(
                     durableProgress.status,
@@ -1701,6 +1704,7 @@ class MainActivity : Activity() {
             renderQualityProgress(durableProgress)
             if (
                 progressOverride == null &&
+                !pipelineQueueStore.contains(project.manifest.projectId) &&
                 !QualityForegroundService.isTaskActive() &&
                 QualityResumePolicy.shouldResume(durableProgress.status, qualityResumeRequestedThisProcess)
             ) {
@@ -1819,6 +1823,7 @@ class MainActivity : Activity() {
             renderExportProgress(durableProgress)
             if (
                 progressOverride == null &&
+                !pipelineQueueStore.contains(project.manifest.projectId) &&
                 !ExportForegroundService.isTaskActive() &&
                 ExportResumePolicy.shouldResume(
                     durableProgress.status,

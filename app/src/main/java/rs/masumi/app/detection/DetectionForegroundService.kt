@@ -14,6 +14,7 @@ import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
 import rs.masumi.app.library.MangaLibraryModelCache
 import rs.masumi.app.library.MangaLibraryPreferences
+import rs.masumi.app.pipeline.PipelineResourceLease
 import rs.masumi.core.detection.DetectionJobStatus
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -87,8 +88,11 @@ class DetectionForegroundService : Service() {
 
         executor.execute {
             try {
-                createRunner().run(projectId, cancellation::get) { progress ->
-                    publishProgress(progress)
+                val workspace = filesDir.toPath().resolve("workspace")
+                PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
+                    createRunner().run(projectId, cancellation::get) { progress ->
+                        publishProgress(progress)
+                    }
                 }
             } catch (_: Throwable) {
                 notificationManager.notify(NOTIFICATION_ID, unexpectedFailureNotification())

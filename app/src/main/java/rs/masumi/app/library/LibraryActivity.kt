@@ -17,6 +17,9 @@ import rs.masumi.app.AutomaticPipelinePlanner
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.detection.ProjectCatalog
+import rs.masumi.app.pipeline.PipelineQueueStatus
+import rs.masumi.app.pipeline.PipelineQueueStore
+import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.core.quality.QualityPolicy
 import rs.masumi.core.quality.allowsExport
 import rs.masumi.core.translation.TranslationBatchingConfig
@@ -37,6 +40,7 @@ class LibraryActivity : Activity() {
     private lateinit var catalog: ProjectCatalog
     private lateinit var libraryPreferences: MangaLibraryPreferences
     private lateinit var readingProgressStore: MangaReadingProgressStore
+    private lateinit var pipelineQueueStore: PipelineQueueStore
     private val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "masumi-library-home") }
     private val refreshGeneration = AtomicInteger()
     private var pendingImportAfterLibrary = false
@@ -52,6 +56,7 @@ class LibraryActivity : Activity() {
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         libraryPreferences = MangaLibraryPreferences(this)
         readingProgressStore = MangaReadingProgressStore(this)
+        pipelineQueueStore = PipelineQueueStore(this)
 
         findViewById<Button>(R.id.libraryHomeImport).setOnClickListener { importChapter() }
         chooseLibraryButton.setOnClickListener { openLibraryFolder(false) }
@@ -59,6 +64,9 @@ class LibraryActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (pipelineQueueStore.entries().any { it.status == PipelineQueueStatus.ACTIVE }) {
+            startForegroundService(PipelineSchedulerService.wakeIntent(this))
+        }
         refreshLibrary()
     }
 
@@ -199,6 +207,9 @@ class LibraryActivity : Activity() {
             coverPath = coverPath,
             coverUri = coverUri,
             readingProgress = readingProgressStore.load(projectId),
+            queueStatus = pipelineQueueStore.entries()
+                .firstOrNull { it.projectId == projectId }
+                ?.status,
         )
     }
 
@@ -265,6 +276,8 @@ class LibraryActivity : Activity() {
         } else {
             primary.setText(
                 when {
+                    summary.queueStatus == PipelineQueueStatus.ACTIVE ->
+                        R.string.library_processing_queued
                     summary.completedStages >= AutomaticPipelinePlanner.STAGE_COUNT ->
                         R.string.library_finish_saving
                     summary.completedStages > 0 ->
@@ -293,6 +306,10 @@ class LibraryActivity : Activity() {
             )
         summary.project.outputPageCount > 0 ->
             getString(R.string.library_project_status_ready, summary.project.outputPageCount)
+        summary.queueStatus == PipelineQueueStatus.ACTIVE ->
+            getString(R.string.library_project_status_queued)
+        summary.queueStatus == PipelineQueueStatus.PAUSED ->
+            getString(R.string.library_project_status_paused)
         summary.completedStages >= AutomaticPipelinePlanner.STAGE_COUNT ->
             getString(R.string.library_project_status_auto_saving)
         else ->
@@ -347,6 +364,7 @@ class LibraryActivity : Activity() {
         val coverPath: Path?,
         val coverUri: Uri?,
         val readingProgress: MangaReadingProgress?,
+        val queueStatus: PipelineQueueStatus?,
     )
 
     private companion object {

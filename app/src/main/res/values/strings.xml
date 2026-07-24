@@ -26,6 +26,14 @@
     <string name="main_eyebrow">本地漫画汉化</string>
     <string name="main_title">从原稿到成品，只需三步</string>
     <string name="main_description">选择原稿文件夹，Masumi 会在后台完成识别、翻译、清理和排版，并将成品自动收入漫画库。</string>
+    <string name="pipeline_scheduler_channel">漫画处理队列</string>
+    <string name="pipeline_scheduler_title">Masumi 正在处理漫画</string>
+    <string name="pipeline_scheduler_starting">正在安排处理任务…</string>
+    <string name="pipeline_scheduler_waiting">队列暂时等待可用资源</string>
+    <string name="pipeline_scheduler_progress">队列 %1$d 本 · 本地任务 %2$d · 翻译任务 %3$d</string>
+    <string name="library_processing_queued">处理中</string>
+    <string name="library_project_status_queued">已加入处理队列</string>
+    <string name="library_project_status_paused">处理已暂停，点击继续</string>
     <string name="workspace_tab">工作台</string>
     <string name="details_tab">处理详情</string>
     <string name="swipe_hint">左右切换工作台与处理详情</string>

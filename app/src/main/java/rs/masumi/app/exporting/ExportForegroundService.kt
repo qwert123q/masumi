@@ -17,6 +17,7 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.pipeline.PipelineResourceLease
 import rs.masumi.core.exporting.ExportJobStatus
 
 class ExportForegroundService : Service() {
@@ -89,14 +90,17 @@ class ExportForegroundService : Service() {
         taskWakeLock.acquire()
         executor.execute {
             try {
-                val active = ExportRunner(
-                    workspaceRoot = filesDir.toPath().resolve("workspace"),
-                    destinationFactory = { uri, jobId ->
-                        SafFolderExportDestination(contentResolver, uri, jobId)
-                    },
-                )
-                runner = active
-                active.run(projectId, destinationUri, cancellation::get, ::publishProgress)
+                val workspace = filesDir.toPath().resolve("workspace")
+                PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
+                    val active = ExportRunner(
+                        workspaceRoot = workspace,
+                        destinationFactory = { uri, jobId ->
+                            SafFolderExportDestination(contentResolver, uri, jobId)
+                        },
+                    )
+                    runner = active
+                    active.run(projectId, destinationUri, cancellation::get, ::publishProgress)
+                }
             } catch (_: Throwable) {
                 notificationManager.notify(
                     NOTIFICATION_ID,

@@ -8,28 +8,29 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.pipeline.PipelineDeviceCapacity
 import rs.masumi.core.translation.TranslationJobStatus
 
 class TranslationForegroundService : Service() {
     private lateinit var executor: ExecutorService
     private lateinit var notificationManager: NotificationManager
     private lateinit var taskWakeLock: ForegroundTaskWakeLock
-    private val cancellation = AtomicBoolean(false)
-
-    @Volatile
-    private var runner: TranslationRunner? = null
+    private val activeTasks = ConcurrentHashMap<String, ActiveTranslation>()
+    private val stateLock = Any()
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
+        executor = Executors.newFixedThreadPool(MAXIMUM_PARALLEL_TRANSLATIONS) { task ->
+            Thread(task, "$WORKER_THREAD_NAME-${THREAD_SEQUENCE.incrementAndGet()}")
+        }
         notificationManager = getSystemService(NotificationManager::class.java)
         taskWakeLock = ForegroundTaskWakeLock(this, "translation")
         createNotificationChannel()
@@ -57,9 +58,8 @@ class TranslationForegroundService : Service() {
                 }
             }
             ACTION_CANCEL -> {
-                cancellation.set(true)
-                runner?.cancel()
-                if (ACTIVE_PROJECT.get() != null) {
+                cancelTranslations(intent.getStringExtra(EXTRA_PROJECT_ID))
+                if (activeTasks.isNotEmpty()) {
                     notificationManager.notify(NOTIFICATION_ID, cancellingNotification())
                 } else {
                     stopSelf(startId)
@@ -67,42 +67,68 @@ class TranslationForegroundService : Service() {
             }
             else -> return START_NOT_STICKY
         }
-        return if (ACTIVE_PROJECT.get() != null) START_REDELIVER_INTENT else START_NOT_STICKY
+        return if (activeTasks.isNotEmpty()) START_REDELIVER_INTENT else START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        cancellation.set(true)
-        runner?.cancel()
+        cancelTranslations(null)
         executor.shutdownNow()
         taskWakeLock.release()
         super.onDestroy()
     }
 
     private fun startTranslation(projectId: String, settings: TranslationProviderSettings): Boolean {
-        if (!ACTIVE_PROJECT.compareAndSet(null, projectId)) return false
-        cancellation.set(false)
-        taskWakeLock.acquire()
+        val active = synchronized(stateLock) {
+            if (
+                activeTasks.containsKey(projectId) ||
+                activeTasks.size >= PipelineDeviceCapacity.translationSlots(this)
+            ) {
+                return false
+            }
+            ActiveTranslation().also {
+                activeTasks[projectId] = it
+                ACTIVE_PROJECTS += projectId
+                taskWakeLock.acquire()
+            }
+        }
         executor.execute {
             try {
                 val activeRunner = TranslationRunner(
                     workspaceRoot = filesDir.toPath().resolve("workspace"),
                     provider = OpenAiCompatibleTranslationProvider(),
                 )
-                runner = activeRunner
-                activeRunner.run(projectId, settings, cancellation::get, ::publishProgress)
+                active.runner = activeRunner
+                activeRunner.run(projectId, settings, active.cancellation::get, ::publishProgress)
             } catch (_: Throwable) {
                 notificationManager.notify(NOTIFICATION_ID, unexpectedFailureNotification())
             } finally {
-                runner = null
-                ACTIVE_PROJECT.compareAndSet(projectId, null)
-                taskWakeLock.release()
-                stopForeground(STOP_FOREGROUND_DETACH)
-                stopSelf()
+                active.runner = null
+                synchronized(stateLock) {
+                    activeTasks.remove(projectId, active)
+                    ACTIVE_PROJECTS -= projectId
+                    if (activeTasks.isEmpty()) {
+                        taskWakeLock.release()
+                        stopForeground(STOP_FOREGROUND_DETACH)
+                        stopSelf()
+                    }
+                }
             }
         }
         return true
+    }
+
+    private fun cancelTranslations(projectId: String?) {
+        val targets = if (projectId == null) {
+            activeTasks.values.toList()
+        } else {
+            listOfNotNull(activeTasks[projectId])
+        }
+        targets.forEach { active ->
+            active.cancellation.set(true)
+            active.runner?.cancel()
+        }
     }
 
     private fun publishProgress(progress: TranslationProgress) {
@@ -210,17 +236,34 @@ class TranslationForegroundService : Service() {
                 .putExtra(EXTRA_PROJECT_ID, projectId)
         }
 
-        fun cancelIntent(context: Context): Intent =
-            Intent(context, TranslationForegroundService::class.java).setAction(ACTION_CANCEL)
+        fun cancelIntent(context: Context, projectId: String? = null): Intent =
+            Intent(context, TranslationForegroundService::class.java)
+                .setAction(ACTION_CANCEL)
+                .apply {
+                    if (projectId != null) {
+                        require(SAFE_ID.matches(projectId))
+                        putExtra(EXTRA_PROJECT_ID, projectId)
+                    }
+                }
 
-        fun isTaskActive(): Boolean = ACTIVE_PROJECT.get() != null
+        fun isTaskActive(projectId: String? = null): Boolean =
+            if (projectId == null) ACTIVE_PROJECTS.isNotEmpty() else projectId in ACTIVE_PROJECTS
 
         private const val NOTIFICATION_CHANNEL_ID = "chapter_translation"
         private const val NOTIFICATION_ID = 2_003
         private const val CONTENT_REQUEST_CODE = 3_021
         private const val CANCEL_REQUEST_CODE = 3_022
         private const val WORKER_THREAD_NAME = "masumi-translation"
-        private val ACTIVE_PROJECT = AtomicReference<String?>()
+        private const val MAXIMUM_PARALLEL_TRANSLATIONS = 2
+        private val ACTIVE_PROJECTS = ConcurrentHashMap.newKeySet<String>()
+        private val THREAD_SEQUENCE = java.util.concurrent.atomic.AtomicInteger()
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+    }
+
+    private class ActiveTranslation {
+        val cancellation = AtomicBoolean(false)
+
+        @Volatile
+        var runner: TranslationRunner? = null
     }
 }
