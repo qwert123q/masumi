@@ -22,6 +22,7 @@ import rs.masumi.core.typesetting.TypesettingPreserveReason
 import rs.masumi.core.typesetting.TypesettingRegionArtifact
 import rs.masumi.core.typesetting.TypesettingRegionState
 import rs.masumi.core.typesetting.TypesettingStyle
+import rs.masumi.core.translation.TranslationTextNormalizer
 
 data class TypesettingTarget(
     val translationRegionId: String,
@@ -66,7 +67,7 @@ class ChineseTypesetter {
         policy: TypesettingPolicy,
         cancellation: () -> Boolean,
     ): TypesettingRegionArtifact {
-        val text = target.translatedText.trim()
+        val text = TranslationTextNormalizer.normalizeTypography(target.translatedText.trim())
         if (text.isBlank()) return target.preserved(TypesettingPreserveReason.BLANK_TEXT)
         val targetBox = (target.bubbleBox ?: target.textBox).toIntBox(bitmap.width, bitmap.height)
             ?: return target.preserved(TypesettingPreserveReason.GEOMETRY_INVALID)

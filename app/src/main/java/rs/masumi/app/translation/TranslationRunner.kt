@@ -42,6 +42,7 @@ import rs.masumi.core.translation.TranslationResponseValidator
 import rs.masumi.core.translation.TranslationResultState
 import rs.masumi.core.translation.TranslationRunArtifact
 import rs.masumi.core.translation.TranslationRunEntry
+import rs.masumi.core.translation.TranslationTextNormalizer
 import rs.masumi.core.translation.TranslationUsage
 import rs.masumi.core.translation.TranslationWindowArtifact
 import rs.masumi.core.translation.TranslationWindowState
@@ -308,13 +309,26 @@ class TranslationRunner(
             if (cancellation()) throw TranslationCancellationSignal()
             val validation = responseValidator.validate(window, result.response)
             val outputGlossary = mergeGlossary(inputGlossary, validation.glossaryUpdates)
+            val normalizedItems = validation.items.map { item ->
+                val translated = item.translatedText ?: return@map item
+                val source = window.items.single {
+                    it.input.translationRegionId == item.translationRegionId
+                }.input.sourceText
+                item.copy(
+                    translatedText = TranslationTextNormalizer.normalize(
+                        sourceText = source,
+                        translatedText = translated,
+                        glossary = outputGlossary,
+                    ),
+                )
+            }
             TranslationWindowArtifact(
                 windowIndex = window.windowIndex,
                 windowArtifactKey = windowKey,
                 inputGlossarySha256 = inputGlossarySha256,
                 outputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(outputGlossary),
                 outputGlossary = outputGlossary,
-                items = validation.items,
+                items = normalizedItems,
                 ignoredResponseIds = validation.ignoredResponseIds,
                 usage = result.usage?.let { TranslationUsage(it.promptTokens, it.completionTokens, it.totalTokens) },
                 providerModelId = result.modelId,

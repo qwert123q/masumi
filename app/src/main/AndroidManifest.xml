@@ -56,9 +56,6 @@
             android:name=".MainActivity"
             android:exported="false" />
         <activity
-            android:name=".review.IssueReviewActivity"
-            android:exported="false" />
-        <activity
             android:name=".library.MangaReaderActivity"
             android:exported="false" />
         <service

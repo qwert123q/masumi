@@ -46,7 +46,9 @@ class TranslationPromptBuilder(
         append(policy.translateSoundEffects)
         append(", other-text translation=")
         append(policy.translateOtherText)
-        append(". When a role is not translated by policy, set translation to null. Never invent source text or commentary.")
+        append(". Japanese OCR can cut off a name, honorific, or final syllable immediately before an ellipsis. Use repeated names, glossary entries, and nearby chapter context to restore an obvious truncation; never emit a visibly incomplete Chinese word such as 小…… when context establishes 小姐. ")
+        append("Use Chinese typography: write ellipses as …… with no spaces, never as ..., 。。。 or separated dots. Keep names and forms of address consistent within the chapter. ")
+        append("When a role is not translated by policy, set translation to null. Never invent source text or commentary.")
     }
 
     private fun promptItem(item: TranslationBatchItem): PromptItem = PromptItem(

@@ -433,15 +433,6 @@
                         android:text="@string/start_export" />
 
                     <Button
-                        android:id="@+id/reviewIssuesButton"
-                        style="@style/Widget.Masumi.Button.Secondary"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:text="@string/review_title"
-                        android:visibility="gone" />
-
-                    <Button
                         android:id="@+id/readProjectButton"
                         style="@style/Widget.Masumi.Button.Secondary"
                         android:layout_width="match_parent"

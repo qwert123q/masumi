@@ -55,7 +55,6 @@ import rs.masumi.app.library.MangaLibraryModelCache
 import rs.masumi.app.library.MangaLibraryProject
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.library.MangaReaderActivity
-import rs.masumi.app.review.IssueReviewActivity
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
@@ -99,8 +98,12 @@ import rs.masumi.core.quality.QualityPageVerdict
 import rs.masumi.core.quality.QualityPolicy
 import rs.masumi.core.quality.allowsExport
 import rs.masumi.core.translation.TranslationArtifactStore
+import rs.masumi.core.translation.TranslationBatchingConfig
+import rs.masumi.core.translation.TranslationDependencies
 import rs.masumi.core.translation.TranslationJobStatus
 import rs.masumi.core.translation.TranslationPageState
+import rs.masumi.core.translation.TranslationPolicy
+import rs.masumi.core.translation.TranslationPromptRef
 import rs.masumi.core.translation.TranslationWindowState
 import rs.masumi.core.translation.isTerminal
 import rs.masumi.app.detection.PublishedTypesettingRun
@@ -194,7 +197,6 @@ class MainActivity : Activity() {
     private lateinit var cancelExportButton: Button
     private lateinit var exportProgress: ProgressBar
     private lateinit var exportStatus: TextView
-    private lateinit var reviewIssuesButton: Button
     private lateinit var readProjectButton: Button
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private lateinit var catalog: ProjectCatalog
@@ -256,6 +258,8 @@ class MainActivity : Activity() {
     private var libraryRefreshGeneration = 0
     private var synchronizedModelLibraryRoot: String? = null
     private var requestedProjectId: String? = null
+    private var autoSaveCheckInFlight = false
+    private var autoSaveStartedProjectId: String? = null
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -340,7 +344,15 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(ExportStatusBroadcast::parse) ?: return
             refreshExportDurableState(progress)
-            if (progress.status == ExportJobStatus.SUCCEEDED) refreshLibraryHistory()
+            when (progress.status) {
+                ExportJobStatus.SUCCEEDED -> refreshLibraryHistory()
+                ExportJobStatus.CANCELLED,
+                ExportJobStatus.FAILED,
+                -> autoSaveStartedProjectId = null
+                ExportJobStatus.QUEUED,
+                ExportJobStatus.RUNNING,
+                -> Unit
+            }
             onPipelineStateChanged()
         }
     }
@@ -428,7 +440,6 @@ class MainActivity : Activity() {
         cancelExportButton = findViewById(R.id.cancelExportButton)
         exportProgress = findViewById(R.id.exportProgress)
         exportStatus = findViewById(R.id.exportStatus)
-        reviewIssuesButton = findViewById(R.id.reviewIssuesButton)
         readProjectButton = findViewById(R.id.readProjectButton)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
@@ -495,7 +506,6 @@ class MainActivity : Activity() {
         cancelQualityButton.setOnClickListener { cancelQuality() }
         exportButton.setOnClickListener { saveCurrentProjectToLibrary() }
         cancelExportButton.setOnClickListener { cancelExport() }
-        reviewIssuesButton.setOnClickListener { openIssueReview() }
         readProjectButton.setOnClickListener { openCurrentProjectReader() }
         syncWorkspaceState()
         if (intent.getBooleanExtra(EXTRA_IMPORT_CHAPTER, false)) {
@@ -517,6 +527,15 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshDurableState()
+        if (
+            intent.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) &&
+            currentProject != null &&
+            currentQualityRun?.report?.status?.allowsExport() != true &&
+            translationSettingsStore.loadProviderSettings() != null &&
+            !hasActiveWork()
+        ) {
+            automaticPipelineRequested = true
+        }
         refreshLibraryHistory()
         syncInstalledModelsToLibrary()
         onPipelineStateChanged()
@@ -669,6 +688,8 @@ class MainActivity : Activity() {
         syncWorkspaceState()
         if (automaticPipelineRequested) {
             contentPager.post { advanceAutomaticPipeline() }
+        } else {
+            contentPager.post { autoSaveCompletedProjectIfNeeded() }
         }
     }
 
@@ -681,10 +702,6 @@ class MainActivity : Activity() {
         val exportReady = currentQualityRun?.report?.status?.allowsExport() == true
         val active = hasActiveWork()
         val qualityBlocked = currentQualityRun != null && !exportReady
-        val issuePageCount = currentQualityRun?.report?.let {
-            it.warningPageCount + it.blockedPageCount
-        } ?: 0
-
         pipelineProgress.max = total
         pipelineProgress.progress = completed
         pipelineProgressText.text = getString(R.string.process_progress, completed, total)
@@ -699,23 +716,19 @@ class MainActivity : Activity() {
         }
         processButton.setText(
             when {
-                exportReady -> R.string.library_save_result
+                exportReady -> R.string.library_auto_saving
                 active || automaticPipelineRequested -> R.string.process_running
                 completed > 0 -> R.string.process_continue
                 else -> R.string.process_start
             },
         )
-        processButton.isEnabled = hasProject && hasSettings && !active && !qualityBlocked
+        processButton.isEnabled = hasProject && hasSettings && !active && !qualityBlocked && !exportReady
         translationSettingsShortcutButton.visibility = if (hasSettings) View.GONE else View.VISIBLE
         importSection.visibility = if (hasProject) View.GONE else View.VISIBLE
-        reviewIssuesButton.visibility = if (issuePageCount > 0) View.VISIBLE else View.GONE
-        if (issuePageCount > 0) {
-            reviewIssuesButton.text = getString(R.string.library_review_issues, issuePageCount)
-        }
         projectHeaderStatus.text = when {
             exportReady -> getString(R.string.project_ready_to_save)
             active || automaticPipelineRequested -> getString(R.string.process_running)
-            qualityBlocked -> getString(R.string.review_title)
+            qualityBlocked -> getString(R.string.process_incomplete)
             else -> getString(R.string.project_header_status)
         }
 
@@ -733,17 +746,6 @@ class MainActivity : Activity() {
             ?: getString(R.string.project_default_title)
     }
 
-    private fun openIssueReview() {
-        val project = currentProject ?: return
-        startActivity(
-            IssueReviewActivity.intent(
-                this,
-                project.manifest.projectId,
-                projectTitle.text.toString(),
-            ),
-        )
-    }
-
     private fun openCurrentProjectReader() {
         val projectId = currentProject?.manifest?.projectId ?: return
         val rootUri = libraryPreferences.rootUri() ?: return
@@ -754,6 +756,39 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (project != null && project.outputPageCount > 0 && !isFinishing && !isDestroyed) {
                     startActivity(MangaReaderActivity.intent(this, rootUri, project))
+                }
+            }
+        }, LIBRARY_THREAD_NAME).start()
+    }
+
+    private fun autoSaveCompletedProjectIfNeeded() {
+        val project = currentProject ?: return
+        if (
+            currentQualityRun?.report?.status?.allowsExport() != true ||
+            hasActiveWork() ||
+            autoSaveCheckInFlight ||
+            autoSaveStartedProjectId == project.manifest.projectId
+        ) {
+            return
+        }
+        val rootUri = libraryPreferences.rootUri() ?: return
+        autoSaveCheckInFlight = true
+        Thread({
+            val outputPageCount = runCatching {
+                MangaLibraryStore(contentResolver, rootUri)
+                    .project(project.manifest.projectId)
+                    ?.outputPageCount
+                    ?: 0
+            }
+            runOnUiThread {
+                autoSaveCheckInFlight = false
+                if (
+                    outputPageCount.getOrDefault(0) < project.manifest.pages.size &&
+                    currentProject?.manifest?.projectId == project.manifest.projectId &&
+                    currentQualityRun?.report?.status?.allowsExport() == true &&
+                    !hasActiveWork()
+                ) {
+                    saveCurrentProjectToLibrary()
                 }
             }
         }, LIBRARY_THREAD_NAME).start()
@@ -988,6 +1023,7 @@ class MainActivity : Activity() {
             openLibraryFolder(continueToChapter = false, continueToExport = true)
             return
         }
+        autoSaveStartedProjectId = project.manifest.projectId
         exportButton.isEnabled = false
         exportStatus.setText(R.string.export_status_starting)
         Thread({
@@ -1012,6 +1048,7 @@ class MainActivity : Activity() {
                         if (currentProject?.manifest?.projectId == project.manifest.projectId) startExport(uri)
                     },
                     onFailure = {
+                        autoSaveStartedProjectId = null
                         exportButton.isEnabled = true
                         exportStatus.setText(R.string.library_unavailable)
                     },
@@ -1508,7 +1545,12 @@ class MainActivity : Activity() {
             return
         }
         currentTranslationRun = catalog.latestPublishedTranslationRun(project.manifest.projectId)
-            ?.takeIf { it.artifact.dependencies.ocrRunArtifactKey == ocrRun.artifact.runArtifactKey }
+            ?.takeIf {
+                it.artifact.dependencies.ocrRunArtifactKey == ocrRun.artifact.runArtifactKey &&
+                    it.artifact.dependencies.policy == TranslationPolicy() &&
+                    it.artifact.dependencies.prompt == TranslationPromptRef() &&
+                    it.artifact.dependencies.batching == TranslationBatchingConfig()
+            }
         val durableProgress = progressOverride
             ?.takeIf { progress ->
                 progress.projectId == project.manifest.projectId &&
@@ -1921,7 +1963,7 @@ class MainActivity : Activity() {
     ): Boolean {
         val job = TranslationArtifactStore(project.directory).readJob(progress.jobId) ?: return false
         return job.runArtifactKey == progress.runArtifactKey &&
-            job.dependencies.ocrRunArtifactKey == ocrRunArtifactKey
+            translationDependenciesAreCurrent(job.dependencies, ocrRunArtifactKey)
     }
 
     private fun progressFromTranslationDurableState(
@@ -1932,7 +1974,7 @@ class MainActivity : Activity() {
         if (
             job != null &&
             job.projectId == project.manifest.projectId &&
-            job.dependencies.ocrRunArtifactKey == ocrRunArtifactKey &&
+            translationDependenciesAreCurrent(job.dependencies, ocrRunArtifactKey) &&
             (
                 job.status == TranslationJobStatus.QUEUED ||
                     job.status == TranslationJobStatus.RUNNING ||
@@ -1973,6 +2015,15 @@ class MainActivity : Activity() {
             )
         }
     }
+
+    private fun translationDependenciesAreCurrent(
+        dependencies: TranslationDependencies,
+        ocrRunArtifactKey: String,
+    ): Boolean =
+        dependencies.ocrRunArtifactKey == ocrRunArtifactKey &&
+            dependencies.policy == TranslationPolicy() &&
+            dependencies.prompt == TranslationPromptRef() &&
+            dependencies.batching == TranslationBatchingConfig()
 
     private fun ocrProgressMatchesDetection(project: ProjectRef, progress: OcrProgress): Boolean {
         val job = OcrArtifactStore(project.directory).readJob(progress.jobId) ?: return false
@@ -3174,6 +3225,7 @@ class MainActivity : Activity() {
         private const val EXTRA_PROJECT_ID = "project_id"
         private const val EXTRA_IMPORT_CHAPTER = "import_chapter"
         private const val EXTRA_SHOW_DETAILS = "show_details"
+        private const val EXTRA_AUTO_CONTINUE = "auto_continue"
         private val SAFE_PROJECT_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
         fun projectIntent(context: Context, projectId: String, showDetails: Boolean = false): Intent {
@@ -3181,6 +3233,7 @@ class MainActivity : Activity() {
             return Intent(context, MainActivity::class.java)
                 .putExtra(EXTRA_PROJECT_ID, projectId)
                 .putExtra(EXTRA_SHOW_DETAILS, showDetails)
+                .putExtra(EXTRA_AUTO_CONTINUE, !showDetails)
         }
 
         fun importIntent(context: Context): Intent =
