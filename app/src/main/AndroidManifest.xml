@@ -45,13 +45,19 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Masumi">
         <activity
-            android:name=".MainActivity"
+            android:name=".library.LibraryActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".MainActivity"
+            android:exported="false" />
+        <activity
+            android:name=".review.IssueReviewActivity"
+            android:exported="false" />
         <activity
             android:name=".library.MangaReaderActivity"
             android:exported="false" />

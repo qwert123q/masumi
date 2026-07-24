@@ -6,7 +6,10 @@ The repository now contains the complete end-to-end Android application pipeline
 
 ## Current capability
 
-- Guide users through the seven-stage localization workflow with a compact Android-native workspace, clear locked/available states, on-demand translation settings, and accessible 48 dp controls.
+- Open into a library-first Android home with project covers, whole-chapter status, issue-page counts, and direct continue-processing or continue-reading actions.
+- Keep each chapter in a dedicated project screen; move the seven technical stages behind a processing-record entry instead of presenting them as top-level navigation.
+- Collect automatic quality warnings into an issue-page review flow with original/result comparison before reading.
+- Persist per-project reading progress across app restarts.
 - Select a folder through Android's system document picker.
 - Import direct-child JPEG, PNG, and WebP pages in natural filename order.
 - Stream each page once while computing its SHA-256 content identifier.

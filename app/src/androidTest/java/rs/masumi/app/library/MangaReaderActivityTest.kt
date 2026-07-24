@@ -57,7 +57,7 @@ class MangaReaderActivityTest {
         val reloadedProject = requireNotNull(store.project("reader-project"))
         ParcelFileDescriptor.AutoCloseInputStream(
             instrumentation.uiAutomation.executeShellCommand(
-                "am start -W -n ${targetContext.packageName}/rs.masumi.app.MainActivity",
+                "am start -W -n ${targetContext.packageName}/rs.masumi.app.library.LibraryActivity",
             ),
         ).use { it.readBytes() }
         instrumentation.waitForIdleSync()

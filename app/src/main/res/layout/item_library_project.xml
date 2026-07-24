@@ -2,31 +2,93 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginTop="10dp"
-    android:background="@drawable/masumi_status_background"
-    android:orientation="vertical"
+    android:layout_marginTop="14dp"
+    android:background="@drawable/masumi_stage_background"
+    android:orientation="horizontal"
     android:padding="14dp">
 
-    <TextView
-        android:id="@+id/libraryProjectTitle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:maxLines="2"
-        android:textAppearance="@style/TextAppearance.Masumi.Title"
-        android:textSize="17sp" />
+    <FrameLayout
+        android:layout_width="92dp"
+        android:layout_height="132dp"
+        android:background="@drawable/masumi_cover_placeholder_background">
 
-    <TextView
-        android:id="@+id/libraryProjectStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+        <TextView
+            android:id="@+id/libraryProjectInitial"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:textColor="@color/masumi_accent"
+            android:textSize="34sp"
+            android:textStyle="bold" />
 
-    <Button
-        android:id="@+id/libraryProjectReadButton"
-        style="@style/Widget.Masumi.Button.Secondary"
-        android:layout_width="match_parent"
+        <ImageView
+            android:id="@+id/libraryProjectCover"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/library_project_cover"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:text="@string/library_read" />
+        android:layout_marginStart="14dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/libraryProjectTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textAppearance="@style/TextAppearance.Masumi.Title"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/libraryProjectStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:maxLines="2"
+            android:textAppearance="@style/TextAppearance.Masumi.Body"
+            android:textSize="13sp" />
+
+        <ProgressBar
+            android:id="@+id/libraryProjectProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:max="6"
+            android:progress="0"
+            android:progressTint="@color/masumi_accent" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/libraryProjectReadButton"
+                style="@style/Widget.Masumi.Button.Primary"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minHeight="44dp"
+                android:text="@string/library_read" />
+
+            <Button
+                android:id="@+id/libraryProjectOpenButton"
+                style="@style/Widget.Masumi.Button.Secondary"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:minHeight="44dp"
+                android:text="@string/library_project_details" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>

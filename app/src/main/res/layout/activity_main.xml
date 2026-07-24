@@ -22,29 +22,44 @@
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
+            <Button
+                android:id="@+id/projectBackButton"
+                style="@style/Widget.Masumi.Button.Secondary"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="12dp"
+                android:minWidth="72dp"
+                android:text="@string/project_back" />
+
             <TextView
+                android:id="@+id/projectTitle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:ellipsize="end"
                 android:fontFamily="sans-serif-medium"
-                android:text="@string/app_name"
+                android:maxLines="1"
+                android:text="@string/project_default_title"
                 android:textColor="@color/masumi_ink"
-                android:textSize="22sp" />
+                android:textSize="20sp" />
 
             <TextView
+                android:id="@+id/projectHeaderStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/main_eyebrow"
+                android:text="@string/project_header_status"
                 android:textAppearance="@style/TextAppearance.Masumi.Label" />
         </LinearLayout>
 
         <LinearLayout
+            android:id="@+id/legacyTabContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:background="@drawable/masumi_status_background"
             android:orientation="horizontal"
-            android:padding="4dp">
+            android:padding="4dp"
+            android:visibility="gone">
 
             <Button
                 android:id="@+id/workspaceTabButton"
@@ -70,7 +85,7 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:contentDescription="@string/swipe_hint">
+        android:contentDescription="@string/project_content_description">
 
         <ScrollView
             android:id="@+id/workspacePage"
@@ -89,11 +104,13 @@
                 android:paddingBottom="44dp">
 
                 <LinearLayout
+                    android:id="@+id/mainHeroCard"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:background="@drawable/masumi_hero_background"
                     android:orientation="vertical"
-                    android:padding="24dp">
+                    android:padding="24dp"
+                    android:visibility="gone">
 
                     <TextView
                         android:layout_width="wrap_content"
@@ -121,12 +138,14 @@
                 </LinearLayout>
 
                 <LinearLayout
+                    android:id="@+id/legacyLibrarySection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
                     android:background="@drawable/masumi_stage_background"
                     android:orientation="vertical"
-                    android:padding="20dp">
+                    android:padding="20dp"
+                    android:visibility="gone">
 
                     <TextView
                         android:layout_width="match_parent"
@@ -191,6 +210,7 @@
                     android:textAppearance="@style/TextAppearance.Masumi.Body" />
 
                 <LinearLayout
+                    android:id="@+id/importSection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="16dp"
@@ -411,6 +431,24 @@
                         android:layout_marginTop="16dp"
                         android:enabled="false"
                         android:text="@string/start_export" />
+
+                    <Button
+                        android:id="@+id/reviewIssuesButton"
+                        style="@style/Widget.Masumi.Button.Secondary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/review_title"
+                        android:visibility="gone" />
+
+                    <Button
+                        android:id="@+id/readProjectButton"
+                        style="@style/Widget.Masumi.Button.Secondary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/library_read"
+                        android:visibility="gone" />
 
                     <Button
                         android:id="@+id/cancelExportButton"

@@ -55,6 +55,7 @@ import rs.masumi.app.library.MangaLibraryModelCache
 import rs.masumi.app.library.MangaLibraryProject
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.library.MangaReaderActivity
+import rs.masumi.app.review.IssueReviewActivity
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
@@ -114,6 +115,10 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 class MainActivity : Activity() {
+    private lateinit var projectBackButton: Button
+    private lateinit var projectTitle: TextView
+    private lateinit var projectHeaderStatus: TextView
+    private lateinit var importSection: View
     private lateinit var contentPager: HorizontalSwipeViewFlipper
     private lateinit var workspacePage: ScrollView
     private lateinit var detailsPage: ScrollView
@@ -189,6 +194,8 @@ class MainActivity : Activity() {
     private lateinit var cancelExportButton: Button
     private lateinit var exportProgress: ProgressBar
     private lateinit var exportStatus: TextView
+    private lateinit var reviewIssuesButton: Button
+    private lateinit var readProjectButton: Button
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private lateinit var catalog: ProjectCatalog
     private lateinit var translationSettingsStore: TranslationSettingsStore
@@ -248,6 +255,7 @@ class MainActivity : Activity() {
     private var pendingExportAfterLibrary = false
     private var libraryRefreshGeneration = 0
     private var synchronizedModelLibraryRoot: String? = null
+    private var requestedProjectId: String? = null
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -341,6 +349,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        projectBackButton = findViewById(R.id.projectBackButton)
+        projectTitle = findViewById(R.id.projectTitle)
+        projectHeaderStatus = findViewById(R.id.projectHeaderStatus)
+        importSection = findViewById(R.id.importSection)
         contentPager = findViewById(R.id.contentPager)
         workspacePage = findViewById(R.id.workspacePage)
         detailsPage = findViewById(R.id.detailsPage)
@@ -416,9 +428,13 @@ class MainActivity : Activity() {
         cancelExportButton = findViewById(R.id.cancelExportButton)
         exportProgress = findViewById(R.id.exportProgress)
         exportStatus = findViewById(R.id.exportStatus)
+        reviewIssuesButton = findViewById(R.id.reviewIssuesButton)
+        readProjectButton = findViewById(R.id.readProjectButton)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
         libraryPreferences = MangaLibraryPreferences(this)
+        requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
+            ?.takeIf(SAFE_PROJECT_ID::matches)
         automaticPipelineRequested = getPreferences(MODE_PRIVATE)
             .getBoolean(PREF_AUTOMATIC_PIPELINE, false)
         val savedTranslationSettings = translationSettingsStore.loadSaved()
@@ -428,18 +444,18 @@ class MainActivity : Activity() {
             translationModel.setText(saved.model)
         }
         setTranslationSettingsExpanded(false)
-        showPage(PageNavigation.normalize(savedInstanceState?.getInt(STATE_SELECTED_PAGE)))
-        contentPager.onSwipe = { direction ->
-            showPage(
-                if (direction == HorizontalSwipeViewFlipper.Direction.LEFT) {
-                    PAGE_DETAILS
-                } else {
-                    PAGE_WORKSPACE
-                },
-            )
+        val initialPage = if (intent.getBooleanExtra(EXTRA_SHOW_DETAILS, false)) {
+            PAGE_DETAILS
+        } else {
+            PageNavigation.normalize(savedInstanceState?.getInt(STATE_SELECTED_PAGE))
         }
+        showPage(initialPage)
+        contentPager.onSwipe = null
         registerPredictiveBackCallback()
 
+        projectBackButton.setOnClickListener {
+            if (!returnToWorkspaceIfNeeded()) finishAfterTransition()
+        }
         workspaceTabButton.setOnClickListener { showPage(PAGE_WORKSPACE) }
         detailsTabButton.setOnClickListener { showPage(PAGE_DETAILS) }
         detailsShortcutButton.setOnClickListener { showPage(PAGE_DETAILS) }
@@ -479,7 +495,12 @@ class MainActivity : Activity() {
         cancelQualityButton.setOnClickListener { cancelQuality() }
         exportButton.setOnClickListener { saveCurrentProjectToLibrary() }
         cancelExportButton.setOnClickListener { cancelExport() }
+        reviewIssuesButton.setOnClickListener { openIssueReview() }
+        readProjectButton.setOnClickListener { openCurrentProjectReader() }
         syncWorkspaceState()
+        if (intent.getBooleanExtra(EXTRA_IMPORT_CHAPTER, false)) {
+            contentPager.post { openChapterFolder() }
+        }
     }
 
     override fun onStart() {
@@ -660,6 +681,9 @@ class MainActivity : Activity() {
         val exportReady = currentQualityRun?.report?.status?.allowsExport() == true
         val active = hasActiveWork()
         val qualityBlocked = currentQualityRun != null && !exportReady
+        val issuePageCount = currentQualityRun?.report?.let {
+            it.warningPageCount + it.blockedPageCount
+        } ?: 0
 
         pipelineProgress.max = total
         pipelineProgress.progress = completed
@@ -675,14 +699,25 @@ class MainActivity : Activity() {
         }
         processButton.setText(
             when {
-                exportReady -> R.string.process_done
+                exportReady -> R.string.library_save_result
                 active || automaticPipelineRequested -> R.string.process_running
                 completed > 0 -> R.string.process_continue
                 else -> R.string.process_start
             },
         )
-        processButton.isEnabled = hasProject && hasSettings && !exportReady && !active && !qualityBlocked
+        processButton.isEnabled = hasProject && hasSettings && !active && !qualityBlocked
         translationSettingsShortcutButton.visibility = if (hasSettings) View.GONE else View.VISIBLE
+        importSection.visibility = if (hasProject) View.GONE else View.VISIBLE
+        reviewIssuesButton.visibility = if (issuePageCount > 0) View.VISIBLE else View.GONE
+        if (issuePageCount > 0) {
+            reviewIssuesButton.text = getString(R.string.library_review_issues, issuePageCount)
+        }
+        projectHeaderStatus.text = when {
+            exportReady -> getString(R.string.project_ready_to_save)
+            active || automaticPipelineRequested -> getString(R.string.process_running)
+            qualityBlocked -> getString(R.string.review_title)
+            else -> getString(R.string.project_header_status)
+        }
 
         val project = currentProject
         if (
@@ -692,6 +727,36 @@ class MainActivity : Activity() {
         ) {
             statusText.text = getString(R.string.import_status_existing, project.manifest.pages.size)
         }
+        projectTitle.text = project?.manifest?.pages?.firstOrNull()?.originalName
+            ?.substringBeforeLast('.')
+            ?.takeIf(String::isNotBlank)
+            ?: getString(R.string.project_default_title)
+    }
+
+    private fun openIssueReview() {
+        val project = currentProject ?: return
+        startActivity(
+            IssueReviewActivity.intent(
+                this,
+                project.manifest.projectId,
+                projectTitle.text.toString(),
+            ),
+        )
+    }
+
+    private fun openCurrentProjectReader() {
+        val projectId = currentProject?.manifest?.projectId ?: return
+        val rootUri = libraryPreferences.rootUri() ?: return
+        Thread({
+            val project = runCatching {
+                MangaLibraryStore(contentResolver, rootUri).project(projectId)
+            }.getOrNull()
+            runOnUiThread {
+                if (project != null && project.outputPageCount > 0 && !isFinishing && !isDestroyed) {
+                    startActivity(MangaReaderActivity.intent(this, rootUri, project))
+                }
+            }
+        }, LIBRARY_THREAD_NAME).start()
     }
 
     private fun refreshLibraryHistory() {
@@ -752,6 +817,14 @@ class MainActivity : Activity() {
                 }
             }
             libraryHistoryContainer.addView(item)
+        }
+        val currentId = currentProject?.manifest?.projectId
+        val currentLibraryProject = projects.firstOrNull { it.metadata.projectId == currentId }
+        currentLibraryProject?.let { projectTitle.text = it.metadata.title }
+        readProjectButton.visibility = if ((currentLibraryProject?.outputPageCount ?: 0) > 0 && rootUri != null) {
+            View.VISIBLE
+        } else {
+            View.GONE
         }
     }
 
@@ -1335,7 +1408,9 @@ class MainActivity : Activity() {
 
     private fun refreshDurableState(progressOverride: DetectionProgress? = null) {
         val priorProjectId = currentProject?.manifest?.projectId
-        currentProject = catalog.latestProject()
+        currentProject = requestedProjectId
+            ?.let { projectId -> runCatching { catalog.openProject(projectId) }.getOrNull() }
+            ?: catalog.latestProject()
         val project = currentProject
         if (project == null) {
             currentRun = null
@@ -3083,7 +3158,7 @@ class MainActivity : Activity() {
         -> false
     }
 
-    private companion object {
+    companion object {
         const val PAGE_WORKSPACE = PageNavigation.WORKSPACE
         const val PAGE_DETAILS = PageNavigation.DETAILS
         const val STATE_SELECTED_PAGE = "selected_page"
@@ -3096,6 +3171,21 @@ class MainActivity : Activity() {
         const val MODEL_LIBRARY_SYNC_THREAD_NAME = "masumi-model-library-sync"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
         const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"
+        private const val EXTRA_PROJECT_ID = "project_id"
+        private const val EXTRA_IMPORT_CHAPTER = "import_chapter"
+        private const val EXTRA_SHOW_DETAILS = "show_details"
+        private val SAFE_PROJECT_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+        fun projectIntent(context: Context, projectId: String, showDetails: Boolean = false): Intent {
+            require(SAFE_PROJECT_ID.matches(projectId))
+            return Intent(context, MainActivity::class.java)
+                .putExtra(EXTRA_PROJECT_ID, projectId)
+                .putExtra(EXTRA_SHOW_DETAILS, showDetails)
+        }
+
+        fun importIntent(context: Context): Intent =
+            Intent(context, MainActivity::class.java)
+                .putExtra(EXTRA_IMPORT_CHAPTER, true)
     }
 
     private data class ChapterImportResult(

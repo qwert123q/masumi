@@ -26,11 +26,13 @@ class MangaReaderActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var previousButton: Button
     private lateinit var nextButton: Button
+    private lateinit var readingProgressStore: MangaReadingProgressStore
     private val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "masumi-reader") }
     private val loadGeneration = AtomicInteger()
     private var pages: List<MangaLibraryPage> = emptyList()
     private var currentIndex = 0
     private var displayedBitmap: Bitmap? = null
+    private lateinit var projectId: String
     private var downX = 0f
     private var downY = 0f
 
@@ -45,23 +47,27 @@ class MangaReaderActivity : Activity() {
         statusView = findViewById(R.id.readerStatus)
         previousButton = findViewById(R.id.readerPreviousButton)
         nextButton = findViewById(R.id.readerNextButton)
+        readingProgressStore = MangaReadingProgressStore(this)
         findViewById<Button>(R.id.readerCloseButton).setOnClickListener { finish() }
         previousButton.setOnClickListener { showPage(currentIndex - 1) }
         nextButton.setOnClickListener { showPage(currentIndex + 1) }
         installSwipeNavigation()
 
         val rootUri = intent.getStringExtra(EXTRA_LIBRARY_ROOT)?.let(Uri::parse)
-        val projectId = intent.getStringExtra(EXTRA_PROJECT_ID)
+        val requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         if (
-            rootUri == null || projectId == null ||
-            rootUri.scheme != "content" || !SAFE_ID.matches(projectId)
+            rootUri == null || requestedProjectId == null ||
+            rootUri.scheme != "content" || !SAFE_ID.matches(requestedProjectId)
         ) {
             finish()
             return
         }
+        projectId = requestedProjectId
         titleView.text = title
-        currentIndex = savedInstanceState?.getInt(STATE_PAGE_INDEX, 0) ?: 0
+        currentIndex = savedInstanceState?.getInt(STATE_PAGE_INDEX)
+            ?: readingProgressStore.load(projectId)?.pageIndex
+            ?: 0
         loadProject(rootUri, projectId)
     }
 
@@ -105,6 +111,7 @@ class MangaReaderActivity : Activity() {
         previousButton.isEnabled = index > 0
         nextButton.isEnabled = index < pages.lastIndex
         statusView.text = getString(R.string.reader_page_indicator, index + 1, pages.size)
+        readingProgressStore.save(projectId, index, pages.size)
         scrollView.scrollTo(0, 0)
         val generation = loadGeneration.incrementAndGet()
         val page = pages[index]
