@@ -22,6 +22,7 @@ import rs.masumi.core.typesetting.TypesettingPreserveReason
 import rs.masumi.core.typesetting.TypesettingRegionArtifact
 import rs.masumi.core.typesetting.TypesettingRegionState
 import rs.masumi.core.typesetting.TypesettingStyle
+import rs.masumi.core.typesetting.VerticalTypography
 import rs.masumi.core.translation.TranslationTextNormalizer
 
 data class TypesettingTarget(
@@ -110,7 +111,7 @@ class ChineseTypesetter {
                     typeface,
                 )
                 TypesettingDirection.VERTICAL_RTL -> fitVertical(
-                    normalizeVerticalPunctuation(text),
+                    VerticalTypography.normalize(text),
                     layoutBox,
                     minimumSize,
                     maximumSize,
@@ -356,10 +357,6 @@ class ChineseTypesetter {
         }
     }
 
-    private fun normalizeVerticalPunctuation(text: String): String = buildString {
-        text.forEach { append(VERTICAL_FORMS[it] ?: it) }
-    }
-
     private fun PixelBox.toIntBox(width: Int, height: Int): IntBox? {
         val left = floor(left).toInt().coerceIn(0, width)
         val top = floor(top).toInt().coerceIn(0, height)
@@ -451,25 +448,6 @@ class ChineseTypesetter {
 
     private companion object {
         const val BINARY_SEARCH_STEPS = 12
-        val VERTICAL_FORMS = mapOf(
-            '，' to '︐',
-            '、' to '︑',
-            '。' to '︒',
-            '：' to '︓',
-            '；' to '︔',
-            '！' to '︕',
-            '？' to '︖',
-            '…' to '︙',
-            '—' to '︱',
-            '（' to '︵',
-            '）' to '︶',
-            '【' to '︻',
-            '】' to '︼',
-            '「' to '﹁',
-            '」' to '﹂',
-            '『' to '﹃',
-            '』' to '﹄',
-        )
         val VERTICAL_CLOSING_PUNCTUATION = setOf("︑", "︒", "︐", "︓", "︔", "︕", "︖", "︶", "︼", "﹂", "﹄")
     }
 }

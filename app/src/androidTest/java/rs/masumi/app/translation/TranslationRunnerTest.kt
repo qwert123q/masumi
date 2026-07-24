@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import rs.masumi.core.detection.DetectorClass
@@ -35,6 +36,7 @@ import rs.masumi.core.ocr.PageOcrArtifact
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.translation.TranslationJobStatus
+import rs.masumi.core.translation.TranslationArtifactStore
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationModelItem
 import rs.masumi.core.translation.TranslationModelResponse
@@ -42,6 +44,40 @@ import rs.masumi.core.translation.TranslationRole
 
 @RunWith(AndroidJUnit4::class)
 class TranslationRunnerTest {
+    @Test
+    fun glossaryPrefetchIsAppliedToTheSameWindowBeforeTranslation() {
+        val workspace = Files.createTempDirectory("masumi-translation-glossary")
+        try {
+            publishOcr(workspace, "ルミリアさ・・・っ！")
+            val provider = GlossaryAwareProvider()
+            val runner = TranslationRunner(
+                workspaceRoot = workspace,
+                provider = provider,
+                idSource = IdSource { "translation-glossary" },
+            )
+            val result = runner.run(
+                PROJECT_ID,
+                TranslationProviderSettings(
+                    apiUrl = "https://example.invalid/v1",
+                    apiKey = "secret-not-for-artifacts",
+                    model = "model-safe",
+                ),
+                { false },
+            ) { }
+
+            val run = requireNotNull(result.runArtifact)
+            val store = TranslationArtifactStore(workspace.resolve("projects/$PROJECT_ID"))
+            val page = requireNotNull(store.readPublishedPage(run.runArtifactKey, run.entries.single()))
+
+            assertEquals(TranslationJobStatus.SUCCEEDED, result.job.status)
+            assertEquals(2, provider.callCount)
+            assertTrue(provider.translationSawPrefetchedGlossary)
+            assertEquals("露米莉亚小姐……！", page.items.single().translatedText)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
     @Test
     fun cancelledWindowResumesFromPublishedOcrAndCompletedRunIsReused() {
         val workspace = Files.createTempDirectory("masumi-translation-runner")
@@ -70,14 +106,17 @@ class TranslationRunnerTest {
             val completed = runner.run(PROJECT_ID, settings, { false }) { }
 
             assertEquals(TranslationJobStatus.SUCCEEDED, completed.job.status)
-            assertEquals(1, provider.callCount)
+            assertEquals(2, provider.callCount)
             assertEquals(1, completed.report?.translatedItemCount)
+            assertEquals(20L, completed.report?.promptTokens)
+            assertEquals(10L, completed.report?.completionTokens)
+            assertEquals(30L, completed.report?.totalTokens)
             assertNotNull(completed.publishedDirectory)
 
             val cached = runner.run(PROJECT_ID, settings, { false }) { }
 
             assertEquals(TranslationJobStatus.SUCCEEDED, cached.job.status)
-            assertEquals(1, provider.callCount)
+            assertEquals(2, provider.callCount)
         } finally {
             workspace.toFile().deleteRecursively()
         }
@@ -88,7 +127,7 @@ class TranslationRunnerTest {
         val workspace = Files.createTempDirectory("masumi-translation-retry")
         try {
             publishOcr(workspace)
-            val provider = FailOnceProvider()
+            val provider = FailFirstWindowProvider()
             var nextJobId = 0
             val runner = TranslationRunner(
                 workspaceRoot = workspace,
@@ -111,7 +150,7 @@ class TranslationRunnerTest {
             val retried = runner.run(PROJECT_ID, settings, { false }) { }
 
             assertEquals(TranslationJobStatus.SUCCEEDED, retried.job.status)
-            assertEquals(2, provider.callCount)
+            assertEquals(4, provider.callCount)
             assertNotNull(retried.publishedDirectory)
         } finally {
             workspace.toFile().deleteRecursively()
@@ -147,7 +186,7 @@ class TranslationRunnerTest {
         }
     }
 
-    private fun publishOcr(workspace: Path) {
+    private fun publishOcr(workspace: Path, sourceText: String = "今日は") {
         val project = workspace.resolve("projects/$PROJECT_ID")
         val runDirectory = project.resolve("artifacts/ocr/${"a".repeat(64)}")
         val pageDirectory = runDirectory.resolve("pages/${"b".repeat(64)}")
@@ -192,8 +231,8 @@ class TranslationRunnerTest {
             executionBackend = OcrExecutionBackend.VULKAN,
             strategy = OcrCropStrategy.PADDED_TEXT,
             cropBox = candidate.box,
-            rawText = "今日は",
-            normalizedText = "今日は",
+            rawText = sourceText,
+            normalizedText = sourceText,
             tokenIds = listOf(1),
             tokenProbabilities = listOf(0.9),
             sourceWidth = 20,
@@ -302,7 +341,48 @@ class TranslationRunnerTest {
         }
     }
 
-    private class FailOnceProvider : TranslationProvider {
+    private class GlossaryAwareProvider : TranslationProvider {
+        var callCount: Int = 0
+        var translationSawPrefetchedGlossary: Boolean = false
+
+        override fun newCall(
+            settings: TranslationProviderSettings,
+            messages: rs.masumi.core.translation.TranslationPromptMessages,
+        ): TranslationProviderCall = object : TranslationProviderCall {
+            override fun execute(): TranslationProviderResult {
+                callCount += 1
+                val discovery = messages.system.contains("Build a reusable")
+                val response = if (discovery) {
+                    TranslationModelResponse(
+                        items = emptyList(),
+                        glossaryUpdates = mapOf("ルミリアさん" to "露米莉亚小姐"),
+                    )
+                } else {
+                    translationSawPrefetchedGlossary =
+                        messages.user.contains("\"source\":\"ルミリアさん\"") &&
+                            messages.user.contains("\"translation\":\"露米莉亚小姐\"")
+                    val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                        .findAll(messages.user).last().groupValues[1]
+                    TranslationModelResponse(
+                        items = listOf(
+                            TranslationModelItem(id, TranslationRole.DIALOGUE, "露米莉亚小...！"),
+                        ),
+                    )
+                }
+                return TranslationProviderResult(
+                    response = response,
+                    usage = TranslationProviderUsage(10, 5, 15),
+                    modelId = "model-safe",
+                    attemptCount = 1,
+                    durationMillis = 1L,
+                )
+            }
+
+            override fun cancel() = Unit
+        }
+    }
+
+    private class FailFirstWindowProvider : TranslationProvider {
         var callCount: Int = 0
 
         override fun newCall(
@@ -311,7 +391,7 @@ class TranslationRunnerTest {
         ): TranslationProviderCall = object : TranslationProviderCall {
             override fun execute(): TranslationProviderResult {
                 callCount += 1
-                if (callCount == 1) {
+                if (callCount <= 2) {
                     throw TranslationProviderException(
                         code = TranslationProviderErrorCode.NETWORK,
                         retryable = true,

@@ -33,4 +33,22 @@ class TranslationPromptBuilderTest {
         assertTrue(messages.user.indexOf("\"source\":\"A\"") < messages.user.indexOf("\"source\":\"B\""))
         assertEquals(messages, TranslationPromptBuilder().build(window))
     }
+
+    @Test
+    fun `glossary discovery sees context and targets but requests no translated items`() {
+        val context = TranslationFixtures.batchItem(
+            TranslationFixtures.input("context-id", 0, "ルミリアさん"),
+        )
+        val window = TranslationFixtures.window(
+            listOf(TranslationFixtures.input("target-id", 1, "ルミリアさ・・・っ！")),
+        ).copy(contextItems = listOf(context))
+
+        val messages = TranslationPromptBuilder().buildGlossaryDiscovery(window)
+
+        assertTrue(messages.system.contains("items []"))
+        assertTrue(messages.system.contains("name-plus-honorific"))
+        assertTrue(messages.user.contains("\"id\":\"context-id\""))
+        assertTrue(messages.user.contains("\"id\":\"target-id\""))
+        assertTrue(messages.user.contains("\"items\":[]"))
+    }
 }

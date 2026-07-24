@@ -70,7 +70,7 @@ data class TranslationPolicy(
 
 @Serializable
 data class TranslationPromptRef(
-    val revision: String = "chapter-context-recovery-v2",
+    val revision: String = "window-glossary-prefetch-v3",
     val responseSchemaRevision: String = "items-by-id-v1",
 )
 

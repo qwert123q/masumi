@@ -34,6 +34,7 @@ import rs.masumi.core.translation.TranslationPageState
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPreserveReason
 import rs.masumi.core.translation.TranslationPromptBuilder
+import rs.masumi.core.translation.TranslationPromptMessages
 import rs.masumi.core.translation.TranslationPromptRef
 import rs.masumi.core.translation.TranslationProtectionReason
 import rs.masumi.core.translation.TranslationProviderDependency
@@ -302,16 +303,47 @@ class TranslationRunner(
             )
         }
         if (cancellation()) throw TranslationCancellationSignal()
-        val call = provider.newCall(settings, promptBuilder.build(window))
-        activeCall.set(call)
+        var attemptCount = 0
+        var usage: TranslationUsage? = null
+        var workingGlossary = inputGlossary
+
+        val discoveryWindow = window.copy(
+            glossary = inputGlossary,
+            contextItems = (window.contextItems + window.items)
+                .distinctBy { it.input.translationRegionId },
+            items = emptyList(),
+        )
+        try {
+            val discovery = executeProviderCall(
+                settings = settings,
+                messages = promptBuilder.buildGlossaryDiscovery(window),
+                cancellation = cancellation,
+            )
+            attemptCount += discovery.attemptCount
+            usage = usage.plus(discovery.usage)
+            val discovered = responseValidator.validate(discoveryWindow, discovery.response)
+            workingGlossary = mergeGlossary(workingGlossary, discovered.glossaryUpdates)
+        } catch (failure: TranslationProviderException) {
+            if (failure.code == TranslationProviderErrorCode.CANCELLED || cancellation()) {
+                throw TranslationCancellationSignal()
+            }
+            attemptCount += failure.attemptCount
+        }
+
+        val translationWindow = window.copy(glossary = workingGlossary)
         return try {
-            val result = call.execute()
-            if (cancellation()) throw TranslationCancellationSignal()
-            val validation = responseValidator.validate(window, result.response)
-            val outputGlossary = mergeGlossary(inputGlossary, validation.glossaryUpdates)
+            val result = executeProviderCall(
+                settings = settings,
+                messages = promptBuilder.build(translationWindow),
+                cancellation = cancellation,
+            )
+            attemptCount += result.attemptCount
+            usage = usage.plus(result.usage)
+            val validation = responseValidator.validate(translationWindow, result.response)
+            val outputGlossary = mergeGlossary(workingGlossary, validation.glossaryUpdates)
             val normalizedItems = validation.items.map { item ->
                 val translated = item.translatedText ?: return@map item
-                val source = window.items.single {
+                val source = translationWindow.items.single {
                     it.input.translationRegionId == item.translationRegionId
                 }.input.sourceText
                 item.copy(
@@ -330,31 +362,62 @@ class TranslationRunner(
                 outputGlossary = outputGlossary,
                 items = normalizedItems,
                 ignoredResponseIds = validation.ignoredResponseIds,
-                usage = result.usage?.let { TranslationUsage(it.promptTokens, it.completionTokens, it.totalTokens) },
+                usage = usage,
                 providerModelId = result.modelId,
-                attemptCount = result.attemptCount,
-                durationMillis = result.durationMillis,
+                attemptCount = attemptCount,
+                durationMillis = (clock.millis() - started).coerceAtLeast(0L),
             )
         } catch (failure: TranslationProviderException) {
             if (failure.code == TranslationProviderErrorCode.CANCELLED || cancellation()) {
                 throw TranslationCancellationSignal()
             }
+            attemptCount += failure.attemptCount
             val items = window.items.map { item -> item.preserved(TranslationPreserveReason.PROVIDER_FAILURE) }
             TranslationWindowArtifact(
                 windowIndex = window.windowIndex,
                 windowArtifactKey = windowKey,
                 inputGlossarySha256 = inputGlossarySha256,
-                outputGlossarySha256 = inputGlossarySha256,
-                outputGlossary = inputGlossary,
+                outputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(workingGlossary),
+                outputGlossary = workingGlossary,
                 items = items,
                 ignoredResponseIds = emptyList(),
-                attemptCount = failure.attemptCount,
+                usage = usage,
+                attemptCount = attemptCount,
                 durationMillis = (clock.millis() - started).coerceAtLeast(0L),
                 error = TranslationError(failure.code.name, failure.httpStatus),
             )
+        }
+    }
+
+    private fun executeProviderCall(
+        settings: TranslationProviderSettings,
+        messages: TranslationPromptMessages,
+        cancellation: () -> Boolean,
+    ): TranslationProviderResult {
+        if (cancellation()) throw TranslationCancellationSignal()
+        val call = provider.newCall(settings, messages)
+        activeCall.set(call)
+        return try {
+            val result = call.execute()
+            if (cancellation()) throw TranslationCancellationSignal()
+            result
         } finally {
             activeCall.compareAndSet(call, null)
         }
+    }
+
+    private fun TranslationUsage?.plus(other: TranslationProviderUsage?): TranslationUsage? {
+        if (this == null && other == null) return null
+        return TranslationUsage(
+            promptTokens = sumKnown(this?.promptTokens, other?.promptTokens),
+            completionTokens = sumKnown(this?.completionTokens, other?.completionTokens),
+            totalTokens = sumKnown(this?.totalTokens, other?.totalTokens),
+        )
+    }
+
+    private fun sumKnown(first: Long?, second: Long?): Long? {
+        if (first == null && second == null) return null
+        return (first ?: 0L) + (second ?: 0L)
     }
 
     private fun loadInputs(project: ProjectRef, ocrRun: PublishedOcrRun): List<PageTranslationInput> {
@@ -544,7 +607,7 @@ class TranslationRunner(
         promptTokens = artifacts.sumOf { it.usage?.promptTokens ?: 0L },
         completionTokens = artifacts.sumOf { it.usage?.completionTokens ?: 0L },
         totalTokens = artifacts.sumOf { it.usage?.totalTokens ?: 0L },
-        retryCount = artifacts.sumOf { (it.attemptCount - 1).coerceAtLeast(0) },
+        retryCount = artifacts.sumOf { (it.attemptCount - EXPECTED_PROVIDER_CALLS).coerceAtLeast(0) },
     )
 
     private fun TranslationJobRecord.toProgress(
@@ -595,6 +658,7 @@ class TranslationRunner(
     private class TerminalProviderFailure(val error: TranslationError) : RuntimeException(error.code)
 
     private companion object {
+        const val EXPECTED_PROVIDER_CALLS = 2
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
         val PROVIDER_FAILURE_CODES = TranslationProviderErrorCode.entries.mapTo(mutableSetOf()) { it.name }
     }

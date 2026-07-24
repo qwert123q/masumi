@@ -7,7 +7,7 @@ const val TYPESETTING_SCHEMA_VERSION = 1
 
 @Serializable
 data class TypesettingPolicy(
-    val revision: String = "adaptive-comic-typesetting-v3",
+    val revision: String = "adaptive-comic-typesetting-v4",
     val fontFamily: String = "sans-serif",
     val fontWeight: Int = 400,
     val minimumFontSizePixels: Double = 10.0,
@@ -20,7 +20,7 @@ data class TypesettingPolicy(
     val lineSpacingEm: Double = 0.10,
     val letterSpacingEm: Double = 0.02,
     val freeTextStrokeEm: Double = 0.09,
-    val verticalPunctuationRevision: String = "unicode-vertical-forms-v1",
+    val verticalPunctuationRevision: String = "compact-chinese-ellipsis-v2",
 ) {
     init {
         require(fontFamily.isNotBlank())

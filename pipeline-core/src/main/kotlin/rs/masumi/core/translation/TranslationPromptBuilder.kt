@@ -13,16 +13,16 @@ class TranslationPromptBuilder(
 ) {
     fun build(window: TranslationBatchWindow): TranslationPromptMessages = TranslationPromptMessages(
         system = buildSystemPrompt(window.policy, window.prompt),
-        user = json.encodeToString(
-            PromptPayload(
-                schema = window.prompt.responseSchemaRevision,
-                targetLanguage = window.policy.targetLanguage.name,
-                glossary = window.glossary.sortedWith(
-                    compareBy(TranslationGlossaryEntry::source, TranslationGlossaryEntry::translation),
-                ),
-                context = window.contextItems.map(::promptItem),
-                items = window.items.map(::promptItem),
-            ),
+        user = encodePayload(window, window.contextItems, window.items),
+    )
+
+    fun buildGlossaryDiscovery(window: TranslationBatchWindow): TranslationPromptMessages = TranslationPromptMessages(
+        system = buildGlossarySystemPrompt(window.prompt),
+        user = encodePayload(
+            window = window,
+            context = (window.contextItems + window.items)
+                .distinctBy { it.input.translationRegionId },
+            items = emptyList(),
         ),
     )
 
@@ -50,6 +50,35 @@ class TranslationPromptBuilder(
         append("Use Chinese typography: write ellipses as …… with no spaces, never as ..., 。。。 or separated dots. Keep names and forms of address consistent within the chapter. ")
         append("When a role is not translated by policy, set translation to null. Never invent source text or commentary.")
     }
+
+    private fun buildGlossarySystemPrompt(prompt: TranslationPromptRef): String = buildString {
+        append("Protocol ")
+        append(prompt.revision)
+        append(". Build a reusable Japanese-to-Simplified-Chinese manga glossary before translation. ")
+        append("Return only one JSON object matching schema ")
+        append(prompt.responseSchemaRevision)
+        append(" with items [] and glossaryUpdates. glossaryUpdates must be a JSON object. ")
+        append("Inspect every context source and extract only recurring names, name-plus-honorific forms, titles, places, organizations, and domain terms whose consistent rendering matters. ")
+        append("For a recurring name, include both its base form and any observed name-plus-honorific form, for example さん as 小姐/先生 when the context establishes that address. ")
+        append("Use existing glossary translations exactly. Restore an obvious OCR-truncated final syllable only when another source or existing glossary establishes the complete term. ")
+        append("Use concise Simplified Chinese and Chinese punctuation. Do not translate full sentences, return item ids, add commentary, or invent unsupported terms.")
+    }
+
+    private fun encodePayload(
+        window: TranslationBatchWindow,
+        context: List<TranslationBatchItem>,
+        items: List<TranslationBatchItem>,
+    ): String = json.encodeToString(
+        PromptPayload(
+            schema = window.prompt.responseSchemaRevision,
+            targetLanguage = window.policy.targetLanguage.name,
+            glossary = window.glossary.sortedWith(
+                compareBy(TranslationGlossaryEntry::source, TranslationGlossaryEntry::translation),
+            ),
+            context = context.map(::promptItem),
+            items = items.map(::promptItem),
+        ),
+    )
 
     private fun promptItem(item: TranslationBatchItem): PromptItem = PromptItem(
         id = item.input.translationRegionId,

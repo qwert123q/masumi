@@ -9,7 +9,8 @@ The repository now contains the complete end-to-end Android application pipeline
 - Open into a library-first Android home with source-cover thumbnails, whole-chapter status, and direct continue-processing or continue-reading actions.
 - Keep each chapter in a dedicated project screen; move the seven technical stages behind a processing-record entry instead of presenting them as top-level navigation.
 - Automatically save a completed chapter into the fixed manga library without requiring a manual review or export step.
-- Normalize Chinese punctuation and use chapter glossary/context to repair obvious OCR-truncated names and honorifics before typesetting.
+- Prefetch names, honorifics, places, and recurring terms for each translation window, then translate against the merged chapter glossary.
+- Normalize Chinese punctuation, repair obvious OCR-truncated names from the glossary, and compact ellipses into proper vertical glyphs before typesetting.
 - Persist per-project reading progress across app restarts.
 - Select a folder through Android's system document picker.
 - Import direct-child JPEG, PNG, and WebP pages in natural filename order.
