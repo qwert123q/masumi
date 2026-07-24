@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Masumi</string>
+    <string name="app_name">masumi</string>
     <string name="library_home_subtitle">你的本地漫画库</string>
     <string name="library_home_import">导入漫画</string>
     <string name="library_home_projects_title">最近项目</string>
