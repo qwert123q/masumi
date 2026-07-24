@@ -1,0 +1,730 @@
+package rs.masumi.app.cleanup
+
+import android.graphics.Bitmap
+import android.graphics.Color
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
+import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.cleanup.CleanupPreserveReason
+import rs.masumi.core.cleanup.CleanupRegionArtifact
+import rs.masumi.core.cleanup.CleanupRegionState
+import rs.masumi.core.cleanup.CleanupStrategy
+import rs.masumi.core.detection.PixelBox
+
+data class CleanupTarget(
+    val translationRegionId: String,
+    val ocrRegionId: String,
+    val box: PixelBox,
+    val strategy: CleanupStrategy,
+    val expectedGlyphCount: Int? = null,
+)
+
+data class CleanedPage(
+    val bitmap: Bitmap,
+    val regions: List<CleanupRegionArtifact>,
+)
+
+class SourceCleanupEngine {
+    fun clean(
+        source: Bitmap,
+        targets: List<CleanupTarget>,
+        policy: CleanupPolicy,
+        cancellation: () -> Boolean = { false },
+        recycleSourceAfterCopy: Boolean = false,
+    ): CleanedPage {
+        require(!source.isRecycled)
+        val output = source.copy(Bitmap.Config.ARGB_8888, true)
+            ?: throw IllegalStateException("source bitmap could not be copied")
+        if (recycleSourceAfterCopy) source.recycle()
+        try {
+            val pixels = IntArray(Math.multiplyExact(output.width, output.height))
+            output.getPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
+            val artifacts = mutableListOf<CleanupRegionArtifact>()
+            targets.forEach { target ->
+                if (cancellation()) throw CleanupCancellationSignal()
+                artifacts += cleanTarget(pixels, output.width, output.height, target, policy, cancellation)
+            }
+            output.setPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
+            return CleanedPage(output, artifacts)
+        } catch (failure: Throwable) {
+            output.recycle()
+            throw failure
+        }
+    }
+
+    private fun cleanTarget(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        target: CleanupTarget,
+        policy: CleanupPolicy,
+        cancellation: () -> Boolean,
+    ): CleanupRegionArtifact {
+        val core = target.box.toIntBox(width, height)
+            ?: return target.preserved(CleanupPreserveReason.MASK_EMPTY)
+        val padding = max(
+            policy.minimumPaddingPixels,
+            (max(core.width, core.height) * policy.boxPaddingFraction).roundToInt(),
+        )
+        val roi = core.expand(padding, width, height)
+        val roiPixelCount = roi.width * roi.height
+        if (roiPixelCount <= 0) return target.preserved(CleanupPreserveReason.MASK_EMPTY)
+        val background: Int
+        val mask: BooleanArray
+        val dilationRadius: Int
+        val useBoundaryInpaint: Boolean
+        when (target.strategy) {
+            CleanupStrategy.FLAT_LOCAL_FILL -> {
+                val dominant = estimateDominantColor(pixels, width, core)
+                val flatMask = colorDifferenceMask(
+                    pixels = pixels,
+                    stride = width,
+                    core = core,
+                    roi = roi,
+                    background = dominant,
+                    threshold = policy.colorDistanceThreshold,
+                    cancellation = cancellation,
+                )
+                val flatCoverage = flatMask.count { it }.toDouble() / (core.width * core.height)
+                if (flatCoverage <= MAXIMUM_FLAT_COLOR_MASK_COVERAGE) {
+                    background = dominant
+                    mask = flatMask
+                    dilationRadius = policy.dilationRadiusPixels
+                    useBoundaryInpaint = false
+                } else {
+                    // Some detector "bubble" boxes are textured narration
+                    // panels. Filling every non-dominant pixel would erase the
+                    // halftone and artwork, so use the glyph-safe path.
+                    background = estimatePerimeterMedian(pixels, width, roi)
+                    mask = freeTextInkMask(
+                        pixels,
+                        width,
+                        core,
+                        roi,
+                        target.expectedGlyphCount,
+                        cancellation,
+                    )
+                    dilationRadius = freeTextDilationRadius(core, policy)
+                    useBoundaryInpaint = true
+                }
+            }
+            CleanupStrategy.LOCAL_BOUNDARY_INPAINT -> {
+                background = estimatePerimeterMedian(pixels, width, roi)
+                mask = freeTextInkMask(
+                    pixels,
+                    width,
+                    core,
+                    roi,
+                    target.expectedGlyphCount,
+                    cancellation,
+                )
+                dilationRadius = freeTextDilationRadius(core, policy)
+                useBoundaryInpaint = true
+            }
+        }
+        val dilated = dilate(mask, roi.width, roi.height, dilationRadius)
+        val maskCount = dilated.count { it }
+        var coreMaskCount = 0
+        for (y in core.top until core.bottom) for (x in core.left until core.right) {
+            if (dilated[(y - roi.top) * roi.width + (x - roi.left)]) coreMaskCount += 1
+        }
+        val coverage = coreMaskCount.toDouble() / (core.width * core.height)
+        if (maskCount == 0 || coverage < policy.minimumMaskCoverage) {
+            return target.preserved(CleanupPreserveReason.MASK_EMPTY, roiPixelCount, maskCount)
+        }
+        val maximumCoverage = if (useBoundaryInpaint) {
+            min(policy.maximumMaskCoverage, MAXIMUM_FREE_TEXT_MASK_COVERAGE)
+        } else {
+            policy.maximumMaskCoverage
+        }
+        if (coverage > maximumCoverage) {
+            return target.preserved(CleanupPreserveReason.MASK_UNSAFE, roiPixelCount, maskCount)
+        }
+        val maskedLocals = IntArray(maskCount)
+        val before = IntArray(maskCount)
+        var maskedIndex = 0
+        for (local in dilated.indices) {
+            if (!dilated[local]) continue
+            val x = roi.left + local % roi.width
+            val y = roi.top + local / roi.width
+            maskedLocals[maskedIndex] = local
+            before[maskedIndex] = pixels[y * width + x]
+            maskedIndex += 1
+        }
+        if (useBoundaryInpaint) {
+            inpaintBidirectional(pixels, width, roi, dilated, cancellation)
+        } else {
+            fillFlat(pixels, width, roi, dilated, background)
+        }
+        var changed = 0
+        for (index in maskedLocals.indices) {
+            val local = maskedLocals[index]
+            val x = roi.left + local % roi.width
+            val y = roi.top + local / roi.width
+            if (pixels[y * width + x] != before[index]) changed += 1
+        }
+        if (changed == 0) return target.preserved(CleanupPreserveReason.ENGINE_FAILED, roiPixelCount, maskCount)
+        return CleanupRegionArtifact(
+            translationRegionId = target.translationRegionId,
+            ocrRegionId = target.ocrRegionId,
+            box = target.box,
+            strategy = target.strategy,
+            state = CleanupRegionState.CLEANED,
+            roiPixelCount = roiPixelCount,
+            maskPixelCount = maskCount,
+            changedPixelCount = changed,
+        )
+    }
+
+    private fun colorDifferenceMask(
+        pixels: IntArray,
+        stride: Int,
+        core: IntBox,
+        roi: IntBox,
+        background: Int,
+        threshold: Int,
+        cancellation: () -> Boolean,
+    ): BooleanArray {
+        val mask = BooleanArray(roi.width * roi.height)
+        for (y in core.top until core.bottom) {
+            if (cancellation()) throw CleanupCancellationSignal()
+            for (x in core.left until core.right) {
+                if (colorDistance(pixels[y * stride + x], background) >= threshold) {
+                    mask[(y - roi.top) * roi.width + (x - roi.left)] = true
+                }
+            }
+        }
+        return mask
+    }
+
+    private fun freeTextDilationRadius(core: IntBox, policy: CleanupPolicy): Int = max(
+        policy.dilationRadiusPixels,
+        (min(core.width, core.height) * FREE_TEXT_DILATION_FRACTION)
+            .roundToInt()
+            .coerceIn(MINIMUM_FREE_TEXT_DILATION, MAXIMUM_FREE_TEXT_DILATION),
+    )
+
+    /**
+     * Free-standing manga lettering often sits over line art. Comparing every
+     * pixel with one background color erases the illustration inside a large
+     * rectangular detector box. Keep only compact, genuinely thick ink
+     * components; nearby thin drawing strokes and large dark picture regions
+     * are deliberately excluded.
+     */
+    private fun freeTextInkMask(
+        pixels: IntArray,
+        stride: Int,
+        core: IntBox,
+        roi: IntBox,
+        expectedGlyphCount: Int?,
+        cancellation: () -> Boolean,
+    ): BooleanArray {
+        val corePixelCount = core.width * core.height
+        val luminanceHistogram = IntArray(256)
+        val luminances = IntArray(corePixelCount)
+        var index = 0
+        for (y in core.top until core.bottom) {
+            if (cancellation()) throw CleanupCancellationSignal()
+            for (x in core.left until core.right) {
+                val value = luminance(pixels[y * stride + x])
+                luminances[index++] = value
+                luminanceHistogram[value] += 1
+            }
+        }
+        val threshold = otsuThreshold(luminanceHistogram, corePixelCount)
+            .coerceIn(MINIMUM_FREE_TEXT_LUMINANCE, MAXIMUM_FREE_TEXT_LUMINANCE)
+        val dark = BooleanArray(corePixelCount) { luminances[it] <= threshold }
+        val visited = BooleanArray(corePixelCount)
+        val components = mutableListOf<InkComponent>()
+        val queue = IntArray(corePixelCount)
+
+        for (start in dark.indices) {
+            if (!dark[start] || visited[start]) continue
+            var head = 0
+            var tail = 0
+            queue[tail++] = start
+            visited[start] = true
+            val members = mutableListOf<Int>()
+            var left = core.width
+            var top = core.height
+            var right = 0
+            var bottom = 0
+            var touchesBoundary = false
+            while (head < tail) {
+                val local = queue[head++]
+                members += local
+                val x = local % core.width
+                val y = local / core.width
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x + 1)
+                bottom = max(bottom, y + 1)
+                if (x == 0 || y == 0 || x == core.width - 1 || y == core.height - 1) {
+                    touchesBoundary = true
+                }
+                for (dy in -1..1) for (dx in -1..1) {
+                    if (dx == 0 && dy == 0) continue
+                    val nx = x + dx
+                    val ny = y + dy
+                    if (nx !in 0 until core.width || ny !in 0 until core.height) continue
+                    val neighbor = ny * core.width + nx
+                    if (dark[neighbor] && !visited[neighbor]) {
+                        visited[neighbor] = true
+                        queue[tail++] = neighbor
+                    }
+                }
+            }
+            val memberArray = members.toIntArray()
+            val thickPixelCount = memberArray.count { local ->
+                darkNeighborCount(local, dark, core.width, core.height) >= THICK_INK_NEIGHBOR_COUNT
+            }
+            components += InkComponent(
+                members = memberArray,
+                left = left,
+                top = top,
+                right = right,
+                bottom = bottom,
+                thickPixelCount = thickPixelCount,
+                touchesBoundary = touchesBoundary,
+            )
+        }
+
+        val primaryCandidates = components.filter { component ->
+            component.isLikelyGlyph(corePixelCount)
+        }
+        if (primaryCandidates.isEmpty()) return BooleanArray(roi.width * roi.height)
+        val primary = primaryCandidates
+            .sortedByDescending(InkComponent::thickPixelCount)
+            .take(expectedGlyphCount?.coerceIn(1, primaryCandidates.size) ?: primaryCandidates.size)
+        val typicalExtent = primary.map { max(it.width, it.height) }.sorted()
+            .let { it[it.size / 2] }
+        val typicalArea = primary.map { it.members.size }.sorted()
+            .let { it[it.size / 2] }
+        val satelliteDistance = max(MINIMUM_SATELLITE_DISTANCE, typicalExtent / 2)
+        val selected = components.filter { component ->
+            component in primary ||
+                component.isGlyphSatellite(
+                    primary,
+                    typicalExtent,
+                    typicalArea,
+                    satelliteDistance,
+                )
+        }
+        return BooleanArray(roi.width * roi.height).also { mask ->
+            selected.forEach { component ->
+                component.members.forEach { coreLocal ->
+                    val x = core.left + coreLocal % core.width
+                    val y = core.top + coreLocal / core.width
+                    mask[(y - roi.top) * roi.width + (x - roi.left)] = true
+                }
+            }
+        }
+    }
+
+    private fun InkComponent.isLikelyGlyph(corePixelCount: Int): Boolean {
+        if (members.size < MINIMUM_GLYPH_AREA || width < 2 || height < 2) return false
+        val boxArea = width * height
+        if (members.size.toDouble() / boxArea < MINIMUM_GLYPH_DENSITY) return false
+        val aspect = max(width, height).toDouble() / min(width, height)
+        if (aspect > MAXIMUM_GLYPH_ASPECT_RATIO) return false
+        if (members.size.toDouble() / corePixelCount > MAXIMUM_GLYPH_COMPONENT_FRACTION) return false
+        if (thickPixelCount < max(1, members.size / MINIMUM_THICK_PIXEL_DIVISOR)) return false
+        if (touchesBoundary &&
+            members.size.toDouble() / corePixelCount > MAXIMUM_BOUNDARY_COMPONENT_FRACTION
+        ) {
+            return false
+        }
+        return true
+    }
+
+    private fun InkComponent.isGlyphSatellite(
+        primary: List<InkComponent>,
+        typicalExtent: Int,
+        typicalArea: Int,
+        maximumDistance: Int,
+    ): Boolean {
+        if (touchesBoundary || members.isEmpty()) return false
+        if (width > typicalExtent * MAXIMUM_SATELLITE_EXTENT_NUMERATOR /
+            MAXIMUM_SATELLITE_EXTENT_DENOMINATOR ||
+            height > typicalExtent * MAXIMUM_SATELLITE_EXTENT_NUMERATOR /
+            MAXIMUM_SATELLITE_EXTENT_DENOMINATOR
+        ) {
+            return false
+        }
+        if (members.size > typicalArea * MAXIMUM_SATELLITE_AREA_NUMERATOR /
+            MAXIMUM_SATELLITE_AREA_DENOMINATOR
+        ) {
+            return false
+        }
+        if (thickPixelCount.toDouble() / members.size < MINIMUM_SATELLITE_THICK_FRACTION) {
+            return false
+        }
+        val aspect = max(width, height).toDouble() / min(width, height).coerceAtLeast(1)
+        if (aspect > MAXIMUM_SATELLITE_ASPECT_RATIO) return false
+        return primary.any { distanceTo(it) <= maximumDistance }
+    }
+
+    private fun darkNeighborCount(
+        local: Int,
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+    ): Int {
+        val x = local % width
+        val y = local / width
+        var count = 0
+        for (dy in -1..1) for (dx in -1..1) {
+            val nx = x + dx
+            val ny = y + dy
+            if (nx in 0 until width && ny in 0 until height && dark[ny * width + nx]) {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private fun otsuThreshold(histogram: IntArray, total: Int): Int {
+        if (total <= 0) return MAXIMUM_FREE_TEXT_LUMINANCE
+        var weightedTotal = 0L
+        histogram.indices.forEach { weightedTotal += it.toLong() * histogram[it] }
+        var backgroundWeight = 0
+        var backgroundWeighted = 0L
+        var bestVariance = -1.0
+        var bestThreshold = MAXIMUM_FREE_TEXT_LUMINANCE
+        histogram.indices.forEach { value ->
+            backgroundWeight += histogram[value]
+            if (backgroundWeight == 0) return@forEach
+            val foregroundWeight = total - backgroundWeight
+            if (foregroundWeight == 0) return@forEach
+            backgroundWeighted += value.toLong() * histogram[value]
+            val backgroundMean = backgroundWeighted.toDouble() / backgroundWeight
+            val foregroundMean = (weightedTotal - backgroundWeighted).toDouble() / foregroundWeight
+            val difference = backgroundMean - foregroundMean
+            val variance = backgroundWeight.toDouble() * foregroundWeight * difference * difference
+            if (variance > bestVariance) {
+                bestVariance = variance
+                bestThreshold = value
+            }
+        }
+        return bestThreshold
+    }
+
+    private fun estimateDominantColor(pixels: IntArray, stride: Int, box: IntBox): Int {
+        val counts = IntArray(DOMINANT_COLOR_BUCKET_COUNT)
+        val alpha = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
+        val red = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
+        val green = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
+        val blue = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
+        for (y in box.top until box.bottom) for (x in box.left until box.right) {
+            val color = pixels[y * stride + x]
+            val bucket = colorBucket(color)
+            counts[bucket] += 1
+            alpha[bucket] += Color.alpha(color)
+            red[bucket] += Color.red(color)
+            green[bucket] += Color.green(color)
+            blue[bucket] += Color.blue(color)
+        }
+        val selected = counts.indices.maxByOrNull { counts[it] } ?: return Color.WHITE
+        val count = counts[selected].coerceAtLeast(1)
+        return Color.argb(
+            (alpha[selected] / count).toInt(),
+            (red[selected] / count).toInt(),
+            (green[selected] / count).toInt(),
+            (blue[selected] / count).toInt(),
+        )
+    }
+
+    private fun colorBucket(color: Int): Int =
+        ((Color.red(color) ushr DOMINANT_COLOR_SHIFT) shl 6) or
+            ((Color.green(color) ushr DOMINANT_COLOR_SHIFT) shl 3) or
+            (Color.blue(color) ushr DOMINANT_COLOR_SHIFT)
+
+    private fun luminance(color: Int): Int =
+        (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
+
+    private fun fillFlat(
+        pixels: IntArray,
+        stride: Int,
+        roi: IntBox,
+        mask: BooleanArray,
+        background: Int,
+    ) {
+        mask.indices.forEach { local ->
+            if (!mask[local]) return@forEach
+            val x = roi.left + local % roi.width
+            val y = roi.top + local / roi.width
+            pixels[y * stride + x] = background
+        }
+    }
+
+    /**
+     * Manga display text usually has a bright outline around dark glyphs.
+     * Diffusing inward from that outline creates large white scars. Interpolate
+     * across each masked run, perpendicular to the reading flow, so samples
+     * come from the actual illustration on both sides of the lettering.
+     */
+    private fun inpaintBidirectional(
+        pixels: IntArray,
+        stride: Int,
+        roi: IntBox,
+        mask: BooleanArray,
+        cancellation: () -> Boolean,
+    ) {
+        val replacement = IntArray(mask.size)
+        val score = IntArray(mask.size) { Int.MAX_VALUE }
+        for (localY in 0 until roi.height) {
+            if (cancellation()) throw CleanupCancellationSignal()
+            var x = 0
+            while (x < roi.width) {
+                val local = localY * roi.width + x
+                if (!mask[local]) {
+                    x += 1
+                    continue
+                }
+                val start = x
+                while (x < roi.width && mask[localY * roi.width + x]) x += 1
+                horizontalRunCandidate(
+                    pixels,
+                    stride,
+                    roi,
+                    localY,
+                    start,
+                    x,
+                    replacement,
+                    score,
+                )
+            }
+        }
+        for (localX in 0 until roi.width) {
+            if (cancellation()) throw CleanupCancellationSignal()
+            var y = 0
+            while (y < roi.height) {
+                val local = y * roi.width + localX
+                if (!mask[local]) {
+                    y += 1
+                    continue
+                }
+                val start = y
+                while (y < roi.height && mask[y * roi.width + localX]) y += 1
+                verticalRunCandidate(
+                    pixels,
+                    stride,
+                    roi,
+                    localX,
+                    start,
+                    y,
+                    replacement,
+                    score,
+                )
+            }
+        }
+        val fallback = estimatePerimeterMedian(pixels, stride, roi)
+        mask.indices.forEach { local ->
+            if (!mask[local]) return@forEach
+            val x = roi.left + local % roi.width
+            val y = roi.top + local / roi.width
+            pixels[y * stride + x] =
+                if (score[local] == Int.MAX_VALUE) fallback else replacement[local]
+        }
+    }
+
+    private fun horizontalRunCandidate(
+        pixels: IntArray,
+        stride: Int,
+        roi: IntBox,
+        localY: Int,
+        start: Int,
+        endExclusive: Int,
+        replacement: IntArray,
+        score: IntArray,
+    ) {
+        val left = (start - 1).takeIf { it >= 0 }?.let { x ->
+            pixels[(roi.top + localY) * stride + roi.left + x]
+        }
+        val right = endExclusive.takeIf { it < roi.width }?.let { x ->
+            pixels[(roi.top + localY) * stride + roi.left + x]
+        }
+        if (left == null && right == null) return
+        val candidateScore = boundaryScore(left, right, endExclusive - start)
+        for (x in start until endExclusive) {
+            val fraction = (x - start + 1).toDouble() / (endExclusive - start + 1)
+            val local = localY * roi.width + x
+            replacement[local] =
+                if (left != null && right != null) blend(left, right, fraction) else requireNotNull(left ?: right)
+            score[local] = candidateScore
+        }
+    }
+
+    private fun verticalRunCandidate(
+        pixels: IntArray,
+        stride: Int,
+        roi: IntBox,
+        localX: Int,
+        start: Int,
+        endExclusive: Int,
+        replacement: IntArray,
+        score: IntArray,
+    ) {
+        val top = (start - 1).takeIf { it >= 0 }?.let { y ->
+            pixels[(roi.top + y) * stride + roi.left + localX]
+        }
+        val bottom = endExclusive.takeIf { it < roi.height }?.let { y ->
+            pixels[(roi.top + y) * stride + roi.left + localX]
+        }
+        if (top == null && bottom == null) return
+        val candidateScore = boundaryScore(top, bottom, endExclusive - start)
+        for (y in start until endExclusive) {
+            val local = y * roi.width + localX
+            if (candidateScore >= score[local]) continue
+            val fraction = (y - start + 1).toDouble() / (endExclusive - start + 1)
+            replacement[local] =
+                if (top != null && bottom != null) blend(top, bottom, fraction) else requireNotNull(top ?: bottom)
+            score[local] = candidateScore
+        }
+    }
+
+    private fun boundaryScore(first: Int?, second: Int?, span: Int): Int =
+        if (first != null && second != null) {
+            colorDistance(first, second) * BOUNDARY_COLOR_SCORE_WEIGHT + span
+        } else {
+            SINGLE_BOUNDARY_SCORE + span
+        }
+
+    private fun blend(first: Int, second: Int, fraction: Double): Int {
+        fun component(start: Int, end: Int): Int =
+            (start + (end - start) * fraction).roundToInt().coerceIn(0, 255)
+        return Color.argb(
+            component(Color.alpha(first), Color.alpha(second)),
+            component(Color.red(first), Color.red(second)),
+            component(Color.green(first), Color.green(second)),
+            component(Color.blue(first), Color.blue(second)),
+        )
+    }
+
+    private fun dilate(source: BooleanArray, width: Int, height: Int, radius: Int): BooleanArray {
+        if (radius <= 0) return source
+        val output = source.copyOf()
+        for (local in source.indices) {
+            if (!source[local]) continue
+            val x = local % width
+            val y = local / width
+            for (dy in -radius..radius) for (dx in -radius..radius) {
+                if (dx * dx + dy * dy > radius * radius) continue
+                val nx = x + dx
+                val ny = y + dy
+                if (nx in 0 until width && ny in 0 until height) output[ny * width + nx] = true
+            }
+        }
+        return output
+    }
+
+    private fun estimatePerimeterMedian(pixels: IntArray, stride: Int, box: IntBox): Int {
+        val colors = mutableListOf<Int>()
+        for (x in box.left until box.right) {
+            colors += pixels[box.top * stride + x]
+            if (box.bottom - 1 != box.top) colors += pixels[(box.bottom - 1) * stride + x]
+        }
+        for (y in box.top + 1 until box.bottom - 1) {
+            colors += pixels[y * stride + box.left]
+            if (box.right - 1 != box.left) colors += pixels[y * stride + box.right - 1]
+        }
+        if (colors.isEmpty()) return Color.WHITE
+        fun median(component: (Int) -> Int): Int = colors.map(component).sorted()[colors.size / 2]
+        return Color.argb(median(Color::alpha), median(Color::red), median(Color::green), median(Color::blue))
+    }
+
+    private fun colorDistance(first: Int, second: Int): Int {
+        val red = Color.red(first) - Color.red(second)
+        val green = Color.green(first) - Color.green(second)
+        val blue = Color.blue(first) - Color.blue(second)
+        return sqrt((red * red + green * green + blue * blue).toDouble()).roundToInt()
+    }
+
+    private fun PixelBox.toIntBox(width: Int, height: Int): IntBox? {
+        val left = floor(left).toInt().coerceIn(0, width)
+        val top = floor(top).toInt().coerceIn(0, height)
+        val right = ceil(right).toInt().coerceIn(0, width)
+        val bottom = ceil(bottom).toInt().coerceIn(0, height)
+        if (right <= left || bottom <= top) return null
+        return IntBox(left, top, right, bottom)
+    }
+
+    private fun CleanupTarget.preserved(
+        reason: CleanupPreserveReason,
+        roiPixelCount: Int = 0,
+        maskPixelCount: Int = 0,
+    ) = CleanupRegionArtifact(
+        translationRegionId = translationRegionId,
+        ocrRegionId = ocrRegionId,
+        box = box,
+        strategy = strategy,
+        state = CleanupRegionState.PRESERVED_SOURCE,
+        preserveReason = reason,
+        roiPixelCount = roiPixelCount,
+        maskPixelCount = maskPixelCount,
+    )
+
+    private data class IntBox(val left: Int, val top: Int, val right: Int, val bottom: Int) {
+        val width: Int get() = right - left
+        val height: Int get() = bottom - top
+        fun expand(padding: Int, width: Int, height: Int) = IntBox(
+            (left - padding).coerceAtLeast(0),
+            (top - padding).coerceAtLeast(0),
+            (right + padding).coerceAtMost(width),
+            (bottom + padding).coerceAtMost(height),
+        )
+    }
+
+    private data class InkComponent(
+        val members: IntArray,
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+        val thickPixelCount: Int,
+        val touchesBoundary: Boolean,
+    ) {
+        val width: Int get() = right - left
+        val height: Int get() = bottom - top
+
+        fun distanceTo(other: InkComponent): Int {
+            val horizontal = max(0, max(other.left - right, left - other.right))
+            val vertical = max(0, max(other.top - bottom, top - other.bottom))
+            return max(horizontal, vertical)
+        }
+    }
+
+    private companion object {
+        const val DOMINANT_COLOR_SHIFT = 5
+        const val DOMINANT_COLOR_BUCKET_COUNT = 512
+        const val BOUNDARY_COLOR_SCORE_WEIGHT = 4
+        const val SINGLE_BOUNDARY_SCORE = 10_000
+        const val MAXIMUM_FLAT_COLOR_MASK_COVERAGE = 0.72
+        const val MINIMUM_FREE_TEXT_LUMINANCE = 32
+        const val MAXIMUM_FREE_TEXT_LUMINANCE = 112
+        const val THICK_INK_NEIGHBOR_COUNT = 6
+        const val MINIMUM_GLYPH_AREA = 6
+        const val MINIMUM_GLYPH_DENSITY = 0.10
+        const val MAXIMUM_GLYPH_ASPECT_RATIO = 12.0
+        const val MAXIMUM_GLYPH_COMPONENT_FRACTION = 0.08
+        const val MAXIMUM_BOUNDARY_COMPONENT_FRACTION = 0.002
+        const val MINIMUM_THICK_PIXEL_DIVISOR = 80
+        const val MINIMUM_SATELLITE_DISTANCE = 3
+        const val MAXIMUM_SATELLITE_EXTENT_NUMERATOR = 4
+        const val MAXIMUM_SATELLITE_EXTENT_DENOMINATOR = 5
+        const val MAXIMUM_SATELLITE_AREA_NUMERATOR = 1
+        const val MAXIMUM_SATELLITE_AREA_DENOMINATOR = 2
+        const val MINIMUM_SATELLITE_THICK_FRACTION = 0.15
+        const val MAXIMUM_SATELLITE_ASPECT_RATIO = 8.0
+        const val FREE_TEXT_DILATION_FRACTION = 0.025
+        const val MINIMUM_FREE_TEXT_DILATION = 3
+        const val MAXIMUM_FREE_TEXT_DILATION = 12
+        const val MAXIMUM_FREE_TEXT_MASK_COVERAGE = 0.80
+    }
+}
+
+class CleanupCancellationSignal : RuntimeException()

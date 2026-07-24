@@ -2,13 +2,19 @@
 .idea/
 .gradle/
 .kotlin/
+.cxx/
+**/.cxx/
 build/
 **/build/
 local.properties
+.env
+.env.*
+!.env.example
 *.jks
 *.keystore
 *.log
 /.private/
+/local-testdata/
 
 models/
 local-models/

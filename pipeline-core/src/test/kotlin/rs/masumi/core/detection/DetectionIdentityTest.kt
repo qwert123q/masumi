@@ -55,6 +55,13 @@ class DetectionIdentityTest {
                 sourceSha,
                 1,
                 model,
+                preprocessing.copy(revision = "detector-v4-rgb-stretch-orig-hw-v1"),
+                thresholds,
+            ),
+            DetectionIdentity.pageArtifactKey(
+                sourceSha,
+                1,
+                model,
                 preprocessing,
                 thresholds.copy(textFree = 0.3),
             ),

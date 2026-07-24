@@ -332,7 +332,7 @@ Development installation reuses the existing debug package. Routine verification
 Committed source, tests, fixtures, logs, screenshots, and documentation must not contain:
 
 - user, account, device, or host identifiers;
-- private corpus names, page counts, paths, images, hashes, or evaluation notes;
+- evaluation corpus names, page counts, paths, images, hashes, or evaluation notes;
 - API keys, bearer tokens, signed URLs, or provider response bodies;
 - absolute local filesystem paths or document URIs.
 

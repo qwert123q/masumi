@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Masumi" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/masumi_background</item>
+        <item name="android:colorAccent">@color/masumi_accent</item>
+        <item name="android:statusBarColor">@color/masumi_background</item>
+        <item name="android:navigationBarColor">@color/masumi_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <style name="TextAppearance.Masumi.Display" parent="@android:style/TextAppearance.Material">
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/masumi_ink</item>
+        <item name="android:textSize">34sp</item>
+        <item name="android:letterSpacing">-0.02</item>
+    </style>
+
+    <style name="TextAppearance.Masumi.Title" parent="@android:style/TextAppearance.Material">
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/masumi_ink</item>
+        <item name="android:textSize">20sp</item>
+    </style>
+
+    <style name="TextAppearance.Masumi.Body" parent="@android:style/TextAppearance.Material">
+        <item name="android:textColor">@color/masumi_ink_secondary</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:lineSpacingExtra">4dp</item>
+    </style>
+
+    <style name="TextAppearance.Masumi.Label" parent="@android:style/TextAppearance.Material">
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/masumi_ink_secondary</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:letterSpacing">0.04</item>
+    </style>
+
+    <style name="Widget.Masumi.Button.Primary" parent="android:style/Widget.Material.Button">
+        <item name="android:minHeight">52dp</item>
+        <item name="android:background">@drawable/masumi_button_primary_background</item>
+        <item name="android:textColor">@color/masumi_primary_button_text</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <style name="Widget.Masumi.Button.Secondary" parent="android:style/Widget.Material.Button">
+        <item name="android:minHeight">48dp</item>
+        <item name="android:background">@drawable/masumi_button_secondary_background</item>
+        <item name="android:textColor">@color/masumi_secondary_button_text</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="Widget.Masumi.Button.Danger" parent="android:style/Widget.Material.Button">
+        <item name="android:minHeight">48dp</item>
+        <item name="android:backgroundTint">@color/masumi_surface_muted</item>
+        <item name="android:textColor">@color/masumi_danger</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="Widget.Masumi.Tab" parent="android:style/Widget.Material.Button.Borderless">
+        <item name="android:minHeight">46dp</item>
+        <item name="android:background">@drawable/masumi_tab_background</item>
+        <item name="android:textColor">@color/masumi_tab_text</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="Widget.Masumi.EditText" parent="android:style/Widget.Material.EditText">
+        <item name="android:minHeight">52dp</item>
+        <item name="android:backgroundTint">@color/masumi_accent</item>
+        <item name="android:textColor">@color/masumi_ink</item>
+        <item name="android:textColorHint">@color/masumi_ink_secondary</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <style name="Widget.Masumi.Status" parent="android:style/Widget.TextView">
+        <item name="android:background">@drawable/masumi_status_background</item>
+        <item name="android:paddingLeft">14dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingRight">14dp</item>
+        <item name="android:paddingBottom">12dp</item>
+        <item name="android:textColor">@color/masumi_ink_secondary</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:lineSpacingExtra">3dp</item>
+    </style>
+</resources>

@@ -10,7 +10,12 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Path
+import java.nio.file.Files
 import java.time.Clock
+import rs.masumi.app.library.MangaLibraryModelCache
+import rs.masumi.app.library.PersistentModelFile
+import rs.masumi.app.library.PersistentModelPackage
+import rs.masumi.core.serialization.DetectionJson
 
 fun interface ModelStreamSource {
     fun open(descriptor: DetectorModelDescriptor): InputStream
@@ -22,20 +27,71 @@ class DefaultDetectorModelProvider(
     private val streamSource: ModelStreamSource = HttpModelStreamSource(),
     private val signatureValidator: ModelSignatureValidator,
     private val clock: Clock = Clock.systemUTC(),
+    private val persistentCache: MangaLibraryModelCache? = null,
 ) : DetectorModelProvider {
-    private val store = DetectorModelPackageStore(workspaceRoot)
+    private val workspaceRoot = workspaceRoot.toAbsolutePath().normalize()
+    private val store = DetectorModelPackageStore(this.workspaceRoot)
+    private val json = DetectionJson()
 
     override fun acquire(
         installId: String,
         progress: (downloaded: Long, total: Long) -> Unit,
-    ): Path = store.ensureInstalled(
-        installId = installId,
-        descriptor = descriptor,
-        acquiredAtEpochMillis = clock.millis(),
-        openStream = { streamSource.open(descriptor) },
-        signatureValidator = signatureValidator,
-        onProgress = progress,
+    ): Path {
+        val packageDirectory = packageDirectory()
+        var model = readTrustedPrivatePackage(packageDirectory)
+        if (model == null) {
+            persistentCache?.restore(persistentPackage(), packageDirectory, progress)
+            model = readTrustedPrivatePackage(packageDirectory)
+        }
+        if (model == null) {
+            model = store.ensureInstalled(
+                installId = installId,
+                descriptor = descriptor,
+                acquiredAtEpochMillis = clock.millis(),
+                openStream = { streamSource.open(descriptor) },
+                signatureValidator = signatureValidator,
+                onProgress = progress,
+            )
+        }
+        runCatching {
+            persistentCache?.backup(persistentPackage(), packageDirectory, progress)
+        }
+        return model
+    }
+
+    private fun readTrustedPrivatePackage(directory: Path): Path? = runCatching {
+        val model = directory.resolve(MODEL_FILE_NAME)
+        val metadataPath = directory.resolve(PACKAGE_METADATA_FILE_NAME)
+        require(Files.isRegularFile(model) && Files.size(model) == descriptor.byteLength)
+        require(Files.isRegularFile(metadataPath))
+        require(
+            Files.getLastModifiedTime(model).toMillis() <=
+                Files.getLastModifiedTime(metadataPath).toMillis(),
+        )
+        val metadata = Files.newBufferedReader(metadataPath).use {
+            json.decodeModelPackageMetadata(it.readText())
+        }
+        require(metadata.schemaVersion == 1 && metadata.model == descriptor.toModelRef())
+        model
+    }.getOrNull()
+
+    private fun packageDirectory(): Path = workspaceRoot
+        .resolve("models")
+        .resolve(descriptor.storageKey)
+        .resolve(descriptor.sha256)
+
+    private fun persistentPackage(): PersistentModelPackage = PersistentModelPackage(
+        cacheKey = "漫画检测",
+        version = descriptor.sha256,
+        files = listOf(
+            PersistentModelFile(MODEL_FILE_NAME, descriptor.byteLength, descriptor.sha256),
+        ),
     )
+
+    private companion object {
+        const val MODEL_FILE_NAME = "model.onnx"
+        const val PACKAGE_METADATA_FILE_NAME = "package.json"
+    }
 }
 
 class HttpModelStreamSource : ModelStreamSource {

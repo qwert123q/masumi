@@ -68,7 +68,13 @@ data class DetectorModelRef(
 )
 
 @Serializable
+enum class OriginalSizeOrder {
+    WIDTH_HEIGHT,
+}
+
+@Serializable
 data class DetectionPreprocessingConfig(
+    val revision: String = "detector-v4-rgb-stretch-orig-wh-v2",
     val inputWidth: Int = 640,
     val inputHeight: Int = 640,
     val colorOrder: String = "RGB",
@@ -76,6 +82,7 @@ data class DetectionPreprocessingConfig(
     val rescaleDivisor: Double = 255.0,
     val normalize: Boolean = false,
     val pad: Boolean = false,
+    val originalSizeOrder: OriginalSizeOrder = OriginalSizeOrder.WIDTH_HEIGHT,
 )
 
 @Serializable
