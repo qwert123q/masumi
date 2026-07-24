@@ -15,13 +15,18 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import rs.masumi.app.cleanup.CleanupForegroundService
 import rs.masumi.app.cleanup.CleanupProgress
 import rs.masumi.app.cleanup.CleanupResumePolicy
@@ -44,6 +49,12 @@ import rs.masumi.app.quality.QualityForegroundService
 import rs.masumi.app.quality.QualityProgress
 import rs.masumi.app.quality.QualityResumePolicy
 import rs.masumi.app.quality.QualityStatusBroadcast
+import rs.masumi.app.library.MangaLibraryPreferences
+import rs.masumi.app.library.MangaLibraryInstalledModelSynchronizer
+import rs.masumi.app.library.MangaLibraryModelCache
+import rs.masumi.app.library.MangaLibraryProject
+import rs.masumi.app.library.MangaLibraryStore
+import rs.masumi.app.library.MangaReaderActivity
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
@@ -72,6 +83,7 @@ import rs.masumi.core.exporting.ExportArtifactStore
 import rs.masumi.core.exporting.ExportJobStatus
 import rs.masumi.core.exporting.ExportPageSource
 import rs.masumi.core.exporting.ExportPageState
+import rs.masumi.core.importer.ImportOutcome
 import rs.masumi.core.importer.ProjectImportException
 import rs.masumi.core.importer.ProjectImporter
 import rs.masumi.core.ocr.OcrArtifactStore
@@ -102,6 +114,21 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 class MainActivity : Activity() {
+    private lateinit var contentPager: HorizontalSwipeViewFlipper
+    private lateinit var workspacePage: ScrollView
+    private lateinit var detailsPage: ScrollView
+    private lateinit var workspaceTabButton: Button
+    private lateinit var detailsTabButton: Button
+    private lateinit var processButton: Button
+    private lateinit var pipelineProgress: ProgressBar
+    private lateinit var pipelineProgressText: TextView
+    private lateinit var pipelineStatus: TextView
+    private lateinit var translationSettingsShortcutButton: Button
+    private lateinit var detailsShortcutButton: Button
+    private lateinit var libraryLocationText: TextView
+    private lateinit var chooseLibraryButton: Button
+    private lateinit var libraryEmptyText: TextView
+    private lateinit var libraryHistoryContainer: LinearLayout
     private lateinit var importButton: Button
     private lateinit var importProgress: ProgressBar
     private lateinit var statusText: TextView
@@ -127,6 +154,8 @@ class MainActivity : Activity() {
     private lateinit var translationApiUrl: EditText
     private lateinit var translationApiKey: EditText
     private lateinit var translationModel: EditText
+    private lateinit var translationSettingsToggleButton: Button
+    private lateinit var translationSettingsContainer: View
     private lateinit var saveTranslationSettingsButton: Button
     private lateinit var translationButton: Button
     private lateinit var cancelTranslationButton: Button
@@ -160,8 +189,10 @@ class MainActivity : Activity() {
     private lateinit var cancelExportButton: Button
     private lateinit var exportProgress: ProgressBar
     private lateinit var exportStatus: TextView
+    private var backInvokedCallback: OnBackInvokedCallback? = null
     private lateinit var catalog: ProjectCatalog
     private lateinit var translationSettingsStore: TranslationSettingsStore
+    private lateinit var libraryPreferences: MangaLibraryPreferences
 
     private var importRunning = false
     private var analysisActive = false
@@ -171,6 +202,13 @@ class MainActivity : Activity() {
     private var typesettingActive = false
     private var qualityActive = false
     private var exportActive = false
+    private var automaticPipelineRequested = false
+        set(value) {
+            field = value
+            if (::translationSettingsStore.isInitialized) {
+                getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_AUTOMATIC_PIPELINE, value).apply()
+            }
+        }
     private var receiverRegistered = false
     private var ocrReceiverRegistered = false
     private var translationReceiverRegistered = false
@@ -206,11 +244,19 @@ class MainActivity : Activity() {
     private var typesettingResumeRequestedThisProcess = false
     private var qualityResumeRequestedThisProcess = false
     private var exportResumeRequestedThisProcess = false
+    private var pendingChapterSelectionAfterLibrary = false
+    private var pendingExportAfterLibrary = false
+    private var libraryRefreshGeneration = 0
+    private var synchronizedModelLibraryRoot: String? = null
 
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(DetectionStatusBroadcast::parse) ?: return
             refreshDurableState(progress)
+            if (progress.status == DetectionJobStatus.CANCELLED || progress.status == DetectionJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -218,6 +264,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(OcrStatusBroadcast::parse) ?: return
             refreshOcrDurableState(progress)
+            if (progress.status == OcrJobStatus.CANCELLED || progress.status == OcrJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -225,6 +275,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TranslationStatusBroadcast::parse) ?: return
             refreshTranslationDurableState(progress)
+            if (progress.status == TranslationJobStatus.CANCELLED || progress.status == TranslationJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -232,6 +286,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(CleanupStatusBroadcast::parse) ?: return
             refreshCleanupDurableState(progress)
+            if (progress.status == CleanupJobStatus.CANCELLED || progress.status == CleanupJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -239,6 +297,10 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TypesettingStatusBroadcast::parse) ?: return
             refreshTypesettingDurableState(progress)
+            if (progress.status == TypesettingJobStatus.CANCELLED || progress.status == TypesettingJobStatus.FAILED) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -255,6 +317,14 @@ class MainActivity : Activity() {
             } else {
                 refreshQualityDurableState(progress)
             }
+            if (
+                progress.status == QualityJobStatus.CANCELLED ||
+                progress.status == QualityJobStatus.FAILED ||
+                progress.status == QualityJobStatus.BLOCKED
+            ) {
+                automaticPipelineRequested = false
+            }
+            onPipelineStateChanged()
         }
     }
 
@@ -262,6 +332,8 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(ExportStatusBroadcast::parse) ?: return
             refreshExportDurableState(progress)
+            if (progress.status == ExportJobStatus.SUCCEEDED) refreshLibraryHistory()
+            onPipelineStateChanged()
         }
     }
 
@@ -269,6 +341,21 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        contentPager = findViewById(R.id.contentPager)
+        workspacePage = findViewById(R.id.workspacePage)
+        detailsPage = findViewById(R.id.detailsPage)
+        workspaceTabButton = findViewById(R.id.workspaceTabButton)
+        detailsTabButton = findViewById(R.id.detailsTabButton)
+        processButton = findViewById(R.id.processButton)
+        pipelineProgress = findViewById(R.id.pipelineProgress)
+        pipelineProgressText = findViewById(R.id.pipelineProgressText)
+        pipelineStatus = findViewById(R.id.pipelineStatus)
+        translationSettingsShortcutButton = findViewById(R.id.translationSettingsShortcutButton)
+        detailsShortcutButton = findViewById(R.id.detailsShortcutButton)
+        libraryLocationText = findViewById(R.id.libraryLocationText)
+        chooseLibraryButton = findViewById(R.id.chooseLibraryButton)
+        libraryEmptyText = findViewById(R.id.libraryEmptyText)
+        libraryHistoryContainer = findViewById(R.id.libraryHistoryContainer)
         importButton = findViewById(R.id.importButton)
         importProgress = findViewById(R.id.importProgress)
         statusText = findViewById(R.id.statusText)
@@ -294,6 +381,8 @@ class MainActivity : Activity() {
         translationApiUrl = findViewById(R.id.translationApiUrl)
         translationApiKey = findViewById(R.id.translationApiKey)
         translationModel = findViewById(R.id.translationModel)
+        translationSettingsToggleButton = findViewById(R.id.translationSettingsToggleButton)
+        translationSettingsContainer = findViewById(R.id.translationSettingsContainer)
         saveTranslationSettingsButton = findViewById(R.id.saveTranslationSettingsButton)
         translationButton = findViewById(R.id.translationButton)
         cancelTranslationButton = findViewById(R.id.cancelTranslationButton)
@@ -329,12 +418,36 @@ class MainActivity : Activity() {
         exportStatus = findViewById(R.id.exportStatus)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
-        translationSettingsStore.loadSaved()?.let { saved ->
+        libraryPreferences = MangaLibraryPreferences(this)
+        automaticPipelineRequested = getPreferences(MODE_PRIVATE)
+            .getBoolean(PREF_AUTOMATIC_PIPELINE, false)
+        val savedTranslationSettings = translationSettingsStore.loadSaved()
+        savedTranslationSettings?.let { saved ->
             translationApiUrl.setText(saved.apiUrl)
             translationApiKey.setText(saved.apiKey)
             translationModel.setText(saved.model)
         }
+        setTranslationSettingsExpanded(false)
+        showPage(PageNavigation.normalize(savedInstanceState?.getInt(STATE_SELECTED_PAGE)))
+        contentPager.onSwipe = { direction ->
+            showPage(
+                if (direction == HorizontalSwipeViewFlipper.Direction.LEFT) {
+                    PAGE_DETAILS
+                } else {
+                    PAGE_WORKSPACE
+                },
+            )
+        }
+        registerPredictiveBackCallback()
 
+        workspaceTabButton.setOnClickListener { showPage(PAGE_WORKSPACE) }
+        detailsTabButton.setOnClickListener { showPage(PAGE_DETAILS) }
+        detailsShortcutButton.setOnClickListener { showPage(PAGE_DETAILS) }
+        translationSettingsShortcutButton.setOnClickListener {
+            showTranslationSettings()
+        }
+        chooseLibraryButton.setOnClickListener { openLibraryFolder(continueToChapter = false) }
+        processButton.setOnClickListener { startAutomaticPipeline() }
         importButton.setOnClickListener { openChapterFolder() }
         analysisButton.setOnClickListener { requestAnalysisStart() }
         cancelAnalysisButton.setOnClickListener { cancelAnalysis() }
@@ -344,6 +457,9 @@ class MainActivity : Activity() {
         cancelOcrButton.setOnClickListener { cancelOcr() }
         previousOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex - 1) }
         nextOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex + 1) }
+        translationSettingsToggleButton.setOnClickListener {
+            setTranslationSettingsExpanded(translationSettingsContainer.visibility != View.VISIBLE)
+        }
         saveTranslationSettingsButton.setOnClickListener { saveTranslationSettings() }
         translationButton.setOnClickListener { requestTranslationStart() }
         cancelTranslationButton.setOnClickListener { cancelTranslation() }
@@ -361,8 +477,9 @@ class MainActivity : Activity() {
         }
         qualityButton.setOnClickListener { requestQualityStart() }
         cancelQualityButton.setOnClickListener { cancelQuality() }
-        exportButton.setOnClickListener { openExportFolder() }
+        exportButton.setOnClickListener { saveCurrentProjectToLibrary() }
         cancelExportButton.setOnClickListener { cancelExport() }
+        syncWorkspaceState()
     }
 
     override fun onStart() {
@@ -379,6 +496,9 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshDurableState()
+        refreshLibraryHistory()
+        syncInstalledModelsToLibrary()
+        onPipelineStateChanged()
     }
 
     override fun onStop() {
@@ -414,6 +534,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        unregisterPredictiveBackCallback()
+        contentPager.onSwipe = null
         clearDisplayedBitmap()
         clearDisplayedOcrBitmap()
         clearDisplayedCleanupBitmap()
@@ -421,12 +543,263 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt(STATE_SELECTED_PAGE, contentPager.displayedChild)
+        super.onSaveInstanceState(outState)
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun onBackPressed() {
+        if (returnToWorkspaceIfNeeded()) return
+        super.onBackPressed()
+    }
+
+    private fun registerPredictiveBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val callback = OnBackInvokedCallback {
+            if (!returnToWorkspaceIfNeeded()) finishAfterTransition()
+        }
+        backInvokedCallback = callback
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            callback,
+        )
+    }
+
+    private fun unregisterPredictiveBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        backInvokedCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+        backInvokedCallback = null
+    }
+
+    private fun returnToWorkspaceIfNeeded(): Boolean {
+        val destination = PageNavigation.backDestination(contentPager.displayedChild) ?: return false
+        showPage(destination)
+        return true
+    }
+
+    private fun showPage(page: Int) {
+        val target = page.coerceIn(PAGE_WORKSPACE, PAGE_DETAILS)
+        if (contentPager.displayedChild != target) {
+            contentPager.displayedChild = target
+        }
+        workspaceTabButton.isSelected = target == PAGE_WORKSPACE
+        detailsTabButton.isSelected = target == PAGE_DETAILS
+    }
+
+    private fun showTranslationSettings() {
+        showPage(PAGE_DETAILS)
+        setTranslationSettingsExpanded(true)
+        translationSettingsToggleButton.post {
+            translationSettingsToggleButton.requestFocus()
+        }
+    }
+
+    private fun startAutomaticPipeline() {
+        if (currentProject == null) {
+            openChapterFolder()
+            return
+        }
+        if (translationSettingsStore.loadProviderSettings() == null) {
+            automaticPipelineRequested = false
+            pipelineStatus.setText(R.string.process_waiting_settings)
+            showTranslationSettings()
+            return
+        }
+        if (currentQualityRun != null && currentQualityRun?.report?.status?.allowsExport() != true) {
+            automaticPipelineRequested = false
+            pipelineStatus.setText(R.string.process_quality_blocked)
+            showPage(PAGE_DETAILS)
+            return
+        }
+        automaticPipelineRequested = true
+        advanceAutomaticPipeline()
+    }
+
+    private fun advanceAutomaticPipeline() {
+        if (!automaticPipelineRequested) return
+        when (AutomaticPipelinePlanner.next(automaticPipelineSnapshot())) {
+            AutomaticPipelineAction.START_DETECTION -> requestAnalysisStart()
+            AutomaticPipelineAction.START_OCR -> requestOcrStart()
+            AutomaticPipelineAction.START_TRANSLATION -> requestTranslationStart()
+            AutomaticPipelineAction.START_CLEANUP -> requestCleanupStart()
+            AutomaticPipelineAction.START_TYPESETTING -> requestTypesettingStart()
+            AutomaticPipelineAction.START_QUALITY -> requestQualityStart()
+            AutomaticPipelineAction.CONFIGURE_TRANSLATION -> {
+                automaticPipelineRequested = false
+                showTranslationSettings()
+            }
+            AutomaticPipelineAction.REVIEW_QUALITY -> {
+                automaticPipelineRequested = false
+                showPage(PAGE_DETAILS)
+            }
+            AutomaticPipelineAction.COMPLETE -> {
+                automaticPipelineRequested = false
+                saveCurrentProjectToLibrary()
+            }
+            AutomaticPipelineAction.WAIT_FOR_IMPORT -> automaticPipelineRequested = false
+            AutomaticPipelineAction.WAIT_FOR_ACTIVE_STAGE -> Unit
+        }
+        syncWorkspaceState()
+    }
+
+    private fun onPipelineStateChanged() {
+        syncWorkspaceState()
+        if (automaticPipelineRequested) {
+            contentPager.post { advanceAutomaticPipeline() }
+        }
+    }
+
+    private fun syncWorkspaceState() {
+        val snapshot = automaticPipelineSnapshot()
+        val completed = AutomaticPipelinePlanner.completedStages(snapshot)
+        val total = AutomaticPipelinePlanner.STAGE_COUNT
+        val hasProject = currentProject != null
+        val hasSettings = translationSettingsStore.loadProviderSettings() != null
+        val exportReady = currentQualityRun?.report?.status?.allowsExport() == true
+        val active = hasActiveWork()
+        val qualityBlocked = currentQualityRun != null && !exportReady
+
+        pipelineProgress.max = total
+        pipelineProgress.progress = completed
+        pipelineProgressText.text = getString(R.string.process_progress, completed, total)
+        pipelineStatus.text = when {
+            !hasProject -> getString(R.string.process_waiting_import)
+            !hasSettings -> getString(R.string.process_waiting_settings)
+            exportReady -> getString(R.string.process_ready_export)
+            qualityBlocked -> getString(R.string.process_quality_blocked)
+            active || automaticPipelineRequested -> getString(R.string.process_background)
+            completed == 0 -> getString(R.string.process_idle)
+            else -> getString(R.string.process_paused, completed, total)
+        }
+        processButton.setText(
+            when {
+                exportReady -> R.string.process_done
+                active || automaticPipelineRequested -> R.string.process_running
+                completed > 0 -> R.string.process_continue
+                else -> R.string.process_start
+            },
+        )
+        processButton.isEnabled = hasProject && hasSettings && !exportReady && !active && !qualityBlocked
+        translationSettingsShortcutButton.visibility = if (hasSettings) View.GONE else View.VISIBLE
+
+        val project = currentProject
+        if (
+            project != null &&
+            !importRunning &&
+            statusText.text.toString() == getString(R.string.import_status_idle)
+        ) {
+            statusText.text = getString(R.string.import_status_existing, project.manifest.pages.size)
+        }
+    }
+
+    private fun refreshLibraryHistory() {
+        val generation = ++libraryRefreshGeneration
+        val rootUri = libraryPreferences.rootUri()
+        if (rootUri == null) {
+            renderLibraryHistory(null, null, emptyList())
+            return
+        }
+        Thread({
+            val result = runCatching {
+                val store = MangaLibraryStore(contentResolver, rootUri)
+                store.rootDisplayName() to store.projects()
+            }
+            runOnUiThread {
+                if (generation != libraryRefreshGeneration) return@runOnUiThread
+                result.fold(
+                    onSuccess = { (name, projects) -> renderLibraryHistory(rootUri, name, projects) },
+                    onFailure = { renderLibraryHistory(rootUri, null, emptyList(), unavailable = true) },
+                )
+            }
+        }, LIBRARY_THREAD_NAME).start()
+    }
+
+    private fun renderLibraryHistory(
+        rootUri: Uri?,
+        displayName: String?,
+        projects: List<MangaLibraryProject>,
+        unavailable: Boolean = false,
+    ) {
+        libraryHistoryContainer.removeAllViews()
+        chooseLibraryButton.setText(
+            if (rootUri == null) R.string.library_choose else R.string.library_change,
+        )
+        libraryLocationText.text = when {
+            rootUri == null -> getString(R.string.library_not_configured)
+            unavailable -> getString(R.string.library_unavailable)
+            else -> getString(R.string.library_location, displayName ?: "Masumi", projects.size)
+        }
+        libraryEmptyText.visibility = if (projects.isEmpty() && !unavailable) View.VISIBLE else View.GONE
+        projects.forEach { project ->
+            val item = LayoutInflater.from(this).inflate(
+                R.layout.item_library_project,
+                libraryHistoryContainer,
+                false,
+            )
+            item.findViewById<TextView>(R.id.libraryProjectTitle).text = project.metadata.title
+            item.findViewById<TextView>(R.id.libraryProjectStatus).text = if (project.outputPageCount > 0) {
+                getString(R.string.library_project_status_ready, project.outputPageCount)
+            } else {
+                getString(R.string.library_project_status_processing)
+            }
+            item.findViewById<Button>(R.id.libraryProjectReadButton).apply {
+                isEnabled = project.outputPageCount > 0 && rootUri != null
+                setText(if (isEnabled) R.string.library_read else R.string.library_waiting)
+                setOnClickListener {
+                    rootUri?.let { startActivity(MangaReaderActivity.intent(this@MainActivity, it, project)) }
+                }
+            }
+            libraryHistoryContainer.addView(item)
+        }
+    }
+
+    private fun automaticPipelineSnapshot(): AutomaticPipelineSnapshot {
+        val qualityReady = currentQualityRun?.report?.status?.allowsExport() == true
+        return AutomaticPipelineSnapshot(
+            hasProject = currentProject != null,
+            hasTranslationSettings = translationSettingsStore.loadProviderSettings() != null,
+            hasActiveWork = hasActiveWork(),
+            detectionReady = currentRun != null,
+            ocrReady = currentOcrRun != null,
+            translationReady = currentTranslationRun != null,
+            cleanupReady = currentCleanupRun != null,
+            typesettingReady = currentTypesettingRun != null,
+            qualityReady = qualityReady,
+            qualityBlocked = currentQualityRun != null && !qualityReady,
+        )
+    }
+
+    private fun hasActiveWork(): Boolean = importRunning || analysisActive || ocrActive ||
+        translationActive || cleanupActive || typesettingActive || qualityActive || exportActive
+
     @Deprecated("Uses the platform result API to keep the foundation dependency-free")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) {
+            if (requestCode == REQUEST_LIBRARY_FOLDER) {
+                pendingChapterSelectionAfterLibrary = false
+                pendingExportAfterLibrary = false
+            }
+            return
+        }
         val treeUri = data?.data ?: return
         when (requestCode) {
+            REQUEST_LIBRARY_FOLDER -> {
+                retainReadWritePermission(treeUri, data.flags)
+                libraryPreferences.saveRootUri(treeUri)
+                synchronizedModelLibraryRoot = null
+                refreshLibraryHistory()
+                syncInstalledModelsToLibrary()
+                if (pendingChapterSelectionAfterLibrary) {
+                    pendingChapterSelectionAfterLibrary = false
+                    contentPager.post { openChapterFolder() }
+                } else if (pendingExportAfterLibrary) {
+                    pendingExportAfterLibrary = false
+                    contentPager.post { saveCurrentProjectToLibrary() }
+                }
+            }
             REQUEST_OPEN_CHAPTER -> {
                 retainReadPermission(treeUri, data.flags)
                 importChapter(treeUri)
@@ -464,12 +837,48 @@ class MainActivity : Activity() {
             importRunning || analysisActive || ocrActive || translationActive || cleanupActive ||
             typesettingActive || qualityActive || exportActive
         ) return
+        automaticPipelineRequested = false
+
+        if (libraryPreferences.rootUri() == null) {
+            openLibraryFolder(continueToChapter = true)
+            return
+        }
 
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
         startActivityForResult(intent, REQUEST_OPEN_CHAPTER)
+    }
+
+    private fun openLibraryFolder(
+        continueToChapter: Boolean,
+        continueToExport: Boolean = false,
+    ) {
+        if (hasActiveWork() || importRunning) return
+        require(!continueToChapter || !continueToExport)
+        pendingChapterSelectionAfterLibrary = continueToChapter
+        pendingExportAfterLibrary = continueToExport
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        }
+        startActivityForResult(intent, REQUEST_LIBRARY_FOLDER)
+    }
+
+    private fun syncInstalledModelsToLibrary() {
+        val rootUri = libraryPreferences.rootUri() ?: return
+        val rootKey = rootUri.toString()
+        if (synchronizedModelLibraryRoot == rootKey) return
+        synchronizedModelLibraryRoot = rootKey
+        Thread({
+            MangaLibraryInstalledModelSynchronizer(
+                workspaceRoot = filesDir.toPath().resolve("workspace"),
+                cache = MangaLibraryModelCache(contentResolver, rootUri),
+            ).sync()
+        }, MODEL_LIBRARY_SYNC_THREAD_NAME).start()
     }
 
     private fun retainReadPermission(treeUri: Uri, resultFlags: Int) {
@@ -492,6 +901,50 @@ class MainActivity : Activity() {
             addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
         }
         startActivityForResult(intent, REQUEST_EXPORT_FOLDER)
+    }
+
+    private fun saveCurrentProjectToLibrary() {
+        val project = currentProject ?: return
+        if (
+            currentQualityRun?.report?.status?.allowsExport() != true || importRunning || analysisActive ||
+            ocrActive || translationActive || cleanupActive || typesettingActive || qualityActive || exportActive
+        ) return
+        val rootUri = libraryPreferences.rootUri()
+        if (rootUri == null) {
+            Toast.makeText(this, R.string.library_export_missing, Toast.LENGTH_LONG).show()
+            openLibraryFolder(continueToChapter = false, continueToExport = true)
+            return
+        }
+        exportButton.isEnabled = false
+        exportStatus.setText(R.string.export_status_starting)
+        Thread({
+            val destination = runCatching {
+                val store = MangaLibraryStore(contentResolver, rootUri)
+                if (store.project(project.manifest.projectId) == null) {
+                    store.ensureProject(
+                        projectId = project.manifest.projectId,
+                        title = project.manifest.pages.firstOrNull()?.originalName
+                            ?.substringBeforeLast('.')
+                            .orEmpty()
+                            .ifBlank { "漫画项目 ${project.manifest.projectId.take(8)}" },
+                        createdAtEpochMillis = project.manifest.createdAtEpochMillis,
+                        sourceTreeUri = rootUri,
+                    )
+                }
+                store.ensureOutputDirectory(project.manifest.projectId)
+            }
+            runOnUiThread {
+                destination.fold(
+                    onSuccess = { uri ->
+                        if (currentProject?.manifest?.projectId == project.manifest.projectId) startExport(uri)
+                    },
+                    onFailure = {
+                        exportButton.isEnabled = true
+                        exportStatus.setText(R.string.library_unavailable)
+                    },
+                )
+            }
+        }, LIBRARY_THREAD_NAME).start()
     }
 
     private fun retainReadWritePermission(treeUri: Uri, resultFlags: Int) {
@@ -527,19 +980,36 @@ class MainActivity : Activity() {
 
         Thread({
             val result = runCatching {
+                val libraryRoot = requireNotNull(libraryPreferences.rootUri()) { "library root was not selected" }
+                val library = MangaLibraryStore(contentResolver, libraryRoot)
+                val title = library.documentDisplayName(treeUri).orEmpty().ifBlank { "未命名漫画" }
                 val sources = DocumentTreeReader(contentResolver).read(treeUri)
-                ProjectImporter(filesDir.toPath().resolve("workspace")).importProject(sources)
+                val outcome = ProjectImporter(filesDir.toPath().resolve("workspace")).importProject(sources)
+                val storedInLibrary = runCatching {
+                    library.ensureProject(
+                        projectId = outcome.manifest.projectId,
+                        title = title,
+                        createdAtEpochMillis = outcome.manifest.createdAtEpochMillis,
+                        sourceTreeUri = treeUri,
+                    )
+                }.isSuccess
+                ChapterImportResult(outcome, storedInLibrary)
             }
 
             runOnUiThread {
                 result.fold(
-                    onSuccess = { outcome ->
-                        statusText.text = getString(
-                            R.string.import_status_success,
-                            outcome.report.importedCount,
-                            outcome.report.byteCount,
-                            "projects/${outcome.manifest.projectId}/reports/${outcome.report.jobId}.json",
-                        )
+                    onSuccess = { imported ->
+                        val outcome = imported.outcome
+                        statusText.text = if (imported.storedInLibrary) {
+                            getString(
+                                R.string.import_status_success,
+                                outcome.report.importedCount,
+                                outcome.report.byteCount,
+                                "projects/${outcome.manifest.projectId}/reports/${outcome.report.jobId}.json",
+                            )
+                        } else {
+                            getString(R.string.library_project_create_failed)
+                        }
                     },
                     onFailure = { failure ->
                         statusText.text = when (failure) {
@@ -552,8 +1022,13 @@ class MainActivity : Activity() {
                         }
                     },
                 )
+                if (result.isSuccess && translationSettingsStore.loadProviderSettings() != null) {
+                    automaticPipelineRequested = true
+                }
                 setImportRunning(false)
                 refreshDurableState()
+                refreshLibraryHistory()
+                onPipelineStateChanged()
             }
         }, IMPORT_THREAD_NAME).start()
     }
@@ -650,7 +1125,12 @@ class MainActivity : Activity() {
         }
         if (result.isSuccess) {
             Toast.makeText(this, R.string.translation_settings_saved, Toast.LENGTH_SHORT).show()
+            setTranslationSettingsExpanded(false)
             refreshTranslationDurableState()
+            if (currentProject != null && currentQualityRun?.report?.status?.allowsExport() != true) {
+                automaticPipelineRequested = true
+                onPipelineStateChanged()
+            }
         } else {
             Toast.makeText(this, R.string.translation_settings_invalid, Toast.LENGTH_SHORT).show()
         }
@@ -664,6 +1144,7 @@ class MainActivity : Activity() {
         ) return
         if (translationSettingsStore.loadProviderSettings() == null) {
             translationStatus.setText(R.string.translation_status_settings_missing)
+            setTranslationSettingsExpanded(true)
             return
         }
         if (
@@ -699,6 +1180,13 @@ class MainActivity : Activity() {
         startService(TranslationForegroundService.cancelIntent(this))
         cancelTranslationButton.isEnabled = false
         translationStatus.setText(R.string.translation_notification_cancelling)
+    }
+
+    private fun setTranslationSettingsExpanded(expanded: Boolean) {
+        translationSettingsContainer.visibility = if (expanded) View.VISIBLE else View.GONE
+        translationSettingsToggleButton.setText(
+            if (expanded) R.string.translation_settings_hide else R.string.translation_settings_show,
+        )
     }
 
     private fun requestCleanupStart() {
@@ -1528,7 +2016,7 @@ class MainActivity : Activity() {
             DetectionJobStatus.CANCELLED -> getString(R.string.detection_status_cancelled)
             DetectionJobStatus.FAILED -> getString(
                 R.string.detection_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1565,7 +2053,7 @@ class MainActivity : Activity() {
             OcrJobStatus.CANCELLED -> getString(R.string.ocr_status_cancelled)
             OcrJobStatus.FAILED -> getString(
                 R.string.ocr_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1603,7 +2091,7 @@ class MainActivity : Activity() {
             TranslationJobStatus.CANCELLED -> getString(R.string.translation_status_cancelled)
             TranslationJobStatus.FAILED -> getString(
                 R.string.translation_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1639,7 +2127,7 @@ class MainActivity : Activity() {
             CleanupJobStatus.CANCELLED -> getString(R.string.cleanup_status_cancelled)
             CleanupJobStatus.FAILED -> getString(
                 R.string.cleanup_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1693,7 +2181,7 @@ class MainActivity : Activity() {
         cleanupPreservedPageMarker.text = when {
             entry.state == CleanupPageState.PRESERVED_SOURCE -> getString(
                 R.string.cleanup_preview_preserved_page,
-                entry.error?.code.orEmpty(),
+                describePipelineError(entry.error?.code),
             )
             bitmap == null -> getString(R.string.preview_unavailable)
             preservedCount > 0 -> getString(R.string.cleanup_preview_protected_regions, preservedCount)
@@ -1759,7 +2247,7 @@ class MainActivity : Activity() {
             TypesettingJobStatus.CANCELLED -> getString(R.string.typesetting_status_cancelled)
             TypesettingJobStatus.FAILED -> getString(
                 R.string.typesetting_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1808,7 +2296,7 @@ class MainActivity : Activity() {
             QualityJobStatus.CANCELLED -> getString(R.string.quality_status_cancelled)
             QualityJobStatus.FAILED -> getString(
                 R.string.quality_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1840,7 +2328,7 @@ class MainActivity : Activity() {
             ExportJobStatus.CANCELLED -> getString(R.string.export_status_cancelled)
             ExportJobStatus.FAILED -> getString(
                 R.string.export_status_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
     }
@@ -1900,7 +2388,7 @@ class MainActivity : Activity() {
         typesettingPreservedPageMarker.text = when {
             entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> getString(
                 R.string.typesetting_preview_preserved_page,
-                entry.error?.code.orEmpty(),
+                describePipelineError(entry.error?.code),
             )
             bitmap == null -> getString(R.string.preview_unavailable)
             preservedCount > 0 -> getString(R.string.typesetting_preview_protected_regions, preservedCount)
@@ -1976,7 +2464,10 @@ class MainActivity : Activity() {
             View.GONE
         }
         preservedPageMarker.text = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
-            getString(R.string.preview_preserved_page, entry.error?.code.orEmpty())
+            getString(
+                R.string.preview_preserved_page,
+                describePipelineError(entry.error?.code),
+            )
         } else {
             getString(R.string.preview_unavailable)
         }
@@ -2050,7 +2541,7 @@ class MainActivity : Activity() {
         ocrPreservedPageMarker.text = when {
             entry.state == OcrPageState.PRESERVED_SOURCE -> getString(
                 R.string.ocr_preview_preserved_page,
-                entry.error?.code.orEmpty(),
+                describePipelineError(entry.error?.code),
             )
             bitmap == null -> getString(R.string.preview_unavailable)
             protectedCount > 0 -> getString(
@@ -2233,6 +2724,7 @@ class MainActivity : Activity() {
         typesettingButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive &&
             !cleanupActive && !typesettingActive && currentCleanupRun != null
         importProgress.visibility = if (running) View.VISIBLE else View.GONE
+        syncWorkspaceState()
     }
 
     private fun setAnalysisActive(active: Boolean) {
@@ -2248,6 +2740,7 @@ class MainActivity : Activity() {
             !translationActive && !cleanupActive && !typesettingActive
         typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !active && !ocrActive &&
             !translationActive && !cleanupActive && !typesettingActive
+        syncWorkspaceState()
     }
 
     private fun setOcrActive(active: Boolean) {
@@ -2263,6 +2756,7 @@ class MainActivity : Activity() {
             !translationActive && !cleanupActive && !typesettingActive
         typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !active &&
             !translationActive && !cleanupActive && !typesettingActive
+        syncWorkspaceState()
     }
 
     private fun setTranslationActive(active: Boolean) {
@@ -2279,6 +2773,7 @@ class MainActivity : Activity() {
         saveTranslationSettingsButton.isEnabled = !active && !cleanupActive && !typesettingActive
         cancelTranslationButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelTranslationButton.isEnabled = active
+        syncWorkspaceState()
     }
 
     private fun setCleanupActive(active: Boolean) {
@@ -2295,6 +2790,7 @@ class MainActivity : Activity() {
         cancelCleanupButton.isEnabled = active
         typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive &&
             !ocrActive && !translationActive && !active && !typesettingActive
+        syncWorkspaceState()
     }
 
     private fun setTypesettingActive(active: Boolean) {
@@ -2319,6 +2815,7 @@ class MainActivity : Activity() {
         exportButton.isEnabled = currentQualityRun?.report?.status?.allowsExport() == true &&
             !importRunning && !analysisActive && !ocrActive && !translationActive && !cleanupActive &&
             !active && !qualityActive && !exportActive
+        syncWorkspaceState()
     }
 
     private fun setQualityActive(active: Boolean) {
@@ -2345,6 +2842,7 @@ class MainActivity : Activity() {
             !typesettingActive && !active && !exportActive
         cancelQualityButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelQualityButton.isEnabled = active
+        syncWorkspaceState()
     }
 
     private fun setExportActive(active: Boolean) {
@@ -2370,6 +2868,7 @@ class MainActivity : Activity() {
         saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive && !typesettingActive && !active
         cancelExportButton.visibility = if (active) View.VISIBLE else View.GONE
         cancelExportButton.isEnabled = active
+        syncWorkspaceState()
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -2585,10 +3084,22 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        const val PAGE_WORKSPACE = PageNavigation.WORKSPACE
+        const val PAGE_DETAILS = PageNavigation.DETAILS
+        const val STATE_SELECTED_PAGE = "selected_page"
         const val REQUEST_OPEN_CHAPTER = 1001
         const val REQUEST_NOTIFICATION_PERMISSION = 1002
         const val REQUEST_EXPORT_FOLDER = 1003
+        const val REQUEST_LIBRARY_FOLDER = 1004
         const val IMPORT_THREAD_NAME = "masumi-import"
+        const val LIBRARY_THREAD_NAME = "masumi-library"
+        const val MODEL_LIBRARY_SYNC_THREAD_NAME = "masumi-model-library-sync"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
+        const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"
     }
+
+    private data class ChapterImportResult(
+        val outcome: ImportOutcome,
+        val storedInLibrary: Boolean,
+    )
 }

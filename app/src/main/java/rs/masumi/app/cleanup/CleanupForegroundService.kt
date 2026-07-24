@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
+import rs.masumi.app.describePipelineError
 import rs.masumi.core.cleanup.CleanupJobStatus
 
 class CleanupForegroundService : Service() {
@@ -120,7 +121,10 @@ class CleanupForegroundService : Service() {
                 progress.preservedRegionCount,
             )
             CleanupJobStatus.CANCELLED -> getString(R.string.cleanup_notification_cancelled)
-            CleanupJobStatus.FAILED -> getString(R.string.cleanup_notification_failed, progress.errorCode.orEmpty())
+            CleanupJobStatus.FAILED -> getString(
+                R.string.cleanup_notification_failed,
+                describePipelineError(progress.errorCode),
+            )
         }
         val maximum = progress.totalPageCount.coerceAtLeast(1)
         notificationManager.notify(

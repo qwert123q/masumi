@@ -17,7 +17,7 @@ class CleanupIdentityTest {
                 0,
                 "b".repeat(64),
                 "c".repeat(64),
-                base.copy(policy = base.policy.copy(dilationRadiusPixels = 2)),
+                base.copy(policy = base.policy.copy(dilationRadiusPixels = 3)),
             ),
         )
     }

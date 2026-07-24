@@ -98,6 +98,37 @@ if(ANDROID)
         "const bool use_subgroups = false; // Avoid Android vendor compiler crashes in DMMV shaders."
         MASUMI_GGML_VULKAN_PATCHED_CONTENT
         "${MASUMI_GGML_VULKAN_PATCHED_CONTENT}")
+    set(MASUMI_VULKAN_INTERACTIVE_SUBMIT_BLOCK
+        "if (submit && enqueued) {\n            first_node_in_batch = true;")
+    string(FIND "${MASUMI_GGML_VULKAN_PATCHED_CONTENT}"
+        "${MASUMI_VULKAN_INTERACTIVE_SUBMIT_BLOCK}"
+        MASUMI_VULKAN_INTERACTIVE_SUBMIT_OFFSET)
+    if(MASUMI_VULKAN_INTERACTIVE_SUBMIT_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned ggml-vulkan submit contract changed; review Android responsiveness patch")
+    endif()
+    string(REPLACE
+        "${MASUMI_VULKAN_INTERACTIVE_SUBMIT_BLOCK}"
+        "if (submit && enqueued) {\n            ctx->device->compute_queue.queue.waitIdle();\n            std::this_thread::yield();\n            first_node_in_batch = true;"
+        MASUMI_GGML_VULKAN_PATCHED_CONTENT
+        "${MASUMI_GGML_VULKAN_PATCHED_CONTENT}")
+    # Mobile Vulkan drivers can otherwise occupy the shared graphics queue for
+    # several seconds. Smaller synchronous chunks let SurfaceFlinger and the app
+    # render between OCR batches while retaining GPU inference throughput.
+    set(MASUMI_VULKAN_NODES_PER_SUBMIT
+        "int nodes_per_submit = 100;")
+    string(FIND "${MASUMI_GGML_VULKAN_PATCHED_CONTENT}"
+        "${MASUMI_VULKAN_NODES_PER_SUBMIT}"
+        MASUMI_VULKAN_NODES_PER_SUBMIT_OFFSET)
+    if(MASUMI_VULKAN_NODES_PER_SUBMIT_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned ggml-vulkan batching contract changed; review Android responsiveness patch")
+    endif()
+    string(REPLACE
+        "${MASUMI_VULKAN_NODES_PER_SUBMIT}"
+        "int nodes_per_submit = 20;"
+        MASUMI_GGML_VULKAN_PATCHED_CONTENT
+        "${MASUMI_GGML_VULKAN_PATCHED_CONTENT}")
     set(MASUMI_GGML_VULKAN_PATCHED_SOURCE
         "${CMAKE_CURRENT_BINARY_DIR}/ggml-vulkan-android.cpp")
     file(WRITE "${MASUMI_GGML_VULKAN_PATCHED_SOURCE}"

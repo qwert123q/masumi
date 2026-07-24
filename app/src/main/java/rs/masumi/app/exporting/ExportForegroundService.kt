@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
+import rs.masumi.app.describePipelineError
 import rs.masumi.core.exporting.ExportJobStatus
 
 class ExportForegroundService : Service() {
@@ -130,7 +131,7 @@ class ExportForegroundService : Service() {
             ExportJobStatus.CANCELLED -> getString(R.string.export_notification_cancelled)
             ExportJobStatus.FAILED -> getString(
                 R.string.export_notification_failed,
-                progress.errorCode.orEmpty(),
+                describePipelineError(progress.errorCode),
             )
         }
         val maximum = progress.totalPageCount.coerceAtLeast(1)

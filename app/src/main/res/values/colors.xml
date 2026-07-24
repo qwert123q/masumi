@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="masumi_background">#F6F3ED</color>
+    <color name="masumi_surface">#FFFCF7</color>
+    <color name="masumi_surface_muted">#EFEBE3</color>
+    <color name="masumi_hero_start">#F5E9DE</color>
+    <color name="masumi_hero_end">#FAF4EC</color>
+    <color name="masumi_ink">#25211D</color>
+    <color name="masumi_ink_secondary">#6E665E</color>
+    <color name="masumi_outline">#DED6CC</color>
+    <color name="masumi_accent">#A9472F</color>
+    <color name="masumi_accent_pressed">#873723</color>
+    <color name="masumi_accent_soft">#F2DED5</color>
+    <color name="masumi_on_accent">#FFF9F4</color>
+    <color name="masumi_danger">#A13A3A</color>
+    <color name="masumi_launcher_background">#29ACEB</color>
     <color name="detection_bubble_blue">#1976D2</color>
     <color name="detection_text_green">#2E7D32</color>
     <color name="detection_free_text_orange">#EF6C00</color>

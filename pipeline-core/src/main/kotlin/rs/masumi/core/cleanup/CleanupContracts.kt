@@ -7,13 +7,13 @@ const val CLEANUP_SCHEMA_VERSION = 1
 
 @Serializable
 data class CleanupPolicy(
-    val revision: String = "adaptive-local-inpaint-v1",
+    val revision: String = "adaptive-glyph-mask-v12",
     val boxPaddingFraction: Double = 0.08,
     val minimumPaddingPixels: Int = 2,
-    val colorDistanceThreshold: Int = 42,
-    val dilationRadiusPixels: Int = 1,
+    val colorDistanceThreshold: Int = 20,
+    val dilationRadiusPixels: Int = 2,
     val minimumMaskCoverage: Double = 0.004,
-    val maximumMaskCoverage: Double = 0.62,
+    val maximumMaskCoverage: Double = 0.95,
 ) {
     init {
         require(boxPaddingFraction in 0.0..0.5)

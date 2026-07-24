@@ -14,23 +14,31 @@ class TranslationSettingsStoreTest {
     @Test
     fun credentialsPersistOnlyInApplicationPreferences() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val projectRoot = context.filesDir.toPath().resolve("workspace/projects/settings-test")
-        Files.createDirectories(projectRoot)
+        val preferencesName = "translation_provider_test_${System.nanoTime()}"
+        val projectRoot = Files.createTempDirectory(
+            context.cacheDir.toPath(),
+            "translation-settings-test-",
+        )
         val secret = "test-secret-value"
-        val store = TranslationSettingsStore(context)
+        val store = TranslationSettingsStore(context, preferencesName)
 
-        store.save(SavedTranslationSettings("https://example.invalid/v1", secret, "model-safe"))
+        try {
+            store.save(SavedTranslationSettings("https://example.invalid/v1", secret, "model-safe"))
 
-        val saved = store.loadSaved()
-        assertNotNull(saved)
-        assertEquals(secret, saved!!.apiKey)
-        val leaked = Files.walk(projectRoot).use { paths ->
-            paths.filter(Files::isRegularFile).anyMatch { path ->
-                runCatching {
-                    Files.newBufferedReader(path, Charsets.UTF_8).use { it.readText() }.contains(secret)
-                }.getOrDefault(false)
+            val saved = store.loadSaved()
+            assertNotNull(saved)
+            assertEquals(secret, saved!!.apiKey)
+            val leaked = Files.walk(projectRoot).use { paths ->
+                paths.filter(Files::isRegularFile).anyMatch { path ->
+                    runCatching {
+                        Files.newBufferedReader(path, Charsets.UTF_8).use { it.readText() }.contains(secret)
+                    }.getOrDefault(false)
+                }
             }
+            assertFalse(leaked)
+        } finally {
+            context.deleteSharedPreferences(preferencesName)
+            Files.deleteIfExists(projectRoot)
         }
-        assertFalse(leaked)
     }
 }

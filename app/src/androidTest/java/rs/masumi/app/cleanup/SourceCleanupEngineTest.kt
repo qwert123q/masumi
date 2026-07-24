@@ -86,16 +86,89 @@ class SourceCleanupEngineTest {
             for (y in 0 until height) for (x in 0 until width) {
                 setPixel(x, y, Color.rgb(100 + x, 120 + x, 140 + x))
             }
-            for (x in 14 until 26) setPixel(x, 12, Color.BLACK)
+            for (y in 9 until 16) for (x in 14 until 26) setPixel(x, y, Color.BLACK)
         }
         val cleaned = SourceCleanupEngine().clean(
             source,
-            listOf(target(PixelBox(12.0, 9.0, 28.0, 16.0), CleanupStrategy.LOCAL_BOUNDARY_INPAINT)),
+            listOf(
+                target(
+                    PixelBox(12.0, 7.0, 28.0, 18.0),
+                    CleanupStrategy.LOCAL_BOUNDARY_INPAINT,
+                    expectedGlyphCount = 1,
+                ),
+            ),
             CleanupPolicy(),
         )
         try {
             assertEquals(CleanupRegionState.CLEANED, cleaned.regions.single().state)
             assertTrue(Color.red(cleaned.bitmap.getPixel(20, 12)) > 100)
+        } finally {
+            cleaned.bitmap.recycle()
+            source.recycle()
+        }
+    }
+
+    @Test
+    fun freeTextGlyphLimitLeavesAdjacentArtworkUntouched() {
+        val source = Bitmap.createBitmap(100, 70, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.WHITE)
+            for (y in 20 until 45) for (x in 18 until 30) setPixel(x, y, Color.BLACK)
+            for (y in 8 until 62) for (x in 72 until 96) setPixel(x, y, Color.BLACK)
+        }
+
+        val cleaned = SourceCleanupEngine().clean(
+            source,
+            listOf(
+                target(
+                    PixelBox(10.0, 5.0, 98.0, 65.0),
+                    CleanupStrategy.LOCAL_BOUNDARY_INPAINT,
+                    expectedGlyphCount = 1,
+                ),
+            ),
+            CleanupPolicy(),
+        )
+
+        try {
+            assertEquals(CleanupRegionState.CLEANED, cleaned.regions.single().state)
+            assertTrue(cleaned.bitmap.getPixel(23, 30) != Color.BLACK)
+            assertEquals(Color.BLACK, cleaned.bitmap.getPixel(84, 30))
+        } finally {
+            cleaned.bitmap.recycle()
+            source.recycle()
+        }
+    }
+
+    @Test
+    fun texturedNarrationBoxUsesGlyphMaskInsteadOfErasingThePattern() {
+        val source = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply {
+            for (y in 0 until height) for (x in 0 until width) {
+                val shade = when ((x + y) % 3) {
+                    0 -> 255
+                    1 -> 210
+                    else -> 170
+                }
+                setPixel(x, y, Color.rgb(shade, shade, shade))
+            }
+            for (y in 22 until 40) for (x in 27 until 35) setPixel(x, y, Color.BLACK)
+        }
+        val patternBefore = source.getPixel(12, 12)
+
+        val cleaned = SourceCleanupEngine().clean(
+            source,
+            listOf(
+                target(
+                    PixelBox(8.0, 8.0, 56.0, 56.0),
+                    CleanupStrategy.FLAT_LOCAL_FILL,
+                    expectedGlyphCount = 1,
+                ),
+            ),
+            CleanupPolicy(),
+        )
+
+        try {
+            assertEquals(CleanupRegionState.CLEANED, cleaned.regions.single().state)
+            assertTrue(cleaned.bitmap.getPixel(30, 30) != Color.BLACK)
+            assertEquals(patternBefore, cleaned.bitmap.getPixel(12, 12))
         } finally {
             cleaned.bitmap.recycle()
             source.recycle()
@@ -125,5 +198,6 @@ class SourceCleanupEngineTest {
     private fun target(
         box: PixelBox,
         strategy: CleanupStrategy = CleanupStrategy.FLAT_LOCAL_FILL,
-    ) = CleanupTarget("a".repeat(64), "b".repeat(64), box, strategy)
+        expectedGlyphCount: Int? = null,
+    ) = CleanupTarget("a".repeat(64), "b".repeat(64), box, strategy, expectedGlyphCount)
 }

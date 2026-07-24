@@ -6,6 +6,7 @@ The repository now contains the complete end-to-end Android application pipeline
 
 ## Current capability
 
+- Guide users through the seven-stage localization workflow with a compact Android-native workspace, clear locked/available states, on-demand translation settings, and accessible 48 dp controls.
 - Select a folder through Android's system document picker.
 - Import direct-child JPEG, PNG, and WebP pages in natural filename order.
 - Stream each page once while computing its SHA-256 content identifier.
@@ -36,6 +37,7 @@ The repository now contains the complete end-to-end Android application pipeline
 - Refuse to publish a run when every provider window failed, while still publishing useful partial results when only isolated items must retain their source.
 - Checkpoint translation windows and pages atomically, recover only an interrupted active window, and publish strict page results, final glossary, usage totals, and protection report as one versioned run.
 - Save provider credentials only in application-private settings, then start, cancel, monitor, or resume whole-chapter translation from the Android UI without rerunning OCR.
+- Use the import-first workspace to automatically advance detection, OCR, translation, cleanup, typesetting, and quality; switch sideways to processing details only for diagnostics or manual recovery, then preview and export from the main result card.
 - Clean only regions with accepted translations, using local background fill for bubble text and allocation-bounded boundary-propagated inpainting for translated free text.
 - Recycle decoded source pages as soon as the mutable cleanup copy exists and use Android's large image-processing heap to keep high-resolution chapters below the runtime memory ceiling.
 - Reject empty or unsafe glyph masks, preserve protected regions and complete failed pages, and record every cleanup outcome without manual approval.
@@ -77,7 +79,11 @@ adb shell am instrument -w \
   rs.masumi.app.dev.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-The commands replace-install both packages and do not uninstall application data.
+The commands replace-install both packages and do not uninstall application data. Do not use
+`connectedDebugAndroidTest` on a device that contains a working Masumi Dev installation: the
+Gradle-managed device-test lifecycle uninstalls `rs.masumi.app.dev` after the run and therefore
+deletes its private projects, downloaded models, and translation-provider settings. Use the
+direct instrumentation commands above instead.
 
 See [the foundation architecture](docs/architecture/foundation.md) for the project artifact contract and failure semantics.
 
