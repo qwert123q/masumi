@@ -3,6 +3,9 @@
     <color name="masumi_background">#F6F3ED</color>
     <color name="masumi_surface">#FFFCF7</color>
     <color name="masumi_surface_muted">#EFEBE3</color>
+    <color name="masumi_reader_background">#101114</color>
+    <color name="masumi_reader_chrome">#CC15171C</color>
+    <color name="masumi_reader_chrome_text">#F4F1EA</color>
     <color name="masumi_hero_start">#F5E9DE</color>
     <color name="masumi_hero_end">#FAF4EC</color>
     <color name="masumi_ink">#25211D</color>

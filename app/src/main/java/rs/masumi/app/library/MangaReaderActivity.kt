@@ -8,14 +8,12 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.ImageView
-import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import java.util.concurrent.Executors
@@ -24,11 +22,12 @@ import rs.masumi.app.R
 
 class MangaReaderActivity : Activity() {
     private lateinit var titleView: TextView
-    private lateinit var imageView: ImageView
-    private lateinit var scrollView: ScrollView
+    private lateinit var readerView: ZoomableReaderView
     private lateinit var statusView: TextView
-    private lateinit var previousButton: Button
-    private lateinit var nextButton: Button
+    private lateinit var topBar: View
+    private lateinit var bottomBar: View
+    private lateinit var seekBar: SeekBar
+    private lateinit var directionButton: Button
     private lateinit var readingProgressStore: MangaReadingProgressStore
     private val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "masumi-reader") }
     private val loadGeneration = AtomicInteger()
@@ -37,9 +36,10 @@ class MangaReaderActivity : Activity() {
     private val pageCache = mutableMapOf<Int, Bitmap>()
     private val pendingLoads = mutableSetOf<Int>()
     private var displayedBitmap: Bitmap? = null
+    private var chromeVisible = false
+    private var rightToLeft = true
+    private var seekBarDragging = false
     private lateinit var projectId: String
-    private var downX = 0f
-    private var downY = 0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,16 +48,14 @@ class MangaReaderActivity : Activity() {
         enterImmersiveMode()
 
         titleView = findViewById(R.id.readerTitle)
-        imageView = findViewById(R.id.readerImage)
-        scrollView = findViewById(R.id.readerScroll)
+        readerView = findViewById(R.id.readerImage)
         statusView = findViewById(R.id.readerStatus)
-        previousButton = findViewById(R.id.readerPreviousButton)
-        nextButton = findViewById(R.id.readerNextButton)
+        topBar = findViewById(R.id.readerTopBar)
+        bottomBar = findViewById(R.id.readerBottomBar)
+        seekBar = findViewById(R.id.readerSeekBar)
+        directionButton = findViewById(R.id.readerDirectionButton)
         readingProgressStore = MangaReadingProgressStore(this)
         findViewById<Button>(R.id.readerCloseButton).setOnClickListener { finish() }
-        previousButton.setOnClickListener { showPage(currentIndex - 1) }
-        nextButton.setOnClickListener { showPage(currentIndex + 1) }
-        installSwipeNavigation()
 
         val rootUri = intent.getStringExtra(EXTRA_LIBRARY_ROOT)?.let(Uri::parse)
         val requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
@@ -71,9 +69,30 @@ class MangaReaderActivity : Activity() {
         }
         projectId = requestedProjectId
         titleView.text = title
+        rightToLeft = readingProgressStore.readsRightToLeft(projectId)
         currentIndex = savedInstanceState?.getInt(STATE_PAGE_INDEX)
             ?: readingProgressStore.load(projectId)?.pageIndex
             ?: 0
+
+        readerView.onTap = ::handleTap
+        readerView.onHorizontalSwipe = ::handleSwipe
+        directionButton.setOnClickListener { toggleDirection() }
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) statusView.text = pageIndicator(progress)
+            }
+
+            override fun onStartTrackingTouch(bar: SeekBar?) {
+                seekBarDragging = true
+            }
+
+            override fun onStopTrackingTouch(bar: SeekBar?) {
+                seekBarDragging = false
+                bar?.let { showPage(it.progress) }
+            }
+        })
+        applyDirectionLabel()
+        setChromeVisible(false)
         loadProject(rootUri, projectId)
     }
 
@@ -85,13 +104,87 @@ class MangaReaderActivity : Activity() {
     override fun onDestroy() {
         loadGeneration.incrementAndGet()
         executor.shutdownNow()
-        imageView.setImageDrawable(null)
+        readerView.setImageDrawable(null)
         displayedBitmap = null
         pageCache.values.forEach { it.takeUnless(Bitmap::isRecycled)?.recycle() }
         pageCache.clear()
         pendingLoads.clear()
         super.onDestroy()
     }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && !chromeVisible) enterImmersiveMode()
+    }
+
+    private fun enterImmersiveMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.apply {
+                hide(WindowInsets.Type.systemBars())
+                systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility =
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        }
+    }
+
+    private fun exitImmersiveMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.show(WindowInsets.Type.systemBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+    }
+
+    private fun handleTap(fraction: Float) {
+        when {
+            fraction <= PREVIOUS_TAP_ZONE -> turnPage(forward = rightToLeft)
+            fraction >= NEXT_TAP_ZONE -> turnPage(forward = !rightToLeft)
+            else -> setChromeVisible(!chromeVisible)
+        }
+    }
+
+    private fun handleSwipe(direction: ZoomableReaderView.SwipeDirection) {
+        val towardStart = direction == ZoomableReaderView.SwipeDirection.RIGHT
+        // Swiping toward the page you came from goes back; in RTL the previous
+        // page sits to the left, so the mapping flips with the direction.
+        turnPage(forward = if (rightToLeft) towardStart else !towardStart)
+    }
+
+    private fun turnPage(forward: Boolean) {
+        showPage(currentIndex + if (forward) 1 else -1)
+    }
+
+    private fun toggleDirection() {
+        rightToLeft = !rightToLeft
+        readingProgressStore.saveReadingDirection(projectId, rightToLeft)
+        applyDirectionLabel()
+    }
+
+    private fun applyDirectionLabel() {
+        directionButton.setText(
+            if (rightToLeft) R.string.reader_direction_rtl else R.string.reader_direction_ltr,
+        )
+    }
+
+    private fun setChromeVisible(visible: Boolean) {
+        chromeVisible = visible
+        topBar.visibility = if (visible) View.VISIBLE else View.GONE
+        bottomBar.visibility = if (visible) View.VISIBLE else View.GONE
+        if (visible) exitImmersiveMode() else enterImmersiveMode()
+    }
+
+    private fun pageIndicator(index: Int): String =
+        getString(R.string.reader_page_indicator, index + 1, pages.size)
 
     private fun loadProject(rootUri: Uri, projectId: String) {
         statusView.setText(R.string.reader_loading)
@@ -102,7 +195,7 @@ class MangaReaderActivity : Activity() {
             }.getOrDefault(emptyList())
             runOnUiThread {
                 if (generation != loadGeneration.get() || isFinishing || isDestroyed) return@runOnUiThread
-                imageView.setImageDrawable(null)
+                readerView.setImageDrawable(null)
                 displayedBitmap = null
                 pageCache.values.forEach { it.takeUnless(Bitmap::isRecycled)?.recycle() }
                 pageCache.clear()
@@ -110,9 +203,9 @@ class MangaReaderActivity : Activity() {
                 pages = loaded
                 if (pages.isEmpty()) {
                     statusView.setText(R.string.reader_empty)
-                    previousButton.isEnabled = false
-                    nextButton.isEnabled = false
+                    setChromeVisible(true)
                 } else {
+                    seekBar.max = pages.lastIndex
                     showPage(currentIndex.coerceIn(0, pages.lastIndex))
                 }
             }
@@ -122,11 +215,9 @@ class MangaReaderActivity : Activity() {
     private fun showPage(index: Int) {
         if (index !in pages.indices) return
         currentIndex = index
-        previousButton.isEnabled = index > 0
-        nextButton.isEnabled = index < pages.lastIndex
-        statusView.text = getString(R.string.reader_page_indicator, index + 1, pages.size)
+        statusView.text = pageIndicator(index)
+        if (!seekBarDragging) seekBar.progress = index
         readingProgressStore.save(projectId, index, pages.size)
-        scrollView.scrollTo(0, 0)
         pageCache[index]?.let(::display)
         ensurePageLoaded(index)
         ensurePageLoaded(index + 1)
@@ -136,7 +227,7 @@ class MangaReaderActivity : Activity() {
 
     private fun display(bitmap: Bitmap) {
         displayedBitmap = bitmap
-        imageView.setImageBitmap(bitmap)
+        readerView.setImageBitmap(bitmap)
     }
 
     private fun ensurePageLoaded(index: Int) {
@@ -174,7 +265,7 @@ class MangaReaderActivity : Activity() {
             if (kotlin.math.abs(entry.key - currentIndex) > CACHE_RADIUS) {
                 iterator.remove()
                 if (entry.value === displayedBitmap) {
-                    imageView.setImageDrawable(null)
+                    readerView.setImageDrawable(null)
                     displayedBitmap = null
                 }
                 entry.value.recycle()
@@ -206,61 +297,6 @@ class MangaReaderActivity : Activity() {
     private fun sampledPixelCount(width: Int, height: Int, sampleSize: Int): Long =
         (width.toLong() / sampleSize.coerceAtLeast(1)) * (height.toLong() / sampleSize.coerceAtLeast(1))
 
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) enterImmersiveMode()
-    }
-
-    private fun enterImmersiveMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false)
-            window.insetsController?.apply {
-                hide(WindowInsets.Type.systemBars())
-                systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility =
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                View.SYSTEM_UI_FLAG_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-        }
-    }
-
-    @Suppress("ClickableViewAccessibility")
-    private fun installSwipeNavigation() {
-        val density = resources.displayMetrics.density
-        val swipeThreshold = 72f * density
-        val tapSlop = 24f * density
-        scrollView.setOnTouchListener { view: View, event: MotionEvent ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = event.x
-                    downY = event.y
-                }
-                MotionEvent.ACTION_UP -> {
-                    val dx = event.x - downX
-                    val dy = event.y - downY
-                    if (kotlin.math.abs(dx) >= swipeThreshold &&
-                        kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.25f
-                    ) {
-                        if (dx < 0f) showPage(currentIndex + 1) else showPage(currentIndex - 1)
-                    } else if (kotlin.math.abs(dx) < tapSlop && kotlin.math.abs(dy) < tapSlop) {
-                        val width = view.width
-                        when {
-                            event.x >= width * TAP_ZONE_NEXT_FRACTION -> showPage(currentIndex + 1)
-                            event.x <= width * TAP_ZONE_PREVIOUS_FRACTION -> showPage(currentIndex - 1)
-                        }
-                    }
-                }
-            }
-            false
-        }
-    }
-
     companion object {
         private const val EXTRA_LIBRARY_ROOT = "library_root"
         private const val EXTRA_PROJECT_ID = "project_id"
@@ -268,8 +304,8 @@ class MangaReaderActivity : Activity() {
         private const val STATE_PAGE_INDEX = "page_index"
         private const val MAX_BITMAP_PIXELS = 8_000_000L
         private const val CACHE_RADIUS = 1
-        private const val TAP_ZONE_NEXT_FRACTION = 0.68f
-        private const val TAP_ZONE_PREVIOUS_FRACTION = 0.32f
+        private const val PREVIOUS_TAP_ZONE = 0.32f
+        private const val NEXT_TAP_ZONE = 0.68f
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
         fun intent(context: Context, rootUri: Uri, project: MangaLibraryProject): Intent =

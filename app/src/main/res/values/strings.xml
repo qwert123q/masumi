@@ -323,4 +323,6 @@
     <string name="reader_loading">正在打开成品…</string>
     <string name="reader_empty">这个项目还没有可阅读的成品。</string>
     <string name="reader_page_content_description">漫画成品页</string>
+    <string name="reader_direction_rtl">方向：日漫（右往左）</string>
+    <string name="reader_direction_ltr">方向：左往右</string>
 </resources>

@@ -28,6 +28,15 @@ class MangaReadingProgressStore(context: Context) {
             .apply()
     }
 
+    /** Japanese manga defaults to right-to-left page order. */
+    fun readsRightToLeft(projectId: String): Boolean =
+        !SAFE_ID.matches(projectId) || preferences.getBoolean("$projectId.rightToLeft", true)
+
+    fun saveReadingDirection(projectId: String, rightToLeft: Boolean) {
+        require(SAFE_ID.matches(projectId))
+        preferences.edit().putBoolean("$projectId.rightToLeft", rightToLeft).apply()
+    }
+
     private companion object {
         const val PREFERENCES_NAME = "manga_reading_progress"
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")

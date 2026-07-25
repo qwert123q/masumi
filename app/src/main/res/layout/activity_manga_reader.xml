@@ -1,86 +1,80 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/masumi_background"
-    android:orientation="vertical"
-    android:paddingStart="16dp"
-    android:paddingTop="12dp"
-    android:paddingEnd="16dp"
-    android:paddingBottom="12dp">
+    android:background="@color/masumi_reader_background">
+
+    <rs.masumi.app.library.ZoomableReaderView
+        android:id="@+id/readerImage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@string/reader_page_content_description" />
 
     <LinearLayout
+        android:id="@+id/readerTopBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="@color/masumi_reader_chrome"
         android:gravity="center_vertical"
-        android:orientation="horizontal">
-
-        <TextView
-            android:id="@+id/readerTitle"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:maxLines="2"
-            android:textAppearance="@style/TextAppearance.Masumi.Title" />
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="40dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="10dp">
 
         <Button
             android:id="@+id/readerCloseButton"
             style="@style/Widget.Masumi.Button.Secondary"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
             android:text="@string/reader_close" />
-    </LinearLayout>
 
-    <ScrollView
-        android:id="@+id/readerScroll"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="10dp"
-        android:layout_weight="1"
-        android:background="@color/masumi_surface"
-        android:fillViewport="true">
-
-        <ImageView
-            android:id="@+id/readerImage"
-            android:layout_width="match_parent"
+        <TextView
+            android:id="@+id/readerTitle"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:adjustViewBounds="true"
-            android:contentDescription="@string/reader_page_content_description"
-            android:scaleType="fitCenter" />
-    </ScrollView>
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/masumi_reader_chrome_text"
+            android:textSize="16sp" />
 
-    <TextView
-        android:id="@+id/readerStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:gravity="center"
-        android:text="@string/reader_loading"
-        android:textAppearance="@style/TextAppearance.Masumi.Body" />
+        <TextView
+            android:id="@+id/readerStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="@string/reader_loading"
+            android:textColor="@color/masumi_reader_chrome_text"
+            android:textSize="14sp" />
+    </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/readerBottomBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal">
+        android:layout_gravity="bottom"
+        android:background="@color/masumi_reader_chrome"
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="28dp">
+
+        <SeekBar
+            android:id="@+id/readerSeekBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
 
         <Button
-            android:id="@+id/readerPreviousButton"
+            android:id="@+id/readerDirectionButton"
             style="@style/Widget.Masumi.Button.Secondary"
-            android:layout_width="0dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="@string/reader_previous" />
-
-        <Button
-            android:id="@+id/readerNextButton"
-            style="@style/Widget.Masumi.Button.Secondary"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:text="@string/reader_next" />
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="6dp"
+            android:text="@string/reader_direction_rtl" />
     </LinearLayout>
-</LinearLayout>
+</FrameLayout>
