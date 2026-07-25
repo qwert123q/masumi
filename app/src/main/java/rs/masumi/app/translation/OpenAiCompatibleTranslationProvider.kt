@@ -79,7 +79,7 @@ class OpenAiCompatibleTranslationProvider(
                     )
                 } catch (error: TranslationProviderException) {
                     if (!error.retryable || attempt >= settings.maximumAttempts) throw error
-                    if (!retryWaiter.wait(settings.retryDelayMillis, cancelled::get)) {
+                    if (!retryWaiter.wait(retryDelayMillis(settings, attempt, error.retryAfterMillis), cancelled::get)) {
                         throw cancelled(attempt)
                     }
                 } catch (_: SocketTimeoutException) {
@@ -89,7 +89,7 @@ class OpenAiCompatibleTranslationProvider(
                         attemptCount = attempt,
                     )
                     if (attempt >= settings.maximumAttempts) throw mapped
-                    if (!retryWaiter.wait(settings.retryDelayMillis, cancelled::get)) {
+                    if (!retryWaiter.wait(retryDelayMillis(settings, attempt), cancelled::get)) {
                         throw cancelled(attempt)
                     }
                 } catch (_: IOException) {
@@ -100,7 +100,7 @@ class OpenAiCompatibleTranslationProvider(
                         attemptCount = attempt,
                     )
                     if (attempt >= settings.maximumAttempts) throw mapped
-                    if (!retryWaiter.wait(settings.retryDelayMillis, cancelled::get)) {
+                    if (!retryWaiter.wait(retryDelayMillis(settings, attempt), cancelled::get)) {
                         throw cancelled(attempt)
                     }
                 }
@@ -163,6 +163,7 @@ class OpenAiCompatibleTranslationProvider(
                 httpStatus = response.code,
                 retryable = transient,
                 attemptCount = attempt,
+                retryAfterMillis = if (transient) parseRetryAfterMillis(response.header("Retry-After")) else null,
             )
         }
 
@@ -278,9 +279,29 @@ class OpenAiCompatibleTranslationProvider(
         const val CHAT_COMPLETIONS_PATH = "/chat/completions"
         const val USER_AGENT = "Masumi/0.1"
         const val NANOS_PER_MILLISECOND = 1_000_000L
+        const val MAX_BACKOFF_DELAY_MILLIS = 30_000L
+        const val MAX_RETRY_AFTER_MILLIS = 60_000L
+        const val MAX_BACKOFF_SHIFT = 10
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val LOCALHOSTS = setOf("localhost", "127.0.0.1", "::1")
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
+
+        fun retryDelayMillis(
+            settings: TranslationProviderSettings,
+            attempt: Int,
+            retryAfterMillis: Long? = null,
+        ): Long {
+            if (retryAfterMillis != null) return retryAfterMillis.coerceIn(0L, MAX_RETRY_AFTER_MILLIS)
+            val base = settings.retryDelayMillis
+            if (base >= MAX_BACKOFF_DELAY_MILLIS) return MAX_BACKOFF_DELAY_MILLIS
+            val shift = (attempt - 1).coerceIn(0, MAX_BACKOFF_SHIFT)
+            return (base shl shift).coerceIn(0L, MAX_BACKOFF_DELAY_MILLIS)
+        }
+
+        fun parseRetryAfterMillis(header: String?): Long? = header?.trim()
+            ?.toLongOrNull()
+            ?.takeIf { it >= 0L }
+            ?.let { seconds -> (seconds * 1_000L).coerceAtMost(MAX_RETRY_AFTER_MILLIS) }
 
         fun waitWithCancellation(delayMillis: Long, isCancelled: () -> Boolean): Boolean {
             var remaining = delayMillis

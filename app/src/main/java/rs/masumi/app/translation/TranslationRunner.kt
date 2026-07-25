@@ -24,6 +24,7 @@ import rs.masumi.core.translation.TranslationDependencies
 import rs.masumi.core.translation.TranslationError
 import rs.masumi.core.translation.TranslationGlossaryArtifact
 import rs.masumi.core.translation.TranslationGlossaryEntry
+import rs.masumi.core.translation.TranslationGlossaryMemory
 import rs.masumi.core.translation.TranslationInputBuilder
 import rs.masumi.core.translation.TranslationJobPage
 import rs.masumi.core.translation.TranslationJobRecord
@@ -82,6 +83,7 @@ class TranslationRunner(
     private val batching: TranslationBatchingConfig = TranslationBatchingConfig(),
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
+    private val glossaryMemory: TranslationGlossaryMemory? = null,
 ) {
     private val catalog = ProjectCatalog(workspaceRoot.toAbsolutePath().normalize())
     private val promptBuilder = TranslationPromptBuilder()
@@ -108,7 +110,10 @@ class TranslationRunner(
         validateOcrDependency(project, ocrRun)
         val occurrenceInputs = loadInputs(project, ocrRun)
         val canonicalInputs = occurrenceInputs.distinctBy(PageTranslationInput::pageId)
-        val initialGlossary = emptyList<TranslationGlossaryEntry>()
+        // Series-level glossary keeps names and honorifics consistent across
+        // chapters; it participates in the artifact identity, so a changed
+        // glossary correctly invalidates cached translations.
+        val initialGlossary = glossaryMemory?.load().orEmpty()
         val initialGlossarySha256 = TranslationArtifactIdentity.glossarySha256(initialGlossary)
         val dependencies = TranslationDependencies(
             ocrRunArtifactKey = ocrRun.artifact.runArtifactKey,
@@ -254,6 +259,7 @@ class TranslationRunner(
                 entries = glossary,
             )
             val published = store.publishRun(job, run, glossaryArtifact, report)
+            glossaryMemory?.record(glossary)
             job = persist(job)
             return TranslationRunResult(job, run, report, published)
         } catch (_: TranslationCancellationSignal) {

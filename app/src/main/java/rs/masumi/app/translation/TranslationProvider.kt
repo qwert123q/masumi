@@ -83,6 +83,7 @@ class TranslationProviderException(
     val httpStatus: Int? = null,
     val retryable: Boolean,
     val attemptCount: Int,
+    val retryAfterMillis: Long? = null,
 ) : Exception(code.name)
 
 fun interface TranslationRetryWaiter {

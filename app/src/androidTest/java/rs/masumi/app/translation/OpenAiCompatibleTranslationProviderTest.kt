@@ -214,6 +214,28 @@ class OpenAiCompatibleTranslationProviderTest {
         }
     }
 
+    @Test
+    fun retryDelaysGrowExponentiallyAndHonorRetryAfter() {
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "2").setBody("busy"))
+        server.enqueue(MockResponse().setResponseCode(503).setBody("unavailable"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(successBody()))
+
+        val delays = mutableListOf<Long>()
+        val provider = OpenAiCompatibleTranslationProvider(
+            retryWaiter = TranslationRetryWaiter { delayMillis, isCancelled ->
+                delays += delayMillis
+                !isCancelled()
+            },
+        )
+        val result = provider.newCall(
+            settings(maximumAttempts = 3, retryDelayMillis = 100L),
+            messages(),
+        ).execute()
+
+        assertEquals(3, result.attemptCount)
+        assertEquals(listOf(2_000L, 200L), delays)
+    }
+
     private fun provider() = OpenAiCompatibleTranslationProvider(
         retryWaiter = TranslationRetryWaiter { _, isCancelled -> !isCancelled() },
     )
@@ -222,12 +244,13 @@ class OpenAiCompatibleTranslationProviderTest {
         maximumAttempts: Int = 1,
         readTimeoutMillis: Long = 2_000L,
         apiUrl: String = server.url("/v1/").toString(),
+        retryDelayMillis: Long = 0L,
     ) = TranslationProviderSettings(
         apiUrl = apiUrl,
         apiKey = "test-secret",
         model = "test-model",
         maximumAttempts = maximumAttempts,
-        retryDelayMillis = 0L,
+        retryDelayMillis = retryDelayMillis,
         readTimeoutMillis = readTimeoutMillis,
         allowInsecureLocalhost = true,
     )
