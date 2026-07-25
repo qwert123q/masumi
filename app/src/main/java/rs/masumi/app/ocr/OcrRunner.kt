@@ -82,6 +82,7 @@ class OcrRunner(
     private val dependencies: OcrDependencies = defaultOcrDependencies(),
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
+    private val secondaryEngineFactory: OcrEngineFactory? = null,
 ) {
     private val workspaceRoot = workspaceRoot.toAbsolutePath().normalize()
     private val catalog = ProjectCatalog(this.workspaceRoot)
@@ -89,6 +90,7 @@ class OcrRunner(
     private val cropPolicy = OcrCropPolicy(dependencies.crop)
     private val qualityEvaluator = OcrQualityEvaluator(dependencies.quality)
     private val activeEngine = AtomicReference<OcrEngine?>()
+    private val activeSecondaryEngine = AtomicReference<OcrEngine?>()
     private val activeStore = AtomicReference<OcrArtifactStore?>()
     private val activeJob = AtomicReference<OcrJobRecord?>()
     private val stateWriteLock = ReentrantLock()
@@ -111,6 +113,7 @@ class OcrRunner(
             cancelled.toProgress()
         }
         activeEngine.get()?.cancel()
+        activeSecondaryEngine.get()?.cancel()
         return progress
     }
 
@@ -201,6 +204,12 @@ class OcrRunner(
             }
             val engine = engineFactory.open(installed.model, installed.projector)
             activeEngine.set(engine)
+            // A second engine (typically CPU-only) roughly halves per-page OCR
+            // wall time on big-core devices; opening it is best-effort.
+            val secondaryEngine = secondaryEngineFactory?.let { factory ->
+                runCatching { factory.open(installed.model, installed.projector) }.getOrNull()
+            }
+            activeSecondaryEngine.set(secondaryEngine)
             job = persist(OcrJobReducer.startRunning(job, clock.millis()))
 
             project.manifest.pages.distinctBy(PageRecord::pageId).forEach { sourcePage ->
@@ -236,6 +245,7 @@ class OcrRunner(
                     }
 
                     val regionArtifacts = mutableListOf<OcrRegionArtifact>()
+                    val pendingCandidates = mutableListOf<OcrCandidate>()
                     pageCandidates.sortedBy(OcrCandidate::readingOrderRank).forEach { candidate ->
                         val checkpoint = job.pages.first { it.pageId == sourcePage.pageId }
                             .regions.single { it.ocrRegionId == candidate.ocrRegionId }
@@ -245,8 +255,28 @@ class OcrRunner(
                                 selectedPages.first(),
                                 candidate.ocrRegionId,
                             ) ?: throw FatalOcrException("COMMITTED_REGION_INVALID")
-                            return@forEach
+                        } else {
+                            pendingCandidates += candidate
                         }
+                    }
+                    if (secondaryEngine != null && pendingCandidates.size >= 2) {
+                        regionArtifacts += recognizeRegionsConcurrently(
+                            engines = listOf(engine, secondaryEngine),
+                            store = store,
+                            page = decoded.bitmap,
+                            detectionPage = detectionPage,
+                            pageId = sourcePage.pageId,
+                            currentOrder = selectedPages.minOf(OcrJobPage::order),
+                            candidates = pendingCandidates,
+                            jobId = job.jobId,
+                            isCancelled = ::isCancelled,
+                            onProgress = onProgress,
+                        )
+                        job = stateWriteLock.withLock {
+                            activeJob.get()?.takeIf { it.jobId == job.jobId }
+                                ?: throw OcrCancellationSignal()
+                        }
+                    } else pendingCandidates.forEach { candidate ->
                         if (isCancelled()) throw OcrCancellationSignal()
                         job = persist(
                             OcrJobReducer.startRegion(
@@ -389,9 +419,100 @@ class OcrRunner(
             return OcrRunResult(job)
         } finally {
             activeEngine.getAndSet(null)?.let { engine -> runCatching { engine.close() } }
+            activeSecondaryEngine.getAndSet(null)?.let { engine -> runCatching { engine.close() } }
             activeStore.set(null)
             activeJob.set(null)
         }
+    }
+
+    /**
+     * Fans pending regions of one page out across the available engines.
+     * Workers compute speculatively and only then serialize the
+     * startRegion+commitTerminalRegion pair under the state lock, so the
+     * durable job record keeps its existing single-RUNNING-region invariant
+     * and a crash simply leaves unfinished regions PENDING for resume.
+     */
+    private fun recognizeRegionsConcurrently(
+        engines: List<OcrEngine>,
+        store: OcrArtifactStore,
+        page: Bitmap,
+        detectionPage: PageDetectionArtifact,
+        pageId: String,
+        currentOrder: Int,
+        candidates: List<OcrCandidate>,
+        jobId: String,
+        isCancelled: () -> Boolean,
+        onProgress: (OcrProgress) -> Unit,
+    ): List<OcrRegionArtifact> {
+        val queue = java.util.concurrent.ConcurrentLinkedQueue(candidates)
+        val results = java.util.concurrent.ConcurrentHashMap<String, OcrRegionArtifact>()
+        val failure = AtomicReference<Throwable?>()
+        val workers = engines.mapIndexed { index, engine ->
+            Thread(
+                {
+                    while (failure.get() == null) {
+                        val candidate = queue.poll() ?: break
+                        try {
+                            if (isCancelled()) throw OcrCancellationSignal()
+                            val artifact = recognizeRegion(
+                                engine = engine,
+                                page = page,
+                                detectionPage = detectionPage,
+                                candidate = candidate,
+                                cancellation = isCancelled,
+                            )
+                            val committed = stateWriteLock.withLock {
+                                val current = activeJob.get()
+                                    ?.takeIf { it.jobId == jobId }
+                                    ?: throw OcrCancellationSignal()
+                                if (isCancelled() || !current.status.isNonTerminal()) {
+                                    throw OcrCancellationSignal()
+                                }
+                                val started = OcrJobReducer.startRegion(
+                                    current,
+                                    pageId,
+                                    candidate.ocrRegionId,
+                                    clock.millis(),
+                                )
+                                val activePage = started.pages.first { it.pageId == pageId }
+                                val checkpointPath = store.commitRegion(started, activePage, artifact)
+                                OcrJobReducer.commitTerminalRegion(
+                                    job = started,
+                                    pageId = pageId,
+                                    ocrRegionId = candidate.ocrRegionId,
+                                    state = artifact.state,
+                                    checkpointPath = checkpointPath,
+                                    error = artifact.error,
+                                    nowEpochMillis = clock.millis(),
+                                ).also { updated ->
+                                    store.writeJob(updated)
+                                    activeJob.set(updated)
+                                }
+                            }
+                            results[candidate.ocrRegionId] = artifact
+                            onProgress(
+                                committed.toProgress(
+                                    currentOrder = currentOrder,
+                                    currentPageId = pageId,
+                                    currentRegionId = candidate.ocrRegionId,
+                                ),
+                            )
+                        } catch (worker: Throwable) {
+                            failure.compareAndSet(null, worker)
+                            engines.forEach { active -> runCatching { active.cancel() } }
+                            break
+                        }
+                    }
+                },
+                "$OCR_WORKER_THREAD_PREFIX$index",
+            ).apply { start() }
+        }
+        workers.forEach(Thread::join)
+        failure.get()?.let { first ->
+            if (isCancelled() || first is OcrCancellationSignal) throw OcrCancellationSignal()
+            throw first
+        }
+        return candidates.map { candidate -> results.getValue(candidate.ocrRegionId) }
     }
 
     private fun recognizeRegion(
@@ -838,6 +959,7 @@ class OcrRunner(
 
     private companion object {
         val SHA256 = Regex("[0-9a-f]{64}")
+        const val OCR_WORKER_THREAD_PREFIX = "masumi-ocr-region-"
     }
 }
 

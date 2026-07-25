@@ -15,6 +15,10 @@ import rs.masumi.core.ocr.OcrExecutionBackend
 internal interface NativeOcrBridge {
     fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long
 
+    /** Test bridges ignore the thread count unless they opt in. */
+    fun create(modelPath: String, projectorPath: String, preferGpu: Boolean, threadCount: Int): Long =
+        create(modelPath, projectorPath, preferGpu)
+
     fun executionBackend(handle: Long): String
 
     fun recognize(
@@ -37,7 +41,22 @@ private object JniNativeOcrBridge : NativeOcrBridge {
         System.loadLibrary("masumi_ocr")
     }
 
-    override external fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long
+    override fun create(modelPath: String, projectorPath: String, preferGpu: Boolean): Long =
+        nativeCreate(modelPath, projectorPath, preferGpu, DEFAULT_THREAD_COUNT)
+
+    override fun create(
+        modelPath: String,
+        projectorPath: String,
+        preferGpu: Boolean,
+        threadCount: Int,
+    ): Long = nativeCreate(modelPath, projectorPath, preferGpu, threadCount)
+
+    private external fun nativeCreate(
+        modelPath: String,
+        projectorPath: String,
+        preferGpu: Boolean,
+        threadCount: Int,
+    ): Long
 
     override external fun executionBackend(handle: Long): String
 
@@ -54,6 +73,8 @@ private object JniNativeOcrBridge : NativeOcrBridge {
     override external fun cancel(handle: Long)
 
     override external fun destroy(handle: Long)
+
+    private const val DEFAULT_THREAD_COUNT = 6
 }
 
 class NativePaddleOcrEngine internal constructor(
@@ -185,40 +206,45 @@ class NativePaddleOcrEngine internal constructor(
         fun open(
             model: Path,
             projector: Path,
-        ): NativePaddleOcrEngine = openWithBridge(model, projector, JniNativeOcrBridge)
+            threadCount: Int = DEFAULT_ENGINE_THREADS,
+        ): NativePaddleOcrEngine = openWithBridge(model, projector, JniNativeOcrBridge, threadCount)
 
         internal fun openCpuOnly(
             model: Path,
             projector: Path,
+            threadCount: Int = DEFAULT_ENGINE_THREADS,
         ): NativePaddleOcrEngine = openSingle(
             model,
             projector,
             JniNativeOcrBridge,
             OcrExecutionBackend.CPU,
+            threadCount,
         )
 
         internal fun openWithBridge(
             model: Path,
             projector: Path,
             bridge: NativeOcrBridge,
+            threadCount: Int = DEFAULT_ENGINE_THREADS,
         ): NativePaddleOcrEngine {
             if (!Files.isRegularFile(model)) throw OcrEngineException(OcrEngineErrorCode.MODEL_LOAD)
             if (!Files.isRegularFile(projector)) {
                 throw OcrEngineException(OcrEngineErrorCode.PROJECTOR_LOAD)
             }
-            return openSingle(model, projector, bridge, OcrExecutionBackend.VULKAN)
+            return openSingle(model, projector, bridge, OcrExecutionBackend.VULKAN, threadCount)
         }
 
         internal fun openCpuOnlyWithBridge(
             model: Path,
             projector: Path,
             bridge: NativeOcrBridge,
+            threadCount: Int = DEFAULT_ENGINE_THREADS,
         ): NativePaddleOcrEngine {
             if (!Files.isRegularFile(model)) throw OcrEngineException(OcrEngineErrorCode.MODEL_LOAD)
             if (!Files.isRegularFile(projector)) {
                 throw OcrEngineException(OcrEngineErrorCode.PROJECTOR_LOAD)
             }
-            return openSingle(model, projector, bridge, OcrExecutionBackend.CPU)
+            return openSingle(model, projector, bridge, OcrExecutionBackend.CPU, threadCount)
         }
 
         private fun openSingle(
@@ -226,12 +252,14 @@ class NativePaddleOcrEngine internal constructor(
             projector: Path,
             bridge: NativeOcrBridge,
             requestedBackend: OcrExecutionBackend,
+            threadCount: Int,
         ): NativePaddleOcrEngine {
             val handle = try {
                 bridge.create(
                     model.toString(),
                     projector.toString(),
                     requestedBackend == OcrExecutionBackend.VULKAN,
+                    threadCount,
                 )
             } catch (failure: Throwable) {
                 throw OcrEngineException(OcrEngineErrorCode.MODEL_LOAD, failure)
@@ -268,6 +296,7 @@ class NativePaddleOcrEngine internal constructor(
         private const val TEMPLATE_FAILURE = -4L
         private const val ACCELERATOR_UNAVAILABLE_FAILURE = -5L
         private const val CANCELLATION_POLL_MILLIS = 10L
+        internal const val DEFAULT_ENGINE_THREADS = 6
     }
 }
 
@@ -275,6 +304,7 @@ internal class ResilientPaddleOcrEngine private constructor(
     private val model: Path,
     private val projector: Path,
     private val bridge: NativeOcrBridge,
+    private val threadCount: Int,
     initialEngine: NativePaddleOcrEngine,
 ) : OcrEngine {
     private val closed = AtomicBoolean(false)
@@ -306,7 +336,7 @@ internal class ResilientPaddleOcrEngine private constructor(
                 if (activeEngine === selected) {
                     acceleratorRestartUsed = true
                     selected.close()
-                    activeEngine = NativePaddleOcrEngine.openWithBridge(model, projector, bridge)
+                    activeEngine = NativePaddleOcrEngine.openWithBridge(model, projector, bridge, threadCount)
                 }
                 activeEngine.recognize(request, cancellation)
             }
@@ -327,21 +357,25 @@ internal class ResilientPaddleOcrEngine private constructor(
         fun open(
             model: Path,
             projector: Path,
+            threadCount: Int = NativePaddleOcrEngine.DEFAULT_ENGINE_THREADS,
         ): OcrEngine = openWithBridge(
             model,
             projector,
             JniNativeOcrBridge,
+            threadCount,
         )
 
         internal fun openWithBridge(
             model: Path,
             projector: Path,
             bridge: NativeOcrBridge,
+            threadCount: Int = NativePaddleOcrEngine.DEFAULT_ENGINE_THREADS,
         ): OcrEngine = ResilientPaddleOcrEngine(
             model = model,
             projector = projector,
             bridge = bridge,
-            initialEngine = NativePaddleOcrEngine.openWithBridge(model, projector, bridge),
+            threadCount = threadCount,
+            initialEngine = NativePaddleOcrEngine.openWithBridge(model, projector, bridge, threadCount),
         )
     }
 }
@@ -351,30 +385,33 @@ internal object DevicePaddleOcrEngine {
         model: Path,
         projector: Path,
         backendHealth: OcrBackendHealthStore,
-    ): OcrEngine = openWithBridge(model, projector, JniNativeOcrBridge, backendHealth)
+        threadCount: Int = NativePaddleOcrEngine.DEFAULT_ENGINE_THREADS,
+    ): OcrEngine = openWithBridge(model, projector, JniNativeOcrBridge, backendHealth, threadCount)
 
     internal fun openWithBridge(
         model: Path,
         projector: Path,
         bridge: NativeOcrBridge,
         backendHealth: OcrBackendHealthStore,
+        threadCount: Int = NativePaddleOcrEngine.DEFAULT_ENGINE_THREADS,
     ): OcrEngine {
         val initialEngine = if (backendHealth.shouldPreferVulkan()) {
             try {
-                ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge)
+                ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge, threadCount)
             } catch (failure: OcrEngineException) {
                 if (failure.code != OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE) throw failure
                 backendHealth.markVulkanUnavailable()
-                NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
+                NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge, threadCount)
             }
         } else {
-            NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge)
+            NativePaddleOcrEngine.openCpuOnlyWithBridge(model, projector, bridge, threadCount)
         }
         return BackendHealthRecordingEngine(
             model = model,
             projector = projector,
             bridge = bridge,
             backendHealth = backendHealth,
+            threadCount = threadCount,
             initialEngine = initialEngine,
         )
     }
@@ -385,6 +422,7 @@ private class BackendHealthRecordingEngine(
     private val projector: Path,
     private val bridge: NativeOcrBridge,
     private val backendHealth: OcrBackendHealthStore,
+    private val threadCount: Int,
     initialEngine: OcrEngine,
 ) : OcrEngine {
     private val closed = AtomicBoolean(false)
@@ -414,7 +452,7 @@ private class BackendHealthRecordingEngine(
                 if (closed.get() || cancellation()) throw OcrEngineException(OcrEngineErrorCode.CANCELLED)
                 if (activeEngine === selected) {
                     val replacement = try {
-                        ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge)
+                        ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge, threadCount)
                     } catch (_: OcrEngineException) {
                         throw failure
                     }
@@ -437,7 +475,7 @@ private class BackendHealthRecordingEngine(
             val selected = activeEngine
             if (selected.executionBackend != OcrExecutionBackend.CPU) return@withLock
             val promoted = try {
-                ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge)
+                ResilientPaddleOcrEngine.openWithBridge(model, projector, bridge, threadCount)
             } catch (failure: OcrEngineException) {
                 if (failure.code != OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE) throw failure
                 backendHealth.markVulkanUnavailable()

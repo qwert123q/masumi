@@ -23,7 +23,6 @@
 
 namespace {
 
-constexpr int kThreadCount = 6;
 constexpr uint32_t kContextSize = 1024;
 constexpr uint32_t kBatchSize = 128;
 constexpr int kMaximumGeneratedTokens = 256;
@@ -438,13 +437,15 @@ std::string result_json(const InferenceResult & result, int width, int height) {
 }  // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
+Java_rs_masumi_app_ocr_JniNativeOcrBridge_nativeCreate(
     JNIEnv * env,
     jobject,
     jstring model_path,
     jstring projector_path,
-    jboolean prefer_gpu_value) {
+    jboolean prefer_gpu_value,
+    jint thread_count_value) {
     if (model_path == nullptr || projector_path == nullptr) return -1;
+    const int thread_count = std::min(std::max(static_cast<int>(thread_count_value), 1), 8);
     const char * model = env->GetStringUTFChars(model_path, nullptr);
     const char * projector = env->GetStringUTFChars(projector_path, nullptr);
     if (model == nullptr || projector == nullptr) {
@@ -494,7 +495,7 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
         // offload only the LLM.
         vision_params.use_gpu = false;
         vision_params.print_timings = false;
-        vision_params.n_threads = kThreadCount;
+        vision_params.n_threads = thread_count;
         vision_params.warmup = false;
         // Preserve crop-adaptive preprocessing while avoiding the projector's
         // full-page minimum (576 input patches) for small text boxes. The actual
@@ -509,8 +510,8 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
         context_params.n_batch = kBatchSize;
         context_params.n_ubatch = kBatchSize;
         context_params.n_seq_max = 1;
-        context_params.n_threads = kThreadCount;
-        context_params.n_threads_batch = kThreadCount;
+        context_params.n_threads = thread_count;
+        context_params.n_threads_batch = thread_count;
         context_params.offload_kqv = prefer_gpu;
         context_params.abort_callback = abort_requested;
         context_params.abort_callback_data = handle.get();

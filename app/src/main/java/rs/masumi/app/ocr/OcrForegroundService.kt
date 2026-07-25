@@ -38,6 +38,7 @@ class OcrForegroundService : Service() {
     private val latestStartId = AtomicInteger(0)
     private val progressThrottle = OcrProgressThrottle()
     private lateinit var engineCache: OcrEngineSessionCache
+    private var secondaryEngineCache: OcrEngineSessionCache? = null
 
     @Volatile
     private var runner: OcrRunner? = null
@@ -54,12 +55,33 @@ class OcrForegroundService : Service() {
         val backendHealth = OcrBackendHealthStore(
             workspace.resolve("runtime/ocr-vulkan-unavailable"),
         )
+        // On big-core devices with headroom, split the CPU threads between two
+        // engines so two regions of a page are recognized concurrently. The
+        // vision encoder is the dominant cost and runs on CPU either way.
+        val dualEngine = supportsDualEngines()
+        val primaryThreads = if (dualEngine) DUAL_ENGINE_THREADS else SINGLE_ENGINE_THREADS
         engineCache = OcrEngineSessionCache(
             OcrEngineFactory { model, projector ->
-                DevicePaddleOcrEngine.open(model, projector, backendHealth)
+                DevicePaddleOcrEngine.open(model, projector, backendHealth, primaryThreads)
             },
         )
+        secondaryEngineCache = if (dualEngine) {
+            OcrEngineSessionCache(
+                OcrEngineFactory { model, projector ->
+                    NativePaddleOcrEngine.openCpuOnly(model, projector, DUAL_ENGINE_THREADS)
+                },
+            )
+        } else {
+            null
+        }
         createNotificationChannel()
+    }
+
+    private fun supportsDualEngines(): Boolean {
+        if (Runtime.getRuntime().availableProcessors() < MINIMUM_DUAL_ENGINE_PROCESSORS) return false
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(memoryInfo)
+        return memoryInfo.totalMem >= MINIMUM_DUAL_ENGINE_MEMORY_BYTES
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -121,6 +143,7 @@ class OcrForegroundService : Service() {
         executor.shutdownNow()
         cancellationWatchdog.shutdownNow()
         engineCache.close()
+        secondaryEngineCache?.close()
         taskWakeLock.release()
         super.onDestroy()
     }
@@ -200,6 +223,9 @@ class OcrForegroundService : Service() {
             decoder = PageBitmapDecoder(),
             cropRenderer = OcrCropRenderer(),
             previewRenderer = OcrPreviewRenderer(),
+            secondaryEngineFactory = secondaryEngineCache?.let { cache ->
+                OcrEngineFactory { model, projector -> cache.open(model, projector) }
+            },
         )
     }
 
@@ -341,6 +367,10 @@ class OcrForegroundService : Service() {
         private const val CANCELLATION_WATCHDOG_THREAD_NAME = "masumi-ocr-cancel-watchdog"
         private const val FORCED_CANCELLATION_GRACE_MILLIS = 1_500L
         private const val ENGINE_IDLE_TIMEOUT_MILLIS = 60_000L
+        private const val SINGLE_ENGINE_THREADS = 6
+        private const val DUAL_ENGINE_THREADS = 4
+        private const val MINIMUM_DUAL_ENGINE_PROCESSORS = 8
+        private const val MINIMUM_DUAL_ENGINE_MEMORY_BYTES = 7L * 1_024L * 1_024L * 1_024L
         private val ACTIVE_PROJECT = AtomicReference<String?>()
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     }
