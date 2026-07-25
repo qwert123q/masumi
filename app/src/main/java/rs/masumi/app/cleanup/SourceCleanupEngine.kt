@@ -31,7 +31,9 @@ data class CleanedPage(
     val regions: List<CleanupRegionArtifact>,
 )
 
-class SourceCleanupEngine {
+class SourceCleanupEngine(
+    private val neuralInpainter: NeuralInpainter? = null,
+) {
     fun clean(
         source: Bitmap,
         targets: List<CleanupTarget>,
@@ -279,7 +281,20 @@ class SourceCleanupEngine {
             maskedIndex += 1
         }
         if (useBoundaryInpaint) {
-            inpaintBidirectional(pixels, width, roi, dilated, cancellation)
+            val inpainter = neuralInpainter
+            val neuralApplied = inpainter != null && runCatching {
+                inpainter.inpaint(
+                    pixels = pixels,
+                    pageWidth = width,
+                    pageHeight = height,
+                    roiLeft = roi.left,
+                    roiTop = roi.top,
+                    roiRight = roi.right,
+                    roiBottom = roi.bottom,
+                    roiMask = dilated,
+                )
+            }.getOrDefault(false)
+            if (!neuralApplied) inpaintBidirectional(pixels, width, roi, dilated, cancellation)
         } else {
             fillFlat(pixels, width, roi, dilated, background)
         }

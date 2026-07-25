@@ -26,6 +26,9 @@ class CleanupForegroundService : Service() {
     private val cancellation = AtomicBoolean(false)
 
     @Volatile private var runner: CleanupRunner? = null
+    private val inpainterLock = Any()
+    private var inpainter: OnnxAotInpainter? = null
+    private var inpainterFailed = false
 
     override fun onCreate() {
         super.onCreate()
@@ -92,8 +95,28 @@ class CleanupForegroundService : Service() {
         cancellation.set(true)
         runner?.cancel()
         executor.shutdownNow()
+        synchronized(inpainterLock) {
+            inpainter?.close()
+            inpainter = null
+            inpainterFailed = false
+        }
         taskWakeLock.release()
         super.onDestroy()
+    }
+
+    /**
+     * The AOT inpainting model ships in the APK assets; load it once per
+     * service lifetime. A load failure downgrades cleanup to the classical
+     * interpolation inpainter instead of failing the stage.
+     */
+    private fun obtainInpainter(): NeuralInpainter? = synchronized(inpainterLock) {
+        inpainter?.let { return it }
+        if (inpainterFailed) return null
+        runCatching {
+            OnnxAotInpainter(assets.open(OnnxAotInpainter.ASSET_PATH).use { it.readBytes() })
+        }.onFailure { inpainterFailed = true }
+            .getOrNull()
+            ?.also { inpainter = it }
     }
 
     private fun startCleanup(projectId: String): Boolean {
@@ -104,7 +127,7 @@ class CleanupForegroundService : Service() {
             try {
                 val workspace = filesDir.toPath().resolve("workspace")
                 PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
-                    val active = CleanupRunner(workspace)
+                    val active = CleanupRunner(workspace, engine = SourceCleanupEngine(obtainInpainter()))
                     runner = active
                     active.run(projectId, cancellation::get, ::publishProgress)
                 }
