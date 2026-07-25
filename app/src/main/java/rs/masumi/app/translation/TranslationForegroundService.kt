@@ -18,6 +18,7 @@ import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
 import rs.masumi.app.pipeline.PipelineDeviceCapacity
 import rs.masumi.core.translation.TranslationJobStatus
+import rs.masumi.core.translation.WorkspaceGlossaryStore
 
 class TranslationForegroundService : Service() {
     private lateinit var executor: ExecutorService
@@ -67,10 +68,19 @@ class TranslationForegroundService : Service() {
             }
             else -> return START_NOT_STICKY
         }
-        return if (activeTasks.isNotEmpty()) START_REDELIVER_INTENT else START_NOT_STICKY
+        // Never redeliver: removing the app from recents must leave pipeline
+        // work stopped; durable checkpoints preserve the progress for resume.
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        cancelTranslations(null)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         cancelTranslations(null)
@@ -104,6 +114,7 @@ class TranslationForegroundService : Service() {
                 val activeRunner = TranslationRunner(
                     workspaceRoot = filesDir.toPath().resolve("workspace"),
                     provider = OpenAiCompatibleTranslationProvider(),
+                    glossaryMemory = WorkspaceGlossaryStore(filesDir.toPath().resolve("workspace")),
                 )
                 active.runner = activeRunner
                 activeRunner.run(projectId, settings, active.cancellation::get, ::publishProgress)

@@ -89,10 +89,22 @@ class OcrForegroundService : Service() {
             }
             else -> return START_NOT_STICKY
         }
-        return if (ACTIVE_PROJECT.get() != null) START_REDELIVER_INTENT else START_NOT_STICKY
+        // Never redeliver: if the user removes the app from recents (or the
+        // system kills the process), pipeline work must stay stopped until it
+        // is explicitly resumed; durable checkpoints preserve the progress.
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        cancellation.set(true)
+        runner?.cancel()
+        idleGeneration.incrementAndGet()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         cancellation.set(true)

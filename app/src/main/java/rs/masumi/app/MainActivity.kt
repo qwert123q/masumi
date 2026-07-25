@@ -49,6 +49,7 @@ import rs.masumi.app.quality.QualityForegroundService
 import rs.masumi.app.quality.QualityProgress
 import rs.masumi.app.quality.QualityResumePolicy
 import rs.masumi.app.quality.QualityStatusBroadcast
+import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.app.library.MangaLibraryPreferences
@@ -118,6 +119,7 @@ import rs.masumi.core.typesetting.TypesettingRegionState
 import rs.masumi.core.typesetting.TypesettingRunEntry
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private lateinit var projectBackButton: Button
@@ -239,23 +241,19 @@ class MainActivity : Activity() {
     private var currentTypesettingRun: PublishedTypesettingRun? = null
     private var currentQualityRun: PublishedQualityRun? = null
     private var currentTypesettingPreviewIndex = 0
-    private var displayedBitmap: Bitmap? = null
-    private var displayedOcrBitmap: Bitmap? = null
-    private var displayedCleanupBitmap: Bitmap? = null
-    private var displayedTypesettingBitmap: Bitmap? = null
+    private lateinit var detectionPreviewPane: PreviewPane
+    private lateinit var ocrPreviewPane: PreviewPane
+    private lateinit var cleanupPreviewPane: PreviewPane
+    private lateinit var typesettingPreviewPane: PreviewPane
+    private val previewExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, PREVIEW_THREAD_NAME)
+    }
     private var pendingAnalysisProjectId: String? = null
     private var pendingOcrProjectId: String? = null
     private var pendingTranslationProjectId: String? = null
     private var pendingCleanupProjectId: String? = null
     private var pendingTypesettingProjectId: String? = null
     private var pendingQualityProjectId: String? = null
-    private var resumeRequestedThisProcess = false
-    private var ocrResumeRequestedThisProcess = false
-    private var translationResumeRequestedThisProcess = false
-    private var cleanupResumeRequestedThisProcess = false
-    private var typesettingResumeRequestedThisProcess = false
-    private var qualityResumeRequestedThisProcess = false
-    private var exportResumeRequestedThisProcess = false
     private var pendingChapterSelectionAfterLibrary = false
     private var pendingExportAfterLibrary = false
     private var libraryRefreshGeneration = 0
@@ -444,10 +442,15 @@ class MainActivity : Activity() {
         exportProgress = findViewById(R.id.exportProgress)
         exportStatus = findViewById(R.id.exportStatus)
         readProjectButton = findViewById(R.id.readProjectButton)
+        detectionPreviewPane = PreviewPane(previewImage)
+        ocrPreviewPane = PreviewPane(ocrPreviewImage)
+        cleanupPreviewPane = PreviewPane(cleanupPreviewImage)
+        typesettingPreviewPane = PreviewPane(typesettingPreviewImage)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
         libraryPreferences = MangaLibraryPreferences(this)
         pipelineQueueStore = PipelineQueueStore(this)
+        PipelineColdStartGuard.reconcile(pipelineQueueStore)
         requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
             ?.takeIf(SAFE_PROJECT_ID::matches)
         automaticPipelineRequested = getPreferences(MODE_PRIVATE)
@@ -579,10 +582,11 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         unregisterPredictiveBackCallback()
         contentPager.onSwipe = null
-        clearDisplayedBitmap()
-        clearDisplayedOcrBitmap()
-        clearDisplayedCleanupBitmap()
-        clearDisplayedTypesettingBitmap()
+        previewExecutor.shutdownNow()
+        detectionPreviewPane.clear()
+        ocrPreviewPane.clear()
+        cleanupPreviewPane.clear()
+        typesettingPreviewPane.clear()
         super.onDestroy()
     }
 
@@ -1055,7 +1059,6 @@ class MainActivity : Activity() {
     private fun startExport(treeUri: Uri) {
         if (!ensureUnrestrictedBackgroundExecution()) return
         val projectId = currentProject?.manifest?.projectId ?: return
-        exportResumeRequestedThisProcess = true
         startForegroundService(ExportForegroundService.startIntent(this, projectId, treeUri))
         setExportActive(true)
         exportStatus.setText(R.string.export_status_starting)
@@ -1154,7 +1157,6 @@ class MainActivity : Activity() {
     private fun startAnalysis(projectId: String) {
         if (!ensureUnrestrictedBackgroundExecution()) return
         val intent = DetectionForegroundService.startIntent(this, projectId)
-        resumeRequestedThisProcess = true
         startForegroundService(intent)
         setAnalysisActive(true)
         detectionStatus.setText(R.string.detection_status_starting)
@@ -1196,7 +1198,6 @@ class MainActivity : Activity() {
 
     private fun startOcr(projectId: String) {
         if (!ensureUnrestrictedBackgroundExecution()) return
-        ocrResumeRequestedThisProcess = true
         startForegroundService(OcrForegroundService.startIntent(this, projectId))
         setOcrActive(true)
         ocrStatus.setText(R.string.ocr_status_starting)
@@ -1268,7 +1269,6 @@ class MainActivity : Activity() {
 
     private fun startTranslation(projectId: String) {
         if (!ensureUnrestrictedBackgroundExecution()) return
-        translationResumeRequestedThisProcess = true
         startForegroundService(TranslationForegroundService.startIntent(this, projectId))
         setTranslationActive(true)
         translationStatus.setText(R.string.translation_status_starting)
@@ -1318,7 +1318,6 @@ class MainActivity : Activity() {
 
     private fun startCleanup(projectId: String) {
         if (!ensureUnrestrictedBackgroundExecution()) return
-        cleanupResumeRequestedThisProcess = true
         startForegroundService(CleanupForegroundService.startIntent(this, projectId))
         setCleanupActive(true)
         cleanupStatus.setText(R.string.cleanup_status_starting)
@@ -1360,7 +1359,6 @@ class MainActivity : Activity() {
 
     private fun startTypesetting(projectId: String) {
         if (!ensureUnrestrictedBackgroundExecution()) return
-        typesettingResumeRequestedThisProcess = true
         startForegroundService(TypesettingForegroundService.startIntent(this, projectId))
         setTypesettingActive(true)
         typesettingStatus.setText(R.string.typesetting_status_starting)
@@ -1402,7 +1400,6 @@ class MainActivity : Activity() {
 
     private fun startQuality(projectId: String) {
         if (!ensureUnrestrictedBackgroundExecution()) return
-        qualityResumeRequestedThisProcess = true
         startForegroundService(QualityForegroundService.startIntent(this, projectId))
         setQualityActive(true)
         qualityStatus.setText(R.string.quality_status_starting)
@@ -1465,23 +1462,12 @@ class MainActivity : Activity() {
             ?.takeIf { it.projectId == project.manifest.projectId }
             ?: progressFromDurableState(project)
         if (durableProgress != null) {
-            renderProgress(durableProgress)
-            if (
-                progressOverride == null &&
-                !pipelineQueueStore.contains(project.manifest.projectId) &&
-                DetectionResumePolicy.shouldResume(
-                    durableProgress.status,
-                    resumeRequestedThisProcess,
-                )
-            ) {
-                resumeRequestedThisProcess = true
-                startForegroundService(
-                    DetectionForegroundService.startIntent(
-                        this,
-                        project.manifest.projectId,
-                    ),
-                )
-            }
+            renderProgress(
+                durableProgress,
+                interrupted = progressOverride == null &&
+                    !DetectionForegroundService.isTaskActive() &&
+                    DetectionResumePolicy.shouldResume(durableProgress.status, false),
+            )
         } else {
             setAnalysisActive(false)
             analysisButton.isEnabled = !importRunning && !ocrActive && !translationActive && !cleanupActive && !typesettingActive
@@ -1512,21 +1498,12 @@ class MainActivity : Activity() {
             }
             ?: progressFromOcrDurableState(project, detectionRun.artifact.runArtifactKey)
         if (durableProgress != null) {
-            renderOcrProgress(durableProgress)
-            if (
-                progressOverride == null &&
-                !pipelineQueueStore.contains(project.manifest.projectId) &&
-                !OcrForegroundService.isTaskActive() &&
-                OcrResumePolicy.shouldResume(
-                    durableProgress.status,
-                    ocrResumeRequestedThisProcess,
-                )
-            ) {
-                ocrResumeRequestedThisProcess = true
-                startForegroundService(
-                    OcrForegroundService.startIntent(this, project.manifest.projectId),
-                )
-            }
+            renderOcrProgress(
+                durableProgress,
+                interrupted = progressOverride == null &&
+                    !OcrForegroundService.isTaskActive() &&
+                    OcrResumePolicy.shouldResume(durableProgress.status, false),
+            )
         } else {
             setOcrActive(false)
             ocrButton.isEnabled = !importRunning && !analysisActive && !translationActive && !cleanupActive && !typesettingActive
@@ -1558,22 +1535,12 @@ class MainActivity : Activity() {
             }
             ?: progressFromTranslationDurableState(project, ocrRun.artifact.runArtifactKey)
         if (durableProgress != null) {
-            renderTranslationProgress(durableProgress)
-            if (
-                progressOverride == null &&
-                !pipelineQueueStore.contains(project.manifest.projectId) &&
-                !TranslationForegroundService.isTaskActive(project.manifest.projectId) &&
-                translationSettingsStore.loadProviderSettings() != null &&
-                TranslationResumePolicy.shouldResume(
-                    durableProgress.status,
-                    translationResumeRequestedThisProcess,
-                )
-            ) {
-                translationResumeRequestedThisProcess = true
-                startForegroundService(
-                    TranslationForegroundService.startIntent(this, project.manifest.projectId),
-                )
-            }
+            renderTranslationProgress(
+                durableProgress,
+                interrupted = progressOverride == null &&
+                    !TranslationForegroundService.isTaskActive(project.manifest.projectId) &&
+                    TranslationResumePolicy.shouldResume(durableProgress.status, false),
+            )
         } else {
             setTranslationActive(false)
             translationButton.isEnabled = translationSettingsStore.loadProviderSettings() != null &&
@@ -1611,21 +1578,12 @@ class MainActivity : Activity() {
             }
             ?: progressFromCleanupDurableState(project, translationRun.artifact.runArtifactKey)
         if (durableProgress != null) {
-            renderCleanupProgress(durableProgress)
-            if (
-                progressOverride == null &&
-                !pipelineQueueStore.contains(project.manifest.projectId) &&
-                !CleanupForegroundService.isTaskActive() &&
-                CleanupResumePolicy.shouldResume(
-                    durableProgress.status,
-                    cleanupResumeRequestedThisProcess,
-                )
-            ) {
-                cleanupResumeRequestedThisProcess = true
-                startForegroundService(
-                    CleanupForegroundService.startIntent(this, project.manifest.projectId),
-                )
-            }
+            renderCleanupProgress(
+                durableProgress,
+                interrupted = progressOverride == null &&
+                    !CleanupForegroundService.isTaskActive() &&
+                    CleanupResumePolicy.shouldResume(durableProgress.status, false),
+            )
         } else {
             setCleanupActive(false)
             cleanupButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive && !typesettingActive
@@ -1656,21 +1614,12 @@ class MainActivity : Activity() {
             }
             ?: progressFromTypesettingDurableState(project, cleanupRun.artifact.runArtifactKey)
         if (durableProgress != null) {
-            renderTypesettingProgress(durableProgress)
-            if (
-                progressOverride == null &&
-                !pipelineQueueStore.contains(project.manifest.projectId) &&
-                !TypesettingForegroundService.isTaskActive() &&
-                TypesettingResumePolicy.shouldResume(
-                    durableProgress.status,
-                    typesettingResumeRequestedThisProcess,
-                )
-            ) {
-                typesettingResumeRequestedThisProcess = true
-                startForegroundService(
-                    TypesettingForegroundService.startIntent(this, project.manifest.projectId),
-                )
-            }
+            renderTypesettingProgress(
+                durableProgress,
+                interrupted = progressOverride == null &&
+                    !TypesettingForegroundService.isTaskActive() &&
+                    TypesettingResumePolicy.shouldResume(durableProgress.status, false),
+            )
         } else {
             setTypesettingActive(false)
             typesettingButton.isEnabled = !importRunning && !analysisActive && !ocrActive &&
@@ -1701,16 +1650,12 @@ class MainActivity : Activity() {
             }
             ?: progressFromQualityDurableState(project, typesettingRun.artifact.runArtifactKey)
         if (durableProgress != null) {
-            renderQualityProgress(durableProgress)
-            if (
-                progressOverride == null &&
-                !pipelineQueueStore.contains(project.manifest.projectId) &&
-                !QualityForegroundService.isTaskActive() &&
-                QualityResumePolicy.shouldResume(durableProgress.status, qualityResumeRequestedThisProcess)
-            ) {
-                qualityResumeRequestedThisProcess = true
-                startForegroundService(QualityForegroundService.startIntent(this, project.manifest.projectId))
-            }
+            renderQualityProgress(
+                durableProgress,
+                interrupted = progressOverride == null &&
+                    !QualityForegroundService.isTaskActive() &&
+                    QualityResumePolicy.shouldResume(durableProgress.status, false),
+            )
         } else {
             setQualityActive(false)
             qualityButton.isEnabled = !importRunning && !analysisActive && !ocrActive &&
@@ -1820,21 +1765,12 @@ class MainActivity : Activity() {
                 )
             }
         if (durableProgress != null) {
-            renderExportProgress(durableProgress)
-            if (
-                progressOverride == null &&
-                !pipelineQueueStore.contains(project.manifest.projectId) &&
-                !ExportForegroundService.isTaskActive() &&
-                ExportResumePolicy.shouldResume(
-                    durableProgress.status,
-                    exportResumeRequestedThisProcess,
-                )
-            ) {
-                exportResumeRequestedThisProcess = true
-                startForegroundService(
-                    ExportForegroundService.resumeIntent(this, project.manifest.projectId),
-                )
-            }
+            renderExportProgress(
+                durableProgress,
+                interrupted = progressOverride == null &&
+                    !ExportForegroundService.isTaskActive() &&
+                    ExportResumePolicy.shouldResume(durableProgress.status, false),
+            )
         } else {
             setExportActive(false)
             exportButton.isEnabled = !importRunning && !analysisActive && !ocrActive &&
@@ -2113,17 +2049,18 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun renderProgress(progress: DetectionProgress) {
+    private fun renderProgress(progress: DetectionProgress, interrupted: Boolean = false) {
         val completed = progress.committedPageCount + progress.preservedPageCount
-        val active = progress.status.isActive()
-        if (!active) resumeRequestedThisProcess = false
+        val active = !interrupted && progress.status.isActive()
         setAnalysisActive(active)
         analysisButton.isEnabled = !active && !importRunning && !ocrActive && !translationActive && !cleanupActive && !typesettingActive && currentProject != null
         detectionProgress.visibility = View.VISIBLE
         detectionProgress.isIndeterminate = false
         detectionProgress.max = progress.totalPageCount.coerceAtLeast(1)
         detectionProgress.progress = completed.coerceIn(0, detectionProgress.max)
-        detectionStatus.text = when (progress.status) {
+        detectionStatus.text = if (interrupted) {
+            getString(R.string.stage_status_interrupted)
+        } else when (progress.status) {
             DetectionJobStatus.QUEUED -> getString(R.string.detection_status_starting)
             DetectionJobStatus.DOWNLOADING_MODEL -> getString(
                 R.string.detection_status_downloading,
@@ -2152,16 +2089,17 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderOcrProgress(progress: OcrProgress) {
-        val active = progress.status.isActive()
-        if (!active) ocrResumeRequestedThisProcess = false
+    private fun renderOcrProgress(progress: OcrProgress, interrupted: Boolean = false) {
+        val active = !interrupted && progress.status.isActive()
         setOcrActive(active)
         ocrButton.isEnabled = !active && !importRunning && !analysisActive && !translationActive && !cleanupActive && !typesettingActive && currentRun != null
         ocrProgress.visibility = View.VISIBLE
-        ocrProgress.isIndeterminate = progress.status == OcrJobStatus.LOADING_MODEL
+        ocrProgress.isIndeterminate = !interrupted && progress.status == OcrJobStatus.LOADING_MODEL
         ocrProgress.max = progress.totalRegionCount.coerceAtLeast(1)
         ocrProgress.progress = progress.terminalRegionCount.coerceIn(0, ocrProgress.max)
-        ocrStatus.text = when (progress.status) {
+        ocrStatus.text = if (interrupted) {
+            getString(R.string.stage_status_interrupted)
+        } else when (progress.status) {
             OcrJobStatus.QUEUED -> getString(R.string.ocr_status_starting)
             OcrJobStatus.DOWNLOADING_MODEL -> getString(
                 R.string.ocr_status_downloading,
@@ -2189,9 +2127,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderTranslationProgress(progress: TranslationProgress) {
-        val active = progress.status.isActive()
-        if (!active) translationResumeRequestedThisProcess = false
+    private fun renderTranslationProgress(progress: TranslationProgress, interrupted: Boolean = false) {
+        val active = !interrupted && progress.status.isActive()
         setTranslationActive(active)
         translationButton.isEnabled = !active && currentOcrRun != null &&
             translationSettingsStore.loadProviderSettings() != null &&
@@ -2201,7 +2138,9 @@ class MainActivity : Activity() {
         translationProgress.max = progress.totalWindowCount.coerceAtLeast(1)
         translationProgress.progress = progress.terminalWindowCount.coerceIn(0, translationProgress.max)
         val protectedCount = progress.preservedItemCount + progress.protectedOcrCount
-        translationStatus.text = when (progress.status) {
+        translationStatus.text = if (interrupted) {
+            getString(R.string.stage_status_interrupted)
+        } else when (progress.status) {
             TranslationJobStatus.QUEUED -> getString(R.string.translation_status_starting)
             TranslationJobStatus.RUNNING -> getString(
                 R.string.translation_status_progress,
@@ -2227,9 +2166,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderCleanupProgress(progress: CleanupProgress) {
-        val active = progress.status.isActive()
-        if (!active) cleanupResumeRequestedThisProcess = false
+    private fun renderCleanupProgress(progress: CleanupProgress, interrupted: Boolean = false) {
+        val active = !interrupted && progress.status.isActive()
         setCleanupActive(active)
         cleanupButton.isEnabled = !active && currentTranslationRun != null &&
             !importRunning && !analysisActive && !ocrActive && !translationActive
@@ -2237,7 +2175,9 @@ class MainActivity : Activity() {
         cleanupProgress.isIndeterminate = false
         cleanupProgress.max = progress.totalPageCount.coerceAtLeast(1)
         cleanupProgress.progress = progress.terminalPageCount.coerceIn(0, cleanupProgress.max)
-        cleanupStatus.text = when (progress.status) {
+        cleanupStatus.text = if (interrupted) {
+            getString(R.string.stage_status_interrupted)
+        } else when (progress.status) {
             CleanupJobStatus.QUEUED -> getString(R.string.cleanup_status_starting)
             CleanupJobStatus.RUNNING -> getString(
                 R.string.cleanup_status_progress,
@@ -2290,33 +2230,25 @@ class MainActivity : Activity() {
         } else {
             null
         }
-        val bitmap = imagePath?.let(::decodePreviewBitmap)
-        clearDisplayedCleanupBitmap()
-        if (bitmap != null) {
-            displayedCleanupBitmap = bitmap
-            cleanupPreviewImage.setImageBitmap(bitmap)
-            cleanupPreviewImage.visibility = View.VISIBLE
-        } else {
-            cleanupPreviewImage.setImageDrawable(null)
-            cleanupPreviewImage.visibility = View.GONE
-        }
         val preservedCount = pageArtifact?.regions?.count {
             it.state == CleanupRegionState.PRESERVED_SOURCE
         } ?: 0
-        cleanupPreservedPageMarker.visibility = when {
-            entry.state == CleanupPageState.PRESERVED_SOURCE -> View.VISIBLE
-            bitmap == null -> View.VISIBLE
-            preservedCount > 0 -> View.VISIBLE
-            else -> View.GONE
-        }
-        cleanupPreservedPageMarker.text = when {
-            entry.state == CleanupPageState.PRESERVED_SOURCE -> getString(
-                R.string.cleanup_preview_preserved_page,
-                describePipelineError(entry.error?.code),
-            )
-            bitmap == null -> getString(R.string.preview_unavailable)
-            preservedCount > 0 -> getString(R.string.cleanup_preview_protected_regions, preservedCount)
-            else -> ""
+        cleanupPreviewPane.render(imagePath) { bitmap ->
+            cleanupPreservedPageMarker.visibility = when {
+                entry.state == CleanupPageState.PRESERVED_SOURCE -> View.VISIBLE
+                bitmap == null -> View.VISIBLE
+                preservedCount > 0 -> View.VISIBLE
+                else -> View.GONE
+            }
+            cleanupPreservedPageMarker.text = when {
+                entry.state == CleanupPageState.PRESERVED_SOURCE -> getString(
+                    R.string.cleanup_preview_preserved_page,
+                    describePipelineError(entry.error?.code),
+                )
+                bitmap == null -> getString(R.string.preview_unavailable)
+                preservedCount > 0 -> getString(R.string.cleanup_preview_protected_regions, preservedCount)
+                else -> ""
+            }
         }
         val cleanedCount = pageArtifact?.regions?.count { it.state == CleanupRegionState.CLEANED } ?: 0
         cleanupDetailText.text = pageArtifact?.let {
@@ -2337,9 +2269,7 @@ class MainActivity : Activity() {
     }
 
     private fun clearCleanupPreview() {
-        clearDisplayedCleanupBitmap()
-        cleanupPreviewImage.setImageDrawable(null)
-        cleanupPreviewImage.visibility = View.GONE
+        cleanupPreviewPane.clear()
         cleanupPreservedPageMarker.visibility = View.GONE
         cleanupPageIndicator.setText(R.string.cleanup_preview_empty)
         cleanupDetailText.text = ""
@@ -2347,9 +2277,8 @@ class MainActivity : Activity() {
         nextCleanupPageButton.isEnabled = false
     }
 
-    private fun renderTypesettingProgress(progress: TypesettingProgress) {
-        val active = progress.status.isActive()
-        if (!active) typesettingResumeRequestedThisProcess = false
+    private fun renderTypesettingProgress(progress: TypesettingProgress, interrupted: Boolean = false) {
+        val active = !interrupted && progress.status.isActive()
         setTypesettingActive(active)
         typesettingButton.isEnabled = !active && currentCleanupRun != null &&
             !importRunning && !analysisActive && !ocrActive && !translationActive && !cleanupActive
@@ -2357,7 +2286,9 @@ class MainActivity : Activity() {
         typesettingProgress.isIndeterminate = false
         typesettingProgress.max = progress.totalPageCount.coerceAtLeast(1)
         typesettingProgress.progress = progress.terminalPageCount.coerceIn(0, typesettingProgress.max)
-        typesettingStatus.text = when (progress.status) {
+        typesettingStatus.text = if (interrupted) {
+            getString(R.string.stage_status_interrupted)
+        } else when (progress.status) {
             TypesettingJobStatus.QUEUED -> getString(R.string.typesetting_status_starting)
             TypesettingJobStatus.RUNNING -> getString(
                 R.string.typesetting_status_progress,
@@ -2383,9 +2314,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderQualityProgress(progress: QualityProgress) {
-        val active = progress.status.isActive()
-        if (!active) qualityResumeRequestedThisProcess = false
+    private fun renderQualityProgress(progress: QualityProgress, interrupted: Boolean = false) {
+        val active = !interrupted && progress.status.isActive()
         setQualityActive(active)
         qualityButton.isEnabled = !active && currentTypesettingRun != null &&
             !importRunning && !analysisActive && !ocrActive && !translationActive &&
@@ -2394,7 +2324,9 @@ class MainActivity : Activity() {
         qualityProgress.isIndeterminate = false
         qualityProgress.max = progress.totalPageCount.coerceAtLeast(1)
         qualityProgress.progress = progress.terminalPageCount.coerceIn(0, qualityProgress.max)
-        qualityStatus.text = when (progress.status) {
+        qualityStatus.text = if (interrupted) {
+            getString(R.string.stage_status_interrupted)
+        } else when (progress.status) {
             QualityJobStatus.QUEUED -> getString(R.string.quality_status_starting)
             QualityJobStatus.RUNNING -> if (progress.errorCode == "QUALITY_REPAIRING") {
                 getString(
@@ -2432,9 +2364,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderExportProgress(progress: ExportProgress) {
-        val active = progress.status.isActive()
-        if (!active) exportResumeRequestedThisProcess = false
+    private fun renderExportProgress(progress: ExportProgress, interrupted: Boolean = false) {
+        val active = !interrupted && progress.status.isActive()
         setExportActive(active)
         exportButton.isEnabled = !active && currentQualityRun?.report?.status?.allowsExport() == true &&
             !importRunning && !analysisActive && !ocrActive && !translationActive &&
@@ -2443,7 +2374,9 @@ class MainActivity : Activity() {
         exportProgress.isIndeterminate = false
         exportProgress.max = progress.totalPageCount.coerceAtLeast(1)
         exportProgress.progress = progress.terminalPageCount.coerceIn(0, exportProgress.max)
-        exportStatus.text = when (progress.status) {
+        exportStatus.text = if (interrupted) {
+            getString(R.string.stage_status_interrupted)
+        } else when (progress.status) {
             ExportJobStatus.QUEUED -> getString(R.string.export_status_starting)
             ExportJobStatus.RUNNING -> getString(
                 R.string.export_status_progress,
@@ -2497,33 +2430,25 @@ class MainActivity : Activity() {
         } else {
             null
         }
-        val bitmap = imagePath?.let(::decodePreviewBitmap)
-        clearDisplayedTypesettingBitmap()
-        if (bitmap != null) {
-            displayedTypesettingBitmap = bitmap
-            typesettingPreviewImage.setImageBitmap(bitmap)
-            typesettingPreviewImage.visibility = View.VISIBLE
-        } else {
-            typesettingPreviewImage.setImageDrawable(null)
-            typesettingPreviewImage.visibility = View.GONE
-        }
         val preservedCount = pageArtifact?.regions?.count {
             it.state == TypesettingRegionState.PRESERVED_CLEANED_PAGE
         } ?: 0
-        typesettingPreservedPageMarker.visibility = when {
-            entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> View.VISIBLE
-            bitmap == null -> View.VISIBLE
-            preservedCount > 0 -> View.VISIBLE
-            else -> View.GONE
-        }
-        typesettingPreservedPageMarker.text = when {
-            entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> getString(
-                R.string.typesetting_preview_preserved_page,
-                describePipelineError(entry.error?.code),
-            )
-            bitmap == null -> getString(R.string.preview_unavailable)
-            preservedCount > 0 -> getString(R.string.typesetting_preview_protected_regions, preservedCount)
-            else -> ""
+        typesettingPreviewPane.render(imagePath) { bitmap ->
+            typesettingPreservedPageMarker.visibility = when {
+                entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> View.VISIBLE
+                bitmap == null -> View.VISIBLE
+                preservedCount > 0 -> View.VISIBLE
+                else -> View.GONE
+            }
+            typesettingPreservedPageMarker.text = when {
+                entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> getString(
+                    R.string.typesetting_preview_preserved_page,
+                    describePipelineError(entry.error?.code),
+                )
+                bitmap == null -> getString(R.string.preview_unavailable)
+                preservedCount > 0 -> getString(R.string.typesetting_preview_protected_regions, preservedCount)
+                else -> ""
+            }
         }
         val typesetCount = pageArtifact?.regions?.count { it.state == TypesettingRegionState.TYPESET } ?: 0
         typesettingDetailText.text = pageArtifact?.let {
@@ -2544,9 +2469,7 @@ class MainActivity : Activity() {
     }
 
     private fun clearTypesettingPreview() {
-        clearDisplayedTypesettingBitmap()
-        typesettingPreviewImage.setImageDrawable(null)
-        typesettingPreviewImage.visibility = View.GONE
+        typesettingPreviewPane.clear()
         typesettingPreservedPageMarker.visibility = View.GONE
         typesettingPageIndicator.setText(R.string.typesetting_preview_empty)
         typesettingDetailText.text = ""
@@ -2577,30 +2500,22 @@ class MainActivity : Activity() {
             -> null
         }
 
-        val bitmap = imagePath?.let(::decodePreviewBitmap)
-        clearDisplayedBitmap()
-        if (bitmap != null) {
-            displayedBitmap = bitmap
-            previewImage.setImageBitmap(bitmap)
-            previewImage.visibility = View.VISIBLE
-        } else {
-            previewImage.setImageDrawable(null)
-            previewImage.visibility = View.GONE
-        }
-        preservedPageMarker.visibility = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
-            View.VISIBLE
-        } else if (bitmap == null) {
-            View.VISIBLE
-        } else {
-            View.GONE
-        }
-        preservedPageMarker.text = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
-            getString(
-                R.string.preview_preserved_page,
-                describePipelineError(entry.error?.code),
-            )
-        } else {
-            getString(R.string.preview_unavailable)
+        detectionPreviewPane.render(imagePath) { bitmap ->
+            preservedPageMarker.visibility = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
+                View.VISIBLE
+            } else if (bitmap == null) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            preservedPageMarker.text = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
+                getString(
+                    R.string.preview_preserved_page,
+                    describePipelineError(entry.error?.code),
+                )
+            } else {
+                getString(R.string.preview_unavailable)
+            }
         }
         pageIndicator.text = getString(
             R.string.preview_page_indicator,
@@ -2612,9 +2527,7 @@ class MainActivity : Activity() {
     }
 
     private fun clearPreview() {
-        clearDisplayedBitmap()
-        previewImage.setImageDrawable(null)
-        previewImage.visibility = View.GONE
+        detectionPreviewPane.clear()
         preservedPageMarker.visibility = View.GONE
         pageIndicator.setText(R.string.preview_empty)
         previousPageButton.isEnabled = false
@@ -2648,38 +2561,29 @@ class MainActivity : Activity() {
         } else {
             null
         }
-        val bitmap = imagePath?.let(::decodePreviewBitmap)
-        clearDisplayedOcrBitmap()
-        if (bitmap != null) {
-            displayedOcrBitmap = bitmap
-            ocrPreviewImage.setImageBitmap(bitmap)
-            ocrPreviewImage.visibility = View.VISIBLE
-        } else {
-            ocrPreviewImage.setImageDrawable(null)
-            ocrPreviewImage.visibility = View.GONE
-        }
-
         val protectedCount = pageArtifact?.regions?.count { region ->
             region.state == OcrRegionState.NEEDS_FALLBACK ||
                 region.state == OcrRegionState.PRESERVED_SOURCE
         } ?: 0
-        ocrPreservedPageMarker.visibility = when {
-            entry.state == OcrPageState.PRESERVED_SOURCE -> View.VISIBLE
-            bitmap == null -> View.VISIBLE
-            protectedCount > 0 -> View.VISIBLE
-            else -> View.GONE
-        }
-        ocrPreservedPageMarker.text = when {
-            entry.state == OcrPageState.PRESERVED_SOURCE -> getString(
-                R.string.ocr_preview_preserved_page,
-                describePipelineError(entry.error?.code),
-            )
-            bitmap == null -> getString(R.string.preview_unavailable)
-            protectedCount > 0 -> getString(
-                R.string.ocr_preview_protected_regions,
-                protectedCount,
-            )
-            else -> ""
+        ocrPreviewPane.render(imagePath) { bitmap ->
+            ocrPreservedPageMarker.visibility = when {
+                entry.state == OcrPageState.PRESERVED_SOURCE -> View.VISIBLE
+                bitmap == null -> View.VISIBLE
+                protectedCount > 0 -> View.VISIBLE
+                else -> View.GONE
+            }
+            ocrPreservedPageMarker.text = when {
+                entry.state == OcrPageState.PRESERVED_SOURCE -> getString(
+                    R.string.ocr_preview_preserved_page,
+                    describePipelineError(entry.error?.code),
+                )
+                bitmap == null -> getString(R.string.preview_unavailable)
+                protectedCount > 0 -> getString(
+                    R.string.ocr_preview_protected_regions,
+                    protectedCount,
+                )
+                else -> ""
+            }
         }
         ocrDetailText.text = pageArtifact?.regions
             ?.sortedBy { it.candidate.readingOrderRank }
@@ -2702,9 +2606,7 @@ class MainActivity : Activity() {
     }
 
     private fun clearOcrPreview() {
-        clearDisplayedOcrBitmap()
-        ocrPreviewImage.setImageDrawable(null)
-        ocrPreviewImage.visibility = View.GONE
+        ocrPreviewPane.clear()
         ocrPreservedPageMarker.visibility = View.GONE
         ocrPageIndicator.setText(R.string.ocr_preview_empty)
         ocrDetailText.text = ""
@@ -2823,24 +2725,68 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun clearDisplayedBitmap() {
-        displayedBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
-        displayedBitmap = null
-    }
+    /**
+     * Owns the bitmap shown in one preview ImageView. Decoding happens off the main
+     * thread; a generation counter drops stale results and a path cache skips
+     * re-decoding when a refresh lands on the image already being displayed.
+     */
+    private inner class PreviewPane(private val imageView: ImageView) {
+        private var generation = 0
+        private var displayedPath: Path? = null
+        private var bitmap: Bitmap? = null
 
-    private fun clearDisplayedOcrBitmap() {
-        displayedOcrBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
-        displayedOcrBitmap = null
-    }
+        fun render(requestedPath: Path?, onApplied: (Bitmap?) -> Unit) {
+            generation += 1
+            val current = generation
+            if (requestedPath == null) {
+                clearImage()
+                onApplied(null)
+                return
+            }
+            val existing = bitmap
+            if (requestedPath == displayedPath && existing != null && !existing.isRecycled) {
+                imageView.setImageBitmap(existing)
+                imageView.visibility = View.VISIBLE
+                onApplied(existing)
+                return
+            }
+            previewExecutor.execute {
+                val decoded = decodePreviewBitmap(requestedPath)
+                runOnUiThread {
+                    if (current != generation || isFinishing || isDestroyed) {
+                        decoded?.recycle()
+                        return@runOnUiThread
+                    }
+                    recycleBitmap()
+                    if (decoded != null) {
+                        displayedPath = requestedPath
+                        bitmap = decoded
+                        imageView.setImageBitmap(decoded)
+                        imageView.visibility = View.VISIBLE
+                    } else {
+                        imageView.visibility = View.GONE
+                    }
+                    onApplied(decoded)
+                }
+            }
+        }
 
-    private fun clearDisplayedCleanupBitmap() {
-        displayedCleanupBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
-        displayedCleanupBitmap = null
-    }
+        fun clear() {
+            generation += 1
+            clearImage()
+        }
 
-    private fun clearDisplayedTypesettingBitmap() {
-        displayedTypesettingBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
-        displayedTypesettingBitmap = null
+        private fun clearImage() {
+            recycleBitmap()
+            imageView.visibility = View.GONE
+        }
+
+        private fun recycleBitmap() {
+            imageView.setImageDrawable(null)
+            displayedPath = null
+            bitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
+            bitmap = null
+        }
     }
 
     private fun setImportRunning(running: Boolean) {
@@ -3225,6 +3171,7 @@ class MainActivity : Activity() {
         const val IMPORT_THREAD_NAME = "masumi-import"
         const val LIBRARY_THREAD_NAME = "masumi-library"
         const val MODEL_LIBRARY_SYNC_THREAD_NAME = "masumi-model-library-sync"
+        const val PREVIEW_THREAD_NAME = "masumi-preview-decode"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
         const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"
         private const val EXTRA_PROJECT_ID = "project_id"

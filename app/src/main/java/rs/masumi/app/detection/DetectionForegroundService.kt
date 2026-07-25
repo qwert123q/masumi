@@ -66,10 +66,19 @@ class DetectionForegroundService : Service() {
 
             else -> return START_NOT_STICKY
         }
-        return if (activeProjectId != null) START_REDELIVER_INTENT else START_NOT_STICKY
+        // Never redeliver: removing the app from recents must leave pipeline
+        // work stopped; durable checkpoints preserve the progress for resume.
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        cancellation.set(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         cancellation.set(true)
@@ -88,6 +97,7 @@ class DetectionForegroundService : Service() {
         synchronized(stateLock) {
             if (activeProjectId != null) return false
             activeProjectId = projectId
+            ACTIVE_PROJECT.set(projectId)
             cancellation.set(false)
         }
         taskWakeLock.acquire()
@@ -105,6 +115,7 @@ class DetectionForegroundService : Service() {
             } finally {
                 synchronized(stateLock) {
                     activeProjectId = null
+                    ACTIVE_PROJECT.set(null)
                 }
                 taskWakeLock.release()
                 stopForeground(STOP_FOREGROUND_DETACH)
@@ -253,6 +264,10 @@ class DetectionForegroundService : Service() {
         const val ACTION_START = "rs.masumi.app.action.START_DETECTION"
         const val ACTION_CANCEL = "rs.masumi.app.action.CANCEL_DETECTION"
         const val EXTRA_PROJECT_ID = "project_id"
+
+        private val ACTIVE_PROJECT = java.util.concurrent.atomic.AtomicReference<String?>(null)
+
+        fun isTaskActive(): Boolean = ACTIVE_PROJECT.get() != null
 
         fun startIntent(context: Context, projectId: String): Intent {
             require(SAFE_ID.matches(projectId)) { "project ID is invalid" }

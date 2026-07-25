@@ -159,10 +159,38 @@ class PipelineSchedulerService : Service() {
             else -> return START_NOT_STICKY
         }
         scheduler.execute(::safeTick)
-        return START_STICKY
+        // Never restart on our own after a process death: removing the app
+        // from recents must leave the whole pipeline stopped until the user
+        // reopens the app; the persisted queue and stage checkpoints keep the
+        // progress for that resume.
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // The user closed the app: pause every queued project so nothing
+        // auto-continues, and stop any stage service that is still running.
+        scheduler.execute {
+            runCatching {
+                queueStore.entries()
+                    .filter { it.status == PipelineQueueStatus.ACTIVE }
+                    .forEach { queueStore.pause(it.projectId, PipelineColdStartGuard.APP_CLOSED_ERROR_CODE) }
+            }
+            running.clear()
+            stateCache.clear()
+            runCatching { startService(DetectionForegroundService.cancelIntent(this)) }
+            runCatching { startService(OcrForegroundService.cancelIntent(this)) }
+            runCatching { startService(TranslationForegroundService.cancelIntent(this, null)) }
+            runCatching { startService(CleanupForegroundService.cancelIntent(this)) }
+            runCatching { startService(TypesettingForegroundService.cancelIntent(this)) }
+            runCatching { startService(QualityForegroundService.cancelIntent(this)) }
+            runCatching { startService(ExportForegroundService.cancelIntent(this)) }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         stopForeground(STOP_FOREGROUND_REMOVE)

@@ -69,6 +69,7 @@
     <string name="process_background">正在后台处理，完成后即可导出</string>
     <string name="process_ready_export">整章处理完成，正在自动保存到漫画库</string>
     <string name="process_paused">处理停在第 %1$d / %2$d 步，可继续或查看详情</string>
+    <string name="stage_status_interrupted">已中断，点击按钮从断点继续</string>
     <string name="process_quality_blocked">自动处理未能完成，请重新运行当前步骤</string>
     <string name="process_incomplete">处理未完成</string>
     <string name="open_processing_details">查看处理详情</string>

@@ -66,10 +66,20 @@ class CleanupForegroundService : Service() {
             }
             else -> return START_NOT_STICKY
         }
-        return if (ACTIVE_PROJECT.get() != null) START_REDELIVER_INTENT else START_NOT_STICKY
+        // Never redeliver: removing the app from recents must leave pipeline
+        // work stopped; durable checkpoints preserve the progress for resume.
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        cancellation.set(true)
+        runner?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         cancellation.set(true)
