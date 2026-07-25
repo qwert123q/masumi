@@ -42,6 +42,16 @@ class HorizontalSwipeViewFlipper @JvmOverloads constructor(
         updateChildVisibility()
     }
 
+    override fun onViewAdded(child: View?) {
+        super.onViewAdded(child)
+        updateChildVisibility()
+    }
+
+    override fun onViewRemoved(child: View?) {
+        super.onViewRemoved(child)
+        displayedChild = displayedChild.coerceAtMost((childCount - 1).coerceAtLeast(0))
+    }
+
     override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
