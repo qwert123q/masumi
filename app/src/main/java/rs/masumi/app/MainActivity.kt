@@ -1448,7 +1448,6 @@ class MainActivity : Activity() {
             currentRun = null
             currentPreviewIndex = 0
             setAnalysisActive(false)
-            analysisButton.isEnabled = false
             detectionProgress.visibility = View.GONE
             detectionStatus.setText(R.string.detection_status_no_project)
             clearPreview()
@@ -1470,7 +1469,6 @@ class MainActivity : Activity() {
             )
         } else {
             setAnalysisActive(false)
-            analysisButton.isEnabled = !importRunning && !ocrActive && !translationActive && !cleanupActive && !typesettingActive
             detectionProgress.visibility = View.GONE
             detectionStatus.setText(R.string.detection_status_ready)
         }
@@ -1506,7 +1504,6 @@ class MainActivity : Activity() {
             )
         } else {
             setOcrActive(false)
-            ocrButton.isEnabled = !importRunning && !analysisActive && !translationActive && !cleanupActive && !typesettingActive
             ocrProgress.visibility = View.GONE
             ocrStatus.setText(R.string.ocr_status_ready)
         }
@@ -1543,8 +1540,6 @@ class MainActivity : Activity() {
             )
         } else {
             setTranslationActive(false)
-            translationButton.isEnabled = translationSettingsStore.loadProviderSettings() != null &&
-                !importRunning && !analysisActive && !ocrActive && !cleanupActive && !typesettingActive
             translationProgress.visibility = View.GONE
             translationStatus.setText(
                 if (translationSettingsStore.loadProviderSettings() == null) {
@@ -1586,7 +1581,6 @@ class MainActivity : Activity() {
             )
         } else {
             setCleanupActive(false)
-            cleanupButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive && !typesettingActive
             cleanupProgress.visibility = View.GONE
             cleanupStatus.setText(R.string.cleanup_status_ready)
         }
@@ -1622,8 +1616,6 @@ class MainActivity : Activity() {
             )
         } else {
             setTypesettingActive(false)
-            typesettingButton.isEnabled = !importRunning && !analysisActive && !ocrActive &&
-                !translationActive && !cleanupActive
             typesettingProgress.visibility = View.GONE
             typesettingStatus.setText(R.string.typesetting_status_ready)
         }
@@ -1658,8 +1650,6 @@ class MainActivity : Activity() {
             )
         } else {
             setQualityActive(false)
-            qualityButton.isEnabled = !importRunning && !analysisActive && !ocrActive &&
-                !translationActive && !cleanupActive && !typesettingActive && !exportActive
             qualityProgress.visibility = View.GONE
             qualityStatus.setText(R.string.quality_status_ready)
         }
@@ -1773,8 +1763,6 @@ class MainActivity : Activity() {
             )
         } else {
             setExportActive(false)
-            exportButton.isEnabled = !importRunning && !analysisActive && !ocrActive &&
-                !translationActive && !cleanupActive && !typesettingActive && !qualityActive
             exportProgress.visibility = View.GONE
             exportStatus.setText(R.string.export_status_ready)
         }
@@ -2053,7 +2041,6 @@ class MainActivity : Activity() {
         val completed = progress.committedPageCount + progress.preservedPageCount
         val active = !interrupted && progress.status.isActive()
         setAnalysisActive(active)
-        analysisButton.isEnabled = !active && !importRunning && !ocrActive && !translationActive && !cleanupActive && !typesettingActive && currentProject != null
         detectionProgress.visibility = View.VISIBLE
         detectionProgress.isIndeterminate = false
         detectionProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -2092,7 +2079,6 @@ class MainActivity : Activity() {
     private fun renderOcrProgress(progress: OcrProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
         setOcrActive(active)
-        ocrButton.isEnabled = !active && !importRunning && !analysisActive && !translationActive && !cleanupActive && !typesettingActive && currentRun != null
         ocrProgress.visibility = View.VISIBLE
         ocrProgress.isIndeterminate = !interrupted && progress.status == OcrJobStatus.LOADING_MODEL
         ocrProgress.max = progress.totalRegionCount.coerceAtLeast(1)
@@ -2130,9 +2116,6 @@ class MainActivity : Activity() {
     private fun renderTranslationProgress(progress: TranslationProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
         setTranslationActive(active)
-        translationButton.isEnabled = !active && currentOcrRun != null &&
-            translationSettingsStore.loadProviderSettings() != null &&
-            !importRunning && !analysisActive && !ocrActive && !cleanupActive && !typesettingActive
         translationProgress.visibility = View.VISIBLE
         translationProgress.isIndeterminate = false
         translationProgress.max = progress.totalWindowCount.coerceAtLeast(1)
@@ -2169,8 +2152,6 @@ class MainActivity : Activity() {
     private fun renderCleanupProgress(progress: CleanupProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
         setCleanupActive(active)
-        cleanupButton.isEnabled = !active && currentTranslationRun != null &&
-            !importRunning && !analysisActive && !ocrActive && !translationActive
         cleanupProgress.visibility = View.VISIBLE
         cleanupProgress.isIndeterminate = false
         cleanupProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -2280,8 +2261,6 @@ class MainActivity : Activity() {
     private fun renderTypesettingProgress(progress: TypesettingProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
         setTypesettingActive(active)
-        typesettingButton.isEnabled = !active && currentCleanupRun != null &&
-            !importRunning && !analysisActive && !ocrActive && !translationActive && !cleanupActive
         typesettingProgress.visibility = View.VISIBLE
         typesettingProgress.isIndeterminate = false
         typesettingProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -2317,9 +2296,6 @@ class MainActivity : Activity() {
     private fun renderQualityProgress(progress: QualityProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
         setQualityActive(active)
-        qualityButton.isEnabled = !active && currentTypesettingRun != null &&
-            !importRunning && !analysisActive && !ocrActive && !translationActive &&
-            !cleanupActive && !typesettingActive && !exportActive
         qualityProgress.visibility = View.VISIBLE
         qualityProgress.isIndeterminate = false
         qualityProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -2367,9 +2343,6 @@ class MainActivity : Activity() {
     private fun renderExportProgress(progress: ExportProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
         setExportActive(active)
-        exportButton.isEnabled = !active && currentQualityRun?.report?.status?.allowsExport() == true &&
-            !importRunning && !analysisActive && !ocrActive && !translationActive &&
-            !cleanupActive && !typesettingActive && !qualityActive
         exportProgress.visibility = View.VISIBLE
         exportProgress.isIndeterminate = false
         exportProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -2618,7 +2591,6 @@ class MainActivity : Activity() {
         currentOcrRun = null
         currentOcrPreviewIndex = 0
         setOcrActive(false)
-        ocrButton.isEnabled = false
         ocrProgress.visibility = View.GONE
         ocrStatus.setText(R.string.ocr_status_no_detection)
         clearOcrPreview()
@@ -2628,7 +2600,6 @@ class MainActivity : Activity() {
     private fun resetTranslationState() {
         currentTranslationRun = null
         setTranslationActive(false)
-        translationButton.isEnabled = false
         translationProgress.visibility = View.GONE
         translationStatus.setText(R.string.translation_status_no_ocr)
         resetCleanupState()
@@ -2638,7 +2609,6 @@ class MainActivity : Activity() {
         currentCleanupRun = null
         currentCleanupPreviewIndex = 0
         setCleanupActive(false)
-        cleanupButton.isEnabled = false
         cleanupProgress.visibility = View.GONE
         cleanupStatus.setText(R.string.cleanup_status_no_translation)
         clearCleanupPreview()
@@ -2649,7 +2619,6 @@ class MainActivity : Activity() {
         currentTypesettingRun = null
         currentTypesettingPreviewIndex = 0
         setTypesettingActive(false)
-        typesettingButton.isEnabled = false
         typesettingProgress.visibility = View.GONE
         typesettingStatus.setText(R.string.typesetting_status_no_cleanup)
         clearTypesettingPreview()
@@ -2659,7 +2628,6 @@ class MainActivity : Activity() {
     private fun resetQualityState() {
         currentQualityRun = null
         setQualityActive(false)
-        qualityButton.isEnabled = false
         qualityProgress.visibility = View.GONE
         qualityStatus.setText(R.string.quality_status_no_typesetting)
         resetExportState()
@@ -2667,7 +2635,6 @@ class MainActivity : Activity() {
 
     private fun resetExportState() {
         setExportActive(false)
-        exportButton.isEnabled = false
         exportProgress.visibility = View.GONE
         exportStatus.setText(
             if (currentTypesettingRun == null) R.string.export_status_no_typesetting
@@ -2789,162 +2756,84 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Single source of truth for every stage button, cancel control, and the
+     * settings save button. Stage buttons follow one rule: enabled only when
+     * nothing is running and the stage's input artifact exists.
+     */
+    private fun updateStageControls() {
+        val busy = hasActiveWork()
+        importButton.isEnabled = !busy
+        analysisButton.isEnabled = !busy && currentProject != null
+        ocrButton.isEnabled = !busy && currentRun != null
+        translationButton.isEnabled = !busy && currentOcrRun != null &&
+            translationSettingsStore.loadProviderSettings() != null
+        cleanupButton.isEnabled = !busy && currentTranslationRun != null
+        typesettingButton.isEnabled = !busy && currentCleanupRun != null
+        qualityButton.isEnabled = !busy && currentTypesettingRun != null
+        exportButton.isEnabled = !busy && currentQualityRun?.report?.status?.allowsExport() == true
+        saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive &&
+            !typesettingActive && !qualityActive && !exportActive
+        bindCancelControl(cancelAnalysisButton, analysisActive)
+        bindCancelControl(cancelOcrButton, ocrActive)
+        bindCancelControl(cancelTranslationButton, translationActive)
+        bindCancelControl(cancelCleanupButton, cleanupActive)
+        bindCancelControl(cancelTypesettingButton, typesettingActive)
+        bindCancelControl(cancelQualityButton, qualityActive)
+        bindCancelControl(cancelExportButton, exportActive)
+    }
+
+    private fun bindCancelControl(button: Button, active: Boolean) {
+        button.visibility = if (active) View.VISIBLE else View.GONE
+        button.isEnabled = active
+    }
+
     private fun setImportRunning(running: Boolean) {
         importRunning = running
-        importButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive && !typesettingActive
-        analysisButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive && !typesettingActive && currentProject != null
-        ocrButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive && !typesettingActive && currentRun != null
-        translationButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive && !typesettingActive &&
-            currentOcrRun != null && translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive && !cleanupActive && !typesettingActive &&
-            currentTranslationRun != null
-        typesettingButton.isEnabled = !running && !analysisActive && !ocrActive && !translationActive &&
-            !cleanupActive && !typesettingActive && currentCleanupRun != null
         importProgress.visibility = if (running) View.VISIBLE else View.GONE
+        updateStageControls()
         syncWorkspaceState()
     }
 
     private fun setAnalysisActive(active: Boolean) {
         analysisActive = active
-        importButton.isEnabled = !importRunning && !active && !ocrActive && !translationActive && !cleanupActive && !typesettingActive
-        analysisButton.isEnabled = currentProject != null && !active && !ocrActive && !translationActive && !cleanupActive && !typesettingActive
-        cancelAnalysisButton.visibility = if (active) View.VISIBLE else View.GONE
-        cancelAnalysisButton.isEnabled = active
-        ocrButton.isEnabled = currentRun != null && !importRunning && !active && !ocrActive && !translationActive && !cleanupActive && !typesettingActive
-        translationButton.isEnabled = currentOcrRun != null && !importRunning && !active && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !active && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive
-        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !active && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive
+        updateStageControls()
         syncWorkspaceState()
     }
 
     private fun setOcrActive(active: Boolean) {
         ocrActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !active && !translationActive && !cleanupActive && !typesettingActive
-        analysisButton.isEnabled = currentProject != null && !analysisActive && !active && !translationActive && !cleanupActive && !typesettingActive
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !active && !translationActive && !cleanupActive && !typesettingActive
-        cancelOcrButton.visibility = if (active) View.VISIBLE else View.GONE
-        cancelOcrButton.isEnabled = active
-        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !active &&
-            !translationActive && !cleanupActive && !typesettingActive && translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !active &&
-            !translationActive && !cleanupActive && !typesettingActive
-        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !active &&
-            !translationActive && !cleanupActive && !typesettingActive
+        updateStageControls()
         syncWorkspaceState()
     }
 
     private fun setTranslationActive(active: Boolean) {
         translationActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !active && !cleanupActive && !typesettingActive
-        analysisButton.isEnabled = currentProject != null && !analysisActive && !ocrActive && !active && !cleanupActive && !typesettingActive
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive && !active && !cleanupActive && !typesettingActive
-        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !active && !cleanupActive && !typesettingActive && translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !active && !cleanupActive && !typesettingActive
-        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !active && !cleanupActive && !typesettingActive
-        saveTranslationSettingsButton.isEnabled = !active && !cleanupActive && !typesettingActive
-        cancelTranslationButton.visibility = if (active) View.VISIBLE else View.GONE
-        cancelTranslationButton.isEnabled = active
+        updateStageControls()
         syncWorkspaceState()
     }
 
     private fun setCleanupActive(active: Boolean) {
         cleanupActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive && !active && !typesettingActive
-        analysisButton.isEnabled = currentProject != null && !analysisActive && !ocrActive && !translationActive && !active && !typesettingActive
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive && !translationActive && !active && !typesettingActive
-        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !active && !typesettingActive && translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !active && !typesettingActive
-        saveTranslationSettingsButton.isEnabled = !translationActive && !active && !typesettingActive
-        cancelCleanupButton.visibility = if (active) View.VISIBLE else View.GONE
-        cancelCleanupButton.isEnabled = active
-        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive &&
-            !ocrActive && !translationActive && !active && !typesettingActive
+        updateStageControls()
         syncWorkspaceState()
     }
 
     private fun setTypesettingActive(active: Boolean) {
         typesettingActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive &&
-            !cleanupActive && !active
-        analysisButton.isEnabled = currentProject != null && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !active
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !active
-        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !active && translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !active
-        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !active
-        saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive && !active
-        cancelTypesettingButton.visibility = if (active) View.VISIBLE else View.GONE
-        cancelTypesettingButton.isEnabled = active
-        qualityButton.isEnabled = currentTypesettingRun != null && !importRunning && !analysisActive &&
-            !ocrActive && !translationActive && !cleanupActive && !active && !qualityActive && !exportActive
-        exportButton.isEnabled = currentQualityRun?.report?.status?.allowsExport() == true &&
-            !importRunning && !analysisActive && !ocrActive && !translationActive && !cleanupActive &&
-            !active && !qualityActive && !exportActive
+        updateStageControls()
         syncWorkspaceState()
     }
 
     private fun setQualityActive(active: Boolean) {
         qualityActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive &&
-            !cleanupActive && !typesettingActive && !active && !exportActive
-        analysisButton.isEnabled = currentProject != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active && !exportActive
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active && !exportActive
-        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active && !exportActive &&
-            translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active && !exportActive
-        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active && !exportActive
-        qualityButton.isEnabled = currentTypesettingRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active && !exportActive
-        exportButton.isEnabled = currentQualityRun?.report?.status?.allowsExport() == true && !importRunning &&
-            !analysisActive && !ocrActive && !translationActive && !cleanupActive && !typesettingActive &&
-            !active && !exportActive
-        saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive &&
-            !typesettingActive && !active && !exportActive
-        cancelQualityButton.visibility = if (active) View.VISIBLE else View.GONE
-        cancelQualityButton.isEnabled = active
+        updateStageControls()
         syncWorkspaceState()
     }
 
     private fun setExportActive(active: Boolean) {
         exportActive = active
-        importButton.isEnabled = !importRunning && !analysisActive && !ocrActive && !translationActive &&
-            !cleanupActive && !typesettingActive && !active
-        analysisButton.isEnabled = currentProject != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active
-        ocrButton.isEnabled = currentRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active
-        translationButton.isEnabled = currentOcrRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active &&
-            translationSettingsStore.loadProviderSettings() != null
-        cleanupButton.isEnabled = currentTranslationRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active
-        typesettingButton.isEnabled = currentCleanupRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !active
-        qualityButton.isEnabled = currentTypesettingRun != null && !importRunning && !analysisActive && !ocrActive &&
-            !translationActive && !cleanupActive && !typesettingActive && !qualityActive && !active
-        exportButton.isEnabled = currentQualityRun?.report?.status?.allowsExport() == true && !importRunning &&
-            !analysisActive && !ocrActive && !translationActive && !cleanupActive && !typesettingActive &&
-            !qualityActive && !active
-        saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive && !typesettingActive && !active
-        cancelExportButton.visibility = if (active) View.VISIBLE else View.GONE
-        cancelExportButton.isEnabled = active
+        updateStageControls()
         syncWorkspaceState()
     }
 
