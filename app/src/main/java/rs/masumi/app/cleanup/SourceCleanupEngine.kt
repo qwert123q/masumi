@@ -2,6 +2,9 @@ package rs.masumi.app.cleanup
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
@@ -43,17 +46,111 @@ class SourceCleanupEngine {
         try {
             val pixels = IntArray(Math.multiplyExact(output.width, output.height))
             output.getPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
-            val artifacts = mutableListOf<CleanupRegionArtifact>()
-            targets.forEach { target ->
-                if (cancellation()) throw CleanupCancellationSignal()
-                artifacts += cleanTarget(pixels, output.width, output.height, target, policy, cancellation)
-            }
+            val artifacts = cleanTargets(pixels, output.width, output.height, targets, policy, cancellation)
             output.setPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
             return CleanedPage(output, artifacts)
         } catch (failure: Throwable) {
             output.recycle()
             throw failure
         }
+    }
+
+    /**
+     * Targets whose regions of interest do not overlap read and write disjoint
+     * pixels, so they run concurrently on one shared pixel array. Overlapping
+     * targets are grouped and processed sequentially inside one task to keep
+     * the output identical to a fully sequential pass.
+     */
+    private fun cleanTargets(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        targets: List<CleanupTarget>,
+        policy: CleanupPolicy,
+        cancellation: () -> Boolean,
+    ): List<CleanupRegionArtifact> {
+        val artifacts = arrayOfNulls<CleanupRegionArtifact>(targets.size)
+        val groups = groupByRoiOverlap(targets, policy, width, height)
+        val parallelism = min(cleanupParallelism(), groups.size)
+        if (parallelism <= 1) {
+            targets.forEachIndexed { index, target ->
+                if (cancellation()) throw CleanupCancellationSignal()
+                artifacts[index] = cleanTarget(pixels, width, height, target, policy, cancellation)
+            }
+        } else {
+            val executor = Executors.newFixedThreadPool(parallelism) { task ->
+                Thread(task, CLEANUP_WORKER_THREAD_NAME)
+            }
+            try {
+                val futures = groups.map { group ->
+                    executor.submit(
+                        Callable {
+                            group.forEach { index ->
+                                if (cancellation()) throw CleanupCancellationSignal()
+                                artifacts[index] =
+                                    cleanTarget(pixels, width, height, targets[index], policy, cancellation)
+                            }
+                        },
+                    )
+                }
+                futures.forEach { future ->
+                    try {
+                        future.get()
+                    } catch (failure: ExecutionException) {
+                        throw failure.cause ?: failure
+                    }
+                }
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+        return artifacts.map(::requireNotNull)
+    }
+
+    private fun cleanupParallelism(): Int =
+        (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, MAXIMUM_CLEANUP_WORKERS)
+
+    private fun groupByRoiOverlap(
+        targets: List<CleanupTarget>,
+        policy: CleanupPolicy,
+        width: Int,
+        height: Int,
+    ): List<List<Int>> {
+        val rois = targets.map { target -> targetRoi(target, policy, width, height) }
+        val parent = IntArray(targets.size) { it }
+        fun find(value: Int): Int {
+            var root = value
+            while (parent[root] != root) root = parent[root]
+            var current = value
+            while (parent[current] != root) {
+                val next = parent[current]
+                parent[current] = root
+                current = next
+            }
+            return root
+        }
+        for (first in targets.indices) {
+            val firstRoi = rois[first] ?: continue
+            for (second in first + 1 until targets.size) {
+                val secondRoi = rois[second] ?: continue
+                if (firstRoi.intersects(secondRoi)) parent[find(second)] = find(first)
+            }
+        }
+        return targets.indices.groupBy(::find).values.toList()
+    }
+
+    private fun targetRoi(
+        target: CleanupTarget,
+        policy: CleanupPolicy,
+        width: Int,
+        height: Int,
+    ): IntBox? {
+        val core = target.box.toIntBox(width, height) ?: return null
+        val padding = max(
+            policy.minimumPaddingPixels,
+            (max(core.width, core.height) * policy.boxPaddingFraction).roundToInt(),
+        )
+        return core.expand(padding, width, height)
     }
 
     private fun cleanTarget(
@@ -74,33 +171,50 @@ class SourceCleanupEngine {
         val roiPixelCount = roi.width * roi.height
         if (roiPixelCount <= 0) return target.preserved(CleanupPreserveReason.MASK_EMPTY)
         val background: Int
-        val mask: BooleanArray
-        val dilationRadius: Int
+        val dilated: BooleanArray
         val useBoundaryInpaint: Boolean
+        var relaxedGlyphSelection = false
         when (target.strategy) {
             CleanupStrategy.FLAT_LOCAL_FILL -> {
-                val dominant = estimateDominantColor(pixels, width, core)
+                // The box majority color is the ink itself whenever lettering
+                // fills a tight detector box, so estimate the background from
+                // the ROI perimeter: for bubble text that ring lies on the
+                // bubble interior around the glyphs.
+                val perimeter = estimatePerimeterMedian(pixels, width, roi)
                 val flatMask = colorDifferenceMask(
                     pixels = pixels,
                     stride = width,
                     core = core,
                     roi = roi,
-                    background = dominant,
+                    background = perimeter,
                     threshold = policy.colorDistanceThreshold,
                     cancellation = cancellation,
                 )
-                val flatCoverage = flatMask.count { it }.toDouble() / (core.width * core.height)
-                if (flatCoverage <= MAXIMUM_FLAT_COLOR_MASK_COVERAGE) {
-                    background = dominant
-                    mask = flatMask
-                    dilationRadius = policy.dilationRadiusPixels
+                val corePixelCount = core.width * core.height
+                val flatCoverage = flatMask.count { it }.toDouble() / corePixelCount
+                if (flatCoverage >= SOLID_REGION_COVERAGE) {
+                    // The whole box differs from its surroundings: solid artwork
+                    // mislabelled as a bubble. Filling it would erase the panel.
+                    return target.preserved(
+                        CleanupPreserveReason.MASK_UNSAFE,
+                        roiPixelCount,
+                        flatMask.count { it },
+                    )
+                }
+                val dilatedFlat = dilate(flatMask, roi.width, roi.height, policy.dilationRadiusPixels)
+                if (
+                    !flatBackgroundIsTextured(pixels, width, core, roi, flatMask) &&
+                    coreCoverage(dilatedFlat, core, roi) <= MAXIMUM_FLAT_COLOR_MASK_COVERAGE
+                ) {
+                    background = perimeter
+                    dilated = dilatedFlat
                     useBoundaryInpaint = false
                 } else {
                     // Some detector "bubble" boxes are textured narration
                     // panels. Filling every non-dominant pixel would erase the
                     // halftone and artwork, so use the glyph-safe path.
-                    background = estimatePerimeterMedian(pixels, width, roi)
-                    mask = freeTextInkMask(
+                    background = perimeter
+                    val ink = freeTextInkMask(
                         pixels,
                         width,
                         core,
@@ -108,13 +222,14 @@ class SourceCleanupEngine {
                         target.expectedGlyphCount,
                         cancellation,
                     )
-                    dilationRadius = freeTextDilationRadius(core, policy)
+                    relaxedGlyphSelection = ink.relaxedSelection
+                    dilated = dilate(ink.mask, roi.width, roi.height, freeTextDilationRadius(core, policy))
                     useBoundaryInpaint = true
                 }
             }
             CleanupStrategy.LOCAL_BOUNDARY_INPAINT -> {
                 background = estimatePerimeterMedian(pixels, width, roi)
-                mask = freeTextInkMask(
+                val ink = freeTextInkMask(
                     pixels,
                     width,
                     core,
@@ -122,11 +237,11 @@ class SourceCleanupEngine {
                     target.expectedGlyphCount,
                     cancellation,
                 )
-                dilationRadius = freeTextDilationRadius(core, policy)
+                relaxedGlyphSelection = ink.relaxedSelection
+                dilated = dilate(ink.mask, roi.width, roi.height, freeTextDilationRadius(core, policy))
                 useBoundaryInpaint = true
             }
         }
-        val dilated = dilate(mask, roi.width, roi.height, dilationRadius)
         val maskCount = dilated.count { it }
         var coreMaskCount = 0
         for (y in core.top until core.bottom) for (x in core.left until core.right) {
@@ -136,12 +251,20 @@ class SourceCleanupEngine {
         if (maskCount == 0 || coverage < policy.minimumMaskCoverage) {
             return target.preserved(CleanupPreserveReason.MASK_EMPTY, roiPixelCount, maskCount)
         }
-        val maximumCoverage = if (useBoundaryInpaint) {
-            min(policy.maximumMaskCoverage, MAXIMUM_FREE_TEXT_MASK_COVERAGE)
+        // A vetted single dominant glyph legitimately fills its tight text box,
+        // so judge safety by how much of the padded ROI stays available as
+        // inpainting boundary instead of by core coverage.
+        val coverageForLimit = if (useBoundaryInpaint && relaxedGlyphSelection) {
+            maskCount.toDouble() / roiPixelCount
         } else {
-            policy.maximumMaskCoverage
+            coverage
         }
-        if (coverage > maximumCoverage) {
+        val maximumCoverage = when {
+            !useBoundaryInpaint -> policy.maximumMaskCoverage
+            relaxedGlyphSelection -> min(policy.maximumMaskCoverage, MAXIMUM_RELAXED_ROI_COVERAGE)
+            else -> min(policy.maximumMaskCoverage, MAXIMUM_FREE_TEXT_MASK_COVERAGE)
+        }
+        if (coverageForLimit > maximumCoverage) {
             return target.preserved(CleanupPreserveReason.MASK_UNSAFE, roiPixelCount, maskCount)
         }
         val maskedLocals = IntArray(maskCount)
@@ -208,12 +331,77 @@ class SourceCleanupEngine {
             .coerceIn(MINIMUM_FREE_TEXT_DILATION, MAXIMUM_FREE_TEXT_DILATION),
     )
 
+    private class InkMaskResult(val mask: BooleanArray, val relaxedSelection: Boolean)
+
+    /**
+     * Flat filling is only safe when the bubble interior around the glyphs is
+     * genuinely uniform. Measure the per-channel standard deviation of the
+     * unmasked pixels inside the text box against their median: screentone and
+     * art texture produce a high deviation even when the color-difference mask
+     * misses it. Thresholds follow koharu's bubble-fill fast path.
+     */
+    private fun flatBackgroundIsTextured(
+        pixels: IntArray,
+        stride: Int,
+        core: IntBox,
+        roi: IntBox,
+        mask: BooleanArray,
+    ): Boolean {
+        var count = 0
+        for (y in core.top until core.bottom) for (x in core.left until core.right) {
+            if (!mask[(y - roi.top) * roi.width + (x - roi.left)]) count += 1
+        }
+        if (count == 0) return true
+        val reds = IntArray(count)
+        val greens = IntArray(count)
+        val blues = IntArray(count)
+        var index = 0
+        for (y in core.top until core.bottom) for (x in core.left until core.right) {
+            if (mask[(y - roi.top) * roi.width + (x - roi.left)]) continue
+            val color = pixels[y * stride + x]
+            reds[index] = Color.red(color)
+            greens[index] = Color.green(color)
+            blues[index] = Color.blue(color)
+            index += 1
+        }
+        fun deviation(values: IntArray): Double {
+            values.sort()
+            val median = values[values.size / 2].toDouble()
+            var sumSquares = 0.0
+            values.forEach { value ->
+                val difference = value - median
+                sumSquares += difference * difference
+            }
+            return sqrt(sumSquares / values.size)
+        }
+        val deviations = listOf(deviation(reds), deviation(greens), deviation(blues))
+        val mean = deviations.average()
+        val channelSpread = sqrt(deviations.sumOf { (it - mean) * (it - mean) } / deviations.size)
+        val threshold = if (channelSpread > FLAT_CHANNEL_SPREAD_SWITCH) {
+            FLAT_TEXTURE_DEVIATION_COLOR
+        } else {
+            FLAT_TEXTURE_DEVIATION_MONO
+        }
+        return deviations.max() >= threshold
+    }
+
+    private fun coreCoverage(mask: BooleanArray, core: IntBox, roi: IntBox): Double {
+        var count = 0
+        for (y in core.top until core.bottom) for (x in core.left until core.right) {
+            if (mask[(y - roi.top) * roi.width + (x - roi.left)]) count += 1
+        }
+        return count.toDouble() / (core.width * core.height)
+    }
+
     /**
      * Free-standing manga lettering often sits over line art. Comparing every
      * pixel with one background color erases the illustration inside a large
      * rectangular detector box. Keep only compact, genuinely thick ink
      * components; nearby thin drawing strokes and large dark picture regions
-     * are deliberately excluded.
+     * are deliberately excluded. When the strict pass finds nothing and the
+     * OCR text says the box holds only one or two glyphs, retry with a relaxed
+     * size cap: a single oversized sound-effect glyph legitimately dominates
+     * its box.
      */
     private fun freeTextInkMask(
         pixels: IntArray,
@@ -222,7 +410,7 @@ class SourceCleanupEngine {
         roi: IntBox,
         expectedGlyphCount: Int?,
         cancellation: () -> Boolean,
-    ): BooleanArray {
+    ): InkMaskResult {
         val corePixelCount = core.width * core.height
         val luminanceHistogram = IntArray(256)
         val luminances = IntArray(corePixelCount)
@@ -293,10 +481,23 @@ class SourceCleanupEngine {
             )
         }
 
-        val primaryCandidates = components.filter { component ->
-            component.isLikelyGlyph(corePixelCount)
+        val strictCandidates = components.filter { component ->
+            component.isLikelyGlyph(corePixelCount, MAXIMUM_GLYPH_COMPONENT_FRACTION)
         }
-        if (primaryCandidates.isEmpty()) return BooleanArray(roi.width * roi.height)
+        var relaxedSelection = false
+        val primaryCandidates = if (strictCandidates.isNotEmpty()) {
+            strictCandidates
+        } else if (expectedGlyphCount != null && expectedGlyphCount <= RELAXED_GLYPH_COUNT_LIMIT) {
+            relaxedSelection = true
+            components.filter { component ->
+                component.isLikelyGlyph(corePixelCount, RELAXED_GLYPH_COMPONENT_FRACTION)
+            }
+        } else {
+            emptyList()
+        }
+        if (primaryCandidates.isEmpty()) {
+            return InkMaskResult(BooleanArray(roi.width * roi.height), false)
+        }
         val primary = primaryCandidates
             .sortedByDescending(InkComponent::thickPixelCount)
             .take(expectedGlyphCount?.coerceIn(1, primaryCandidates.size) ?: primaryCandidates.size)
@@ -314,24 +515,27 @@ class SourceCleanupEngine {
                     satelliteDistance,
                 )
         }
-        return BooleanArray(roi.width * roi.height).also { mask ->
-            selected.forEach { component ->
-                component.members.forEach { coreLocal ->
-                    val x = core.left + coreLocal % core.width
-                    val y = core.top + coreLocal / core.width
-                    mask[(y - roi.top) * roi.width + (x - roi.left)] = true
+        return InkMaskResult(
+            BooleanArray(roi.width * roi.height).also { mask ->
+                selected.forEach { component ->
+                    component.members.forEach { coreLocal ->
+                        val x = core.left + coreLocal % core.width
+                        val y = core.top + coreLocal / core.width
+                        mask[(y - roi.top) * roi.width + (x - roi.left)] = true
+                    }
                 }
-            }
-        }
+            },
+            relaxedSelection,
+        )
     }
 
-    private fun InkComponent.isLikelyGlyph(corePixelCount: Int): Boolean {
+    private fun InkComponent.isLikelyGlyph(corePixelCount: Int, componentFractionCap: Double): Boolean {
         if (members.size < MINIMUM_GLYPH_AREA || width < 2 || height < 2) return false
         val boxArea = width * height
         if (members.size.toDouble() / boxArea < MINIMUM_GLYPH_DENSITY) return false
         val aspect = max(width, height).toDouble() / min(width, height)
         if (aspect > MAXIMUM_GLYPH_ASPECT_RATIO) return false
-        if (members.size.toDouble() / corePixelCount > MAXIMUM_GLYPH_COMPONENT_FRACTION) return false
+        if (members.size.toDouble() / corePixelCount > componentFractionCap) return false
         if (thickPixelCount < max(1, members.size / MINIMUM_THICK_PIXEL_DIVISOR)) return false
         if (touchesBoundary &&
             members.size.toDouble() / corePixelCount > MAXIMUM_BOUNDARY_COMPONENT_FRACTION
@@ -412,36 +616,6 @@ class SourceCleanupEngine {
         }
         return bestThreshold
     }
-
-    private fun estimateDominantColor(pixels: IntArray, stride: Int, box: IntBox): Int {
-        val counts = IntArray(DOMINANT_COLOR_BUCKET_COUNT)
-        val alpha = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
-        val red = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
-        val green = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
-        val blue = LongArray(DOMINANT_COLOR_BUCKET_COUNT)
-        for (y in box.top until box.bottom) for (x in box.left until box.right) {
-            val color = pixels[y * stride + x]
-            val bucket = colorBucket(color)
-            counts[bucket] += 1
-            alpha[bucket] += Color.alpha(color)
-            red[bucket] += Color.red(color)
-            green[bucket] += Color.green(color)
-            blue[bucket] += Color.blue(color)
-        }
-        val selected = counts.indices.maxByOrNull { counts[it] } ?: return Color.WHITE
-        val count = counts[selected].coerceAtLeast(1)
-        return Color.argb(
-            (alpha[selected] / count).toInt(),
-            (red[selected] / count).toInt(),
-            (green[selected] / count).toInt(),
-            (blue[selected] / count).toInt(),
-        )
-    }
-
-    private fun colorBucket(color: Int): Int =
-        ((Color.red(color) ushr DOMINANT_COLOR_SHIFT) shl 6) or
-            ((Color.green(color) ushr DOMINANT_COLOR_SHIFT) shl 3) or
-            (Color.blue(color) ushr DOMINANT_COLOR_SHIFT)
 
     private fun luminance(color: Int): Int =
         (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
@@ -605,21 +779,46 @@ class SourceCleanupEngine {
         )
     }
 
+    /**
+     * Approximate circular dilation via a two-pass chamfer-3-4 distance
+     * transform: O(pixels) regardless of radius, versus the naive
+     * O(pixels x radius^2) stamp which dominated free-text cleanup time.
+     */
     private fun dilate(source: BooleanArray, width: Int, height: Int, radius: Int): BooleanArray {
         if (radius <= 0) return source
-        val output = source.copyOf()
-        for (local in source.indices) {
-            if (!source[local]) continue
-            val x = local % width
-            val y = local / width
-            for (dy in -radius..radius) for (dx in -radius..radius) {
-                if (dx * dx + dy * dy > radius * radius) continue
-                val nx = x + dx
-                val ny = y + dy
-                if (nx in 0 until width && ny in 0 until height) output[ny * width + nx] = true
+        val distance = IntArray(source.size) { if (source[it]) 0 else DISTANCE_INFINITY }
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                val index = row + x
+                var value = distance[index]
+                if (value == 0) continue
+                if (x > 0) value = min(value, distance[index - 1] + CHAMFER_ORTHOGONAL)
+                if (y > 0) {
+                    value = min(value, distance[index - width] + CHAMFER_ORTHOGONAL)
+                    if (x > 0) value = min(value, distance[index - width - 1] + CHAMFER_DIAGONAL)
+                    if (x < width - 1) value = min(value, distance[index - width + 1] + CHAMFER_DIAGONAL)
+                }
+                distance[index] = value
             }
         }
-        return output
+        val limit = radius * CHAMFER_ORTHOGONAL
+        for (y in height - 1 downTo 0) {
+            val row = y * width
+            for (x in width - 1 downTo 0) {
+                val index = row + x
+                var value = distance[index]
+                if (value == 0) continue
+                if (x < width - 1) value = min(value, distance[index + 1] + CHAMFER_ORTHOGONAL)
+                if (y < height - 1) {
+                    value = min(value, distance[index + width] + CHAMFER_ORTHOGONAL)
+                    if (x < width - 1) value = min(value, distance[index + width + 1] + CHAMFER_DIAGONAL)
+                    if (x > 0) value = min(value, distance[index + width - 1] + CHAMFER_DIAGONAL)
+                }
+                distance[index] = value
+            }
+        }
+        return BooleanArray(source.size) { distance[it] <= limit }
     }
 
     private fun estimatePerimeterMedian(pixels: IntArray, stride: Int, box: IntBox): Int {
@@ -677,6 +876,9 @@ class SourceCleanupEngine {
             (right + padding).coerceAtMost(width),
             (bottom + padding).coerceAtMost(height),
         )
+
+        fun intersects(other: IntBox): Boolean =
+            left < other.right && other.left < right && top < other.bottom && other.top < bottom
     }
 
     private data class InkComponent(
@@ -699,10 +901,20 @@ class SourceCleanupEngine {
     }
 
     private companion object {
-        const val DOMINANT_COLOR_SHIFT = 5
-        const val DOMINANT_COLOR_BUCKET_COUNT = 512
         const val BOUNDARY_COLOR_SCORE_WEIGHT = 4
         const val SINGLE_BOUNDARY_SCORE = 10_000
+        const val CLEANUP_WORKER_THREAD_NAME = "masumi-cleanup-worker"
+        const val MAXIMUM_CLEANUP_WORKERS = 6
+        const val DISTANCE_INFINITY = Int.MAX_VALUE / 4
+        const val CHAMFER_ORTHOGONAL = 3
+        const val CHAMFER_DIAGONAL = 4
+        const val SOLID_REGION_COVERAGE = 0.95
+        const val RELAXED_GLYPH_COUNT_LIMIT = 2
+        const val RELAXED_GLYPH_COMPONENT_FRACTION = 0.65
+        const val MAXIMUM_RELAXED_ROI_COVERAGE = 0.90
+        const val FLAT_CHANNEL_SPREAD_SWITCH = 1.0
+        const val FLAT_TEXTURE_DEVIATION_COLOR = 7.0
+        const val FLAT_TEXTURE_DEVIATION_MONO = 10.0
         const val MAXIMUM_FLAT_COLOR_MASK_COVERAGE = 0.72
         const val MINIMUM_FREE_TEXT_LUMINANCE = 32
         const val MAXIMUM_FREE_TEXT_LUMINANCE = 112

@@ -463,8 +463,11 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
             // Some Android Adreno drivers advertise BF16 shader support but crash
             // inside the vendor compiler when ggml creates its BF16 mat-vec pipeline.
             // Prefer the portable Vulkan kernels over a process-level driver crash.
+            // F16 kernels stay enabled: Adreno 7xx executes them correctly and at
+            // roughly twice the FP32 mat-vec throughput; a driver that cannot
+            // compile them fails engine creation, which falls back to CPU through
+            // the existing ACCELERATOR_UNAVAILABLE path instead of crashing.
             setenv("GGML_VK_DISABLE_BFLOAT16", "1", 0);
-            setenv("GGML_VK_DISABLE_F16", "1", 0);
             setenv("GGML_VK_DISABLE_ASYNC", "1", 0);
             llama_log_set(silent_log, nullptr);
             mtmd_log_set(silent_log, nullptr);
@@ -484,7 +487,12 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_create(
             return -4;
         }
         mtmd_context_params vision_params = mtmd_context_params_default();
-        vision_params.use_gpu = prefer_gpu;
+        // Measured on Adreno 750 (Xiaomi 14): the SigLIP-style vision encoder's
+        // conv/attention graph runs ~5x slower through ggml-vulkan than through
+        // the optimized CPU backend (42s vs 8.8s per crop), while the language
+        // model layers do benefit from the GPU. Keep the projector on CPU and
+        // offload only the LLM.
+        vision_params.use_gpu = false;
         vision_params.print_timings = false;
         vision_params.n_threads = kThreadCount;
         vision_params.warmup = false;

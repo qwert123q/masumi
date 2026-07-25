@@ -17,6 +17,11 @@ import rs.masumi.app.TestDocumentsProvider
 @RunWith(AndroidJUnit4::class)
 class MangaLibraryModelCacheTest {
     private val context = InstrumentationRegistry.getInstrumentation().context
+
+    // The instrumentation package has no data directory of its own on HyperOS,
+    // so temp directories must live in the target app's cache.
+    private val tempRoot = InstrumentationRegistry.getInstrumentation()
+        .targetContext.cacheDir.toPath()
     private val treeUri = DocumentsContract.buildTreeDocumentUri(
         TestDocumentsProvider.AUTHORITY,
         TestDocumentsProvider.ROOT_ID,
@@ -25,6 +30,7 @@ class MangaLibraryModelCacheTest {
     @Before
     fun setUp() {
         TestDocumentsProvider.clearDynamicDocuments(context)
+        Files.createDirectories(tempRoot)
     }
 
     @After
@@ -35,7 +41,7 @@ class MangaLibraryModelCacheTest {
     @Test
     fun backsUpAndRestoresAVerifiedModelPackage() {
         val cache = MangaLibraryModelCache(context.contentResolver, treeUri)
-        val root = Files.createTempDirectory(context.cacheDir.toPath(), "model-cache-")
+        val root = Files.createTempDirectory(tempRoot, "model-cache-")
         try {
             val source = root.resolve("source")
             Files.createDirectories(source)
@@ -75,7 +81,7 @@ class MangaLibraryModelCacheTest {
 
     @Test
     fun missingLibraryPackageFallsBackWithoutTouchingTheTarget() {
-        val root = Files.createTempDirectory(context.cacheDir.toPath(), "model-cache-missing-")
+        val root = Files.createTempDirectory(tempRoot, "model-cache-missing-")
         try {
             val target = root.resolve("target")
             Files.createDirectories(target)

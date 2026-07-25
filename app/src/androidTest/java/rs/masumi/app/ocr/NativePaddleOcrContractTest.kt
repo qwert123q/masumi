@@ -199,7 +199,10 @@ class NativePaddleOcrContractTest {
 
         assertEquals(OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE, failure.code)
         assertTrue(backendHealth.shouldPreferVulkan())
-        assertEquals(listOf(true, true), bridge.createPreferences)
+        // The failing call is reported fast after one in-call restart; the
+        // recording layer then eagerly opens one replacement Vulkan engine so
+        // the next region starts on a fresh accelerator.
+        assertEquals(listOf(true, true, true), bridge.createPreferences)
         assertEquals(listOf(11L, 13L), bridge.recognizedHandles)
     }
 

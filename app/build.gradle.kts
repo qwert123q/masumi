@@ -29,6 +29,14 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".dev"
+            externalNativeBuild {
+                cmake {
+                    // AGP defaults debug native builds to -O0, which makes the
+                    // ggml/llama inference kernels 10-30x slower than release.
+                    // OCR speed must be representative in every install.
+                    arguments += "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+                }
+            }
         }
         release {
             isMinifyEnabled = false

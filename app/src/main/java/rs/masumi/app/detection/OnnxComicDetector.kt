@@ -134,6 +134,12 @@ class OnnxComicDetector(
 private fun createSession(environment: OrtEnvironment, modelFile: Path): OrtSession =
     OrtSession.SessionOptions().use { options ->
         options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        // Pin intra-op parallelism to the performance-core count. The default
+        // spans every core, and scheduling shards onto the little cores makes
+        // them the critical path for the 640x640 DETR pass.
+        options.setIntraOpNumThreads(
+            (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, DETECTOR_MAX_INTRA_OP_THREADS),
+        )
         environment.createSession(modelFile.toString(), options)
     }
 
@@ -196,3 +202,4 @@ private const val LABELS_OUTPUT = "labels"
 private const val BOXES_OUTPUT = "boxes"
 private const val SCORES_OUTPUT = "scores"
 private const val QUERY_COUNT = 300
+private const val DETECTOR_MAX_INTRA_OP_THREADS = 6
