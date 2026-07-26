@@ -20,3 +20,4 @@ models/
 local-models/
 outputs/
 workspaces/
+tools/verify-out/
