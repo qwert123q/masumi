@@ -107,7 +107,7 @@ class TranslationBatchPlannerTest {
             TranslationBatchPlanner().plan(
                 listOf(
                     TranslationFixtures.page(0, emptyList()),
-                    TranslationFixtures.page(1, emptyList(), TranslationPolicy(translateSoundEffects = true)),
+                    TranslationFixtures.page(1, emptyList(), TranslationPolicy(translateSoundEffects = false)),
                 ),
             )
         }

@@ -26,7 +26,15 @@ class TranslationPromptBuilderTest {
 
         val messages = TranslationPromptBuilder().build(window)
 
-        assertTrue(messages.system.contains("sound-effect translation=false"))
+        // The shipping policy translates sound effects, and the prompt has to
+        // restate whichever policy it was handed, either way.
+        assertTrue(messages.system.contains("sound-effect translation=true"))
+        assertTrue(
+            TranslationPromptBuilder()
+                .build(window.copy(policy = TranslationPolicy(translateSoundEffects = false)))
+                .system
+                .contains("sound-effect translation=false"),
+        )
         assertTrue(messages.system.contains("Return only one JSON object"))
         assertTrue(messages.system.contains("never return context ids"))
         assertTrue(messages.user.contains("\"id\":\"dialogue-id\""))

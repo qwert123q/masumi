@@ -34,7 +34,12 @@ class TranslationResponseValidatorTest {
             ),
         )
 
-        val result = TranslationResponseValidator().validate(TranslationFixtures.window(requested), response)
+        // Sound effects are translated by default now, so opt out explicitly to
+        // keep exercising the POLICY_PRESERVED path.
+        val result = TranslationResponseValidator().validate(
+            TranslationFixtures.window(requested, TranslationPolicy(translateSoundEffects = false)),
+            response,
+        )
 
         assertEquals(
             listOf(
@@ -75,7 +80,10 @@ class TranslationResponseValidatorTest {
         )
 
         val preserved = TranslationResponseValidator().validate(
-            TranslationFixtures.window(listOf(requested)),
+            TranslationFixtures.window(
+                listOf(requested),
+                policy = TranslationPolicy(translateSoundEffects = false),
+            ),
             response,
         ).items.single()
         val translated = TranslationResponseValidator().validate(

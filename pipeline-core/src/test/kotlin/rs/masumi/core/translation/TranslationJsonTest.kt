@@ -41,7 +41,7 @@ class TranslationJsonTest {
         val soundEffects = TranslationIdentity.regionId(
             "page",
             "region",
-            TranslationPolicy(translateSoundEffects = true),
+            TranslationPolicy(translateSoundEffects = false),
             TranslationPromptRef(),
         )
         val prompt = TranslationIdentity.regionId(

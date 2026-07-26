@@ -52,12 +52,14 @@ enum class TranslationPreserveReason {
 
 @Serializable
 data class TranslationPolicy(
-    val revision: String = "ja-zh-hans-v2",
+    val revision: String = "ja-zh-hans-v3-sfx",
     val sourceLanguage: TranslationSourceLanguage = TranslationSourceLanguage.JA,
     val targetLanguage: TranslationTargetLanguage = TranslationTargetLanguage.ZH_HANS,
     val translateDialogue: Boolean = true,
     val translateNarration: Boolean = true,
-    val translateSoundEffects: Boolean = false,
+    // Sound effects are translated as well: leaving them untranslated also left
+    // them out of cleanup, so the page kept its Japanese lettering.
+    val translateSoundEffects: Boolean = true,
     val translateOtherText: Boolean = true,
     val automaticApproval: Boolean = true,
 ) {
