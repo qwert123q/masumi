@@ -48,6 +48,8 @@ import rs.masumi.app.exporting.ExportStatusBroadcast
 import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
+import rs.masumi.app.library.cachedMangaLibraryProjects
+import rs.masumi.app.library.cachedMangaLibraryRootName
 import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.app.library.MangaLibraryInstalledModelSynchronizer
 import rs.masumi.app.library.MangaLibraryModelCache
@@ -738,10 +740,16 @@ class MainActivity : Activity() {
             renderLibraryHistory(null, null, emptyList())
             return
         }
+        // Scanning the document tree costs one provider query per project, which
+        // left the list blank for seconds on every resume. Paint the snapshot
+        // this process already has, then reconcile in the background.
+        cachedMangaLibraryProjects(rootUri)?.let { cached ->
+            renderLibraryHistory(rootUri, cachedMangaLibraryRootName(rootUri), cached)
+        }
         Thread({
             val result = runCatching {
                 val store = MangaLibraryStore(contentResolver, rootUri)
-                store.rootDisplayName() to store.projects()
+                store.rootDisplayName() to store.refreshProjects()
             }
             runOnUiThread {
                 if (generation != libraryRefreshGeneration) return@runOnUiThread
@@ -797,6 +805,18 @@ class MainActivity : Activity() {
             View.VISIBLE
         } else {
             View.GONE
+        }
+        // "正在入库" used to stick forever whenever the export job record no longer
+        // matched the current typesetting run key. Every page already sitting in
+        // the library is proof enough that the chapter is saved.
+        val expectedPageCount = currentProject?.manifest?.pages?.size ?: 0
+        if (
+            !exportSucceededForCurrentRun &&
+            expectedPageCount > 0 &&
+            (currentLibraryProject?.outputPageCount ?: 0) >= expectedPageCount
+        ) {
+            exportSucceededForCurrentRun = true
+            syncWorkspaceState()
         }
     }
 

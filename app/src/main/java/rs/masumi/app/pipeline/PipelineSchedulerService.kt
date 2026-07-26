@@ -25,6 +25,7 @@ import rs.masumi.app.exporting.ExportStatusBroadcast
 import rs.masumi.app.library.LibraryActivity
 import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.app.library.MangaLibraryStore
+import rs.masumi.app.library.invalidateMangaLibraryCache
 import rs.masumi.app.ocr.OcrForegroundService
 import rs.masumi.app.ocr.OcrStatusBroadcast
 import rs.masumi.app.quality.QualityForegroundService
@@ -120,6 +121,16 @@ class PipelineSchedulerService : Service() {
                     )
                 }
                 ExportStatusBroadcast.ACTION -> ExportStatusBroadcast.parse(intent)?.let { progress ->
+                    if (progress.status !in EXPORT_ACTIVE) {
+                        // The export writer creates output pages through
+                        // DocumentsContract directly, behind MangaLibraryStore's
+                        // back, so the cached snapshot's page counts go stale the
+                        // moment a run finishes (even a failed one may have
+                        // committed pages).
+                        MangaLibraryPreferences(this@PipelineSchedulerService)
+                            .rootUri()
+                            ?.let(::invalidateMangaLibraryCache)
+                    }
                     handleProgress(
                         PipelineStage.EXPORT,
                         progress.projectId,
