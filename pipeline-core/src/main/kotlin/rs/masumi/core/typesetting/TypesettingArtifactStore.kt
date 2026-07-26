@@ -55,19 +55,22 @@ class TypesettingArtifactStore(
     fun commitPage(
         job: TypesettingJobRecord,
         artifact: PageTypesettingArtifact,
-        renderedPng: ByteArray,
+        renderedImage: ByteArray,
+        imageExtension: String = "png",
     ): Pair<String, String> {
         require(job.status == TypesettingJobStatus.RUNNING)
+        require(imageExtension in SUPPORTED_IMAGE_EXTENSIONS)
         val page = job.pages.single { it.pageOrder == artifact.pageOrder }
         require(page.state == TypesettingPageState.RUNNING)
         requireValidPageArtifact(artifact, page, job.dependencies)
-        require(artifact.renderedImageSha256 == sha256(renderedPng))
+        require(artifact.renderedImageSha256 == sha256(renderedImage))
         val directory = pageDirectory(checkpointDirectory(job), page)
         fileSystem.createDirectories(directory)
+        val imageName = "flattened.$imageExtension"
         val artifactPath = "pages/${pagePathName(page)}/typesetting.json"
-        val imagePath = "pages/${pagePathName(page)}/flattened.png"
+        val imagePath = "pages/${pagePathName(page)}/$imageName"
         replaceUnique(directory.resolve("typesetting.json"), json.encodePageArtifact(artifact).toByteArray(Charsets.UTF_8))
-        replaceUnique(directory.resolve("flattened.png"), renderedPng)
+        replaceUnique(directory.resolve(imageName), renderedImage)
         require(
             readCommittedPage(
                 job,
@@ -242,5 +245,6 @@ class TypesettingArtifactStore(
     private companion object {
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         val SHA256 = Regex("[0-9a-f]{64}")
+        val SUPPORTED_IMAGE_EXTENSIONS = setOf("png", "webp")
     }
 }

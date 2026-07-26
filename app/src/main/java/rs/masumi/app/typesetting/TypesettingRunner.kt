@@ -1,5 +1,6 @@
 package rs.masumi.app.typesetting
 
+import rs.masumi.app.PageImageEncoder
 import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
@@ -214,7 +215,12 @@ class TypesettingRunner(
                         )
                     }
                     val artifact = artifactAndPng.first
-                    val (artifactPath, imagePath) = store.commitPage(job, artifact, artifactAndPng.second)
+                    val (artifactPath, imagePath) = store.commitPage(
+                        job,
+                        artifact,
+                        artifactAndPng.second,
+                        PageImageEncoder.preferredExtension,
+                    )
                     val typeset = artifact.regions.count { it.state == TypesettingRegionState.TYPESET }
                     val preserved = artifact.regions.size - typeset
                     job = persist(
@@ -347,7 +353,7 @@ class TypesettingRunner(
                         preserveReason = TypesettingPreserveReason.OCR_PROTECTED,
                     )
                 }
-                val png = encodePng(rendered.bitmap)
+                val png = PageImageEncoder.encode(rendered.bitmap)
                 return PageTypesettingArtifact(
                     pageId = sourcePage.pageId,
                     pageOrder = sourcePage.order,
@@ -506,11 +512,6 @@ class TypesettingRunner(
     private fun resolveInside(root: Path, relative: String): Path {
         require(relative.isNotBlank() && !relative.startsWith('/'))
         return root.resolve(relative).normalize().also { require(it.startsWith(root.normalize())) }
-    }
-
-    private fun encodePng(bitmap: Bitmap): ByteArray = ByteArrayOutputStream().use { output ->
-        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
-        output.toByteArray()
     }
 
     private fun rs.masumi.core.translation.ValidatedTranslationItem.preserved(

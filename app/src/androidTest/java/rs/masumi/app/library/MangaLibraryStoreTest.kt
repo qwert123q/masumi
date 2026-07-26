@@ -43,6 +43,9 @@ class MangaLibraryStoreTest {
         val output = requireNotNull(project.outputDirectoryUri)
         createOutput(output, "0002.png", "two")
         createOutput(output, "0001.png", "one")
+        // Newer chapters export lossless WebP; both formats must count and list.
+        createOutput(output, "0003.webp", "three")
+        createOutput(output, "notes.txt", "ignored")
 
         val reloaded = MangaLibraryStore(context.contentResolver, treeUri)
         val projects = reloaded.projects()
@@ -50,8 +53,11 @@ class MangaLibraryStoreTest {
         assertEquals(1, projects.size)
         assertEquals("project-one", projects.single().metadata.projectId)
         assertEquals("第一话 / 开始", projects.single().metadata.title)
-        assertEquals(2, projects.single().outputPageCount)
-        assertEquals(listOf("0001.png", "0002.png"), reloaded.outputPages("project-one").map { it.name })
+        assertEquals(3, projects.single().outputPageCount)
+        assertEquals(
+            listOf("0001.png", "0002.png", "0003.webp"),
+            reloaded.outputPages("project-one").map { it.name },
+        )
     }
 
     @Test

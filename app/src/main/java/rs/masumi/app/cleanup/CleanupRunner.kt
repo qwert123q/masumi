@@ -1,5 +1,6 @@
 package rs.masumi.app.cleanup
 
+import rs.masumi.app.PageImageEncoder
 import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
@@ -151,7 +152,12 @@ class CleanupRunner(
                         ::isCancelled,
                     )
                     val artifact = artifactAndPng.first
-                    val (artifactPath, imagePath) = store.commitPage(job, artifact, artifactAndPng.second)
+                    val (artifactPath, imagePath) = store.commitPage(
+                        job,
+                        artifact,
+                        artifactAndPng.second,
+                        PageImageEncoder.preferredExtension,
+                    )
                     val cleaned = artifact.regions.count { it.state == CleanupRegionState.CLEANED }
                     val preserved = artifact.regions.size - cleaned
                     job = persist(
@@ -278,7 +284,7 @@ class CleanupRunner(
                         preserveReason = CleanupPreserveReason.OCR_PROTECTED,
                     )
                 }
-                val png = encodePng(cleaned.bitmap)
+                val png = PageImageEncoder.encode(cleaned.bitmap)
                 return PageCleanupArtifact(
                     pageId = sourcePage.pageId,
                     pageOrder = sourcePage.order,
@@ -391,11 +397,6 @@ class CleanupRunner(
         val path = projectDirectory.resolve(page.storedPath).normalize()
         require(path.startsWith(projectDirectory.normalize()))
         return path
-    }
-
-    private fun encodePng(bitmap: Bitmap): ByteArray = ByteArrayOutputStream().use { output ->
-        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
-        output.toByteArray()
     }
 
     private fun OcrRegionArtifact.cleanupStrategy(): CleanupStrategy =

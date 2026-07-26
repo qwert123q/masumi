@@ -1,5 +1,6 @@
 package rs.masumi.app.cleanup
 
+import rs.masumi.app.PageImageEncoder
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -156,7 +157,8 @@ class CleanupRunnerTest {
             cancel.set(false)
             val completedExport = exporter.run(PROJECT_ID, DESTINATION_URI, cancel::get) { }
             assertEquals(ExportJobStatus.SUCCEEDED, completedExport.job.status)
-            assertEquals(setOf("0001.png", "0002.png"), destination.files.keys)
+            val pageExtension = PageImageEncoder.preferredExtension
+            assertEquals(setOf("0001.$pageExtension", "0002.$pageExtension"), destination.files.keys)
             assertEquals(2, completedExport.report?.flattenedPageCount)
             assertEquals(0, completedExport.report?.reusedPageCount)
 
@@ -484,7 +486,7 @@ class CleanupRunnerTest {
         }
 
         override fun pruneManagedOutputs(expectedNames: Set<String>) {
-            files.keys.removeAll { name -> name.matches(Regex("[0-9]{1,12}\\.png")) && name !in expectedNames }
+            files.keys.removeAll { name -> name.matches(Regex("[0-9]{1,12}\\.(png|webp)")) && name !in expectedNames }
         }
     }
 

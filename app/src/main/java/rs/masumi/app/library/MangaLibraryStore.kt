@@ -310,7 +310,7 @@ class MangaLibraryStore(
         const val MAX_TITLE_LENGTH = 120
         const val MAX_DIRECTORY_NAME_LENGTH = 48
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val OUTPUT_FILE = Regex("[0-9]{1,12}\\.png", RegexOption.IGNORE_CASE)
+        val OUTPUT_FILE = Regex("[0-9]{1,12}\\.(png|webp)", RegexOption.IGNORE_CASE)
         val UNSAFE_DIRECTORY_CHARACTER = Regex("[/\\\\:*?\"<>|]")
         val WHITESPACE = Regex("\\s+")
         val CHILD_PROJECTION = arrayOf(

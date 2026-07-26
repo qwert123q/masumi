@@ -30,10 +30,19 @@ object ExportIdentity {
         )
     }
 
-    fun outputName(pageOrder: Int, totalPageCount: Int, policy: ExportPolicy): String {
+    fun outputName(
+        pageOrder: Int,
+        totalPageCount: Int,
+        policy: ExportPolicy,
+        imageExtension: String = "png",
+    ): String {
         require(pageOrder >= 0 && totalPageCount > pageOrder)
+        // The name must describe the actual bytes: exported pages are copied
+        // verbatim from the pipeline artifacts, whose encoding varies by the
+        // platform that produced them.
+        require(imageExtension in SUPPORTED_IMAGE_EXTENSIONS)
         val digits = maxOf(policy.minimumPageNumberDigits, totalPageCount.toString().length)
-        return "${(pageOrder + 1).toString().padStart(digits, '0')}.png"
+        return "${(pageOrder + 1).toString().padStart(digits, '0')}.$imageExtension"
     }
 
     private fun hash(fields: List<Pair<String, String>>): String {
@@ -52,4 +61,5 @@ object ExportIdentity {
 
     private fun requireSha256(value: String) = require(SHA256.matches(value))
     private val SHA256 = Regex("[0-9a-f]{64}")
+    private val SUPPORTED_IMAGE_EXTENSIONS = setOf("png", "webp")
 }

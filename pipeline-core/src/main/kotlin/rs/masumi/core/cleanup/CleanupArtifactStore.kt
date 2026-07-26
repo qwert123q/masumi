@@ -46,18 +46,25 @@ class CleanupArtifactStore(
         fileSystem.deleteRecursively(pageDirectory(checkpointDirectory(job), page))
     }
 
-    fun commitPage(job: CleanupJobRecord, artifact: PageCleanupArtifact, cleanedPng: ByteArray): Pair<String, String> {
+    fun commitPage(
+        job: CleanupJobRecord,
+        artifact: PageCleanupArtifact,
+        cleanedImage: ByteArray,
+        imageExtension: String = "png",
+    ): Pair<String, String> {
         require(job.status == CleanupJobStatus.RUNNING)
+        require(imageExtension in SUPPORTED_IMAGE_EXTENSIONS)
         val page = job.pages.single { it.pageOrder == artifact.pageOrder }
         require(page.state == CleanupPageState.RUNNING)
         requireValidPageArtifact(artifact, page, job.dependencies)
-        require(artifact.cleanedImageSha256 == sha256(cleanedPng))
+        require(artifact.cleanedImageSha256 == sha256(cleanedImage))
         val directory = pageDirectory(checkpointDirectory(job), page)
         fileSystem.createDirectories(directory)
+        val imageName = "cleaned.$imageExtension"
         val artifactPath = "pages/${pagePathName(page)}/cleanup.json"
-        val imagePath = "pages/${pagePathName(page)}/cleaned.png"
+        val imagePath = "pages/${pagePathName(page)}/$imageName"
         replaceUnique(directory.resolve("cleanup.json"), json.encodePageArtifact(artifact).toByteArray(Charsets.UTF_8))
-        replaceUnique(directory.resolve("cleaned.png"), cleanedPng)
+        replaceUnique(directory.resolve(imageName), cleanedImage)
         require(readCommittedPage(job, page.copy(
             state = CleanupPageState.COMMITTED,
             artifactPath = artifactPath,
@@ -217,5 +224,6 @@ class CleanupArtifactStore(
     private companion object {
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         val SHA256 = Regex("[0-9a-f]{64}")
+        val SUPPORTED_IMAGE_EXTENSIONS = setOf("png", "webp")
     }
 }

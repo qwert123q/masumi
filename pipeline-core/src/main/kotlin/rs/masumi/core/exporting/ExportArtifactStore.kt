@@ -95,7 +95,16 @@ class ExportArtifactStore(
             requireSha256(page.sourceSha256)
             requireSha256(page.typesettingPageArtifactKey)
             require(OUTPUT_NAME.matches(page.outputName))
-            require(page.outputName == ExportIdentity.outputName(page.pageOrder, job.pages.size, job.dependencies.policy))
+            // The extension follows the artifact encoding of the page's source,
+            // so identity is validated for the extension the page carries.
+            require(
+                page.outputName == ExportIdentity.outputName(
+                    page.pageOrder,
+                    job.pages.size,
+                    job.dependencies.policy,
+                    page.outputName.substringAfterLast('.'),
+                ),
+            )
             require(page.attemptCount >= 0 && page.byteLength >= 0L)
             if (page.state == ExportPageState.COMMITTED) {
                 requireSha256(requireNotNull(page.outputSha256))
@@ -148,6 +157,6 @@ class ExportArtifactStore(
     private companion object {
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         val SHA256 = Regex("[0-9a-f]{64}")
-        val OUTPUT_NAME = Regex("[0-9]{1,12}\\.png")
+        val OUTPUT_NAME = Regex("[0-9]{1,12}\\.(png|webp)")
     }
 }

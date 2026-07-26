@@ -32,7 +32,8 @@ class CleanupArtifactStoreTest {
         store.prepareRun(job)
         store.writeJob(job)
         val artifact = CleanupFixtures.artifact(png)
-        val (artifactPath, imagePath) = store.commitPage(job, artifact, png)
+        val (artifactPath, imagePath) = store.commitPage(job, artifact, png, "webp")
+        assertTrue(imagePath.endsWith("cleaned.webp"))
         job = CleanupJobReducer.commitPage(job, 0, artifactPath, imagePath, 1, 0, 4L)
         job = CleanupJobReducer.finishSuccess(job, 5L)
         val run = CleanupRunArtifact(

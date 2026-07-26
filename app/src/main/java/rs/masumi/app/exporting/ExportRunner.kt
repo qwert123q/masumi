@@ -1,5 +1,6 @@
 package rs.masumi.app.exporting
 
+import rs.masumi.app.PageImageEncoder
 import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
@@ -236,12 +237,22 @@ class ExportRunner(
                     cleanupEntry.state == CleanupPageState.COMMITTED -> ExportPageSource.CLEANED_FALLBACK
                     else -> ExportPageSource.SOURCE_FALLBACK
                 }
+                // Exported bytes are copied verbatim from the artifact, so the
+                // output name inherits the artifact's encoding; only the raw
+                // source fallback is encoded here and gets to pick its own.
+                val imageExtension = when (source) {
+                    ExportPageSource.FLATTENED ->
+                        imageExtensionOf(requireNotNull(typesettingEntry.imagePath))
+                    ExportPageSource.CLEANED_FALLBACK ->
+                        imageExtensionOf(requireNotNull(cleanupEntry.imagePath))
+                    ExportPageSource.SOURCE_FALLBACK -> PageImageEncoder.preferredExtension
+                }
                 ExportJobPage(
                     pageId = page.pageId,
                     pageOrder = page.order,
                     sourceSha256 = page.sourceSha256,
                     typesettingPageArtifactKey = typesettingEntry.pageArtifactKey,
-                    outputName = ExportIdentity.outputName(page.order, total, policy),
+                    outputName = ExportIdentity.outputName(page.order, total, policy, imageExtension),
                     source = source,
                 )
             },
@@ -283,7 +294,7 @@ class ExportRunner(
         validateSource(project.directory, sourcePage)
         val decoded = decoder.decode(resolveInside(project.directory, sourcePage.storedPath))
         return try {
-            ResolvedExportPage(encodePng(decoded.bitmap), ExportPageSource.SOURCE_FALLBACK)
+            ResolvedExportPage(PageImageEncoder.encode(decoded.bitmap), ExportPageSource.SOURCE_FALLBACK)
         } finally {
             decoded.bitmap.recycle()
         }
@@ -319,10 +330,8 @@ class ExportRunner(
         return root.resolve(relative).normalize().also { require(it.startsWith(root.normalize())) }
     }
 
-    private fun encodePng(bitmap: Bitmap): ByteArray = ByteArrayOutputStream().use { output ->
-        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
-        output.toByteArray()
-    }
+    private fun imageExtensionOf(imagePath: String): String =
+        imagePath.substringAfterLast('.', "png").lowercase()
 
     private fun ExportJobRecord.toProgress(
         currentPageOrder: Int? = pages.firstOrNull { it.state == ExportPageState.RUNNING }?.pageOrder,

@@ -199,7 +199,8 @@ class SafFolderExportDestination(
     }
 
     private fun create(displayName: String): Uri = try {
-        DocumentsContract.createDocument(resolver, parentUri, "image/png", displayName)
+        val mimeType = if (displayName.endsWith(".webp", ignoreCase = true)) "image/webp" else "image/png"
+        DocumentsContract.createDocument(resolver, parentUri, mimeType, displayName)
             ?: throw ExportDestinationException("DESTINATION_CREATE_FAILED")
     } catch (_: SecurityException) {
         throw ExportDestinationException("DESTINATION_PERMISSION_DENIED")
@@ -229,7 +230,7 @@ class SafFolderExportDestination(
 
     private companion object {
         const val BUFFER_SIZE = 64 * 1024
-        val OUTPUT_NAME = Regex("[0-9]{1,12}\\.png")
+        val OUTPUT_NAME = Regex("[0-9]{1,12}\\.(png|webp)")
         val SHA256 = Regex("[0-9a-f]{64}")
     }
 }
