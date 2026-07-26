@@ -130,6 +130,16 @@ class PipelineSchedulerService : Service() {
                         MangaLibraryPreferences(this@PipelineSchedulerService)
                             .rootUri()
                             ?.let(::invalidateMangaLibraryCache)
+                        // The chapter's pipeline just went quiet, which is the
+                        // one moment superseded artifact runs are provably dead.
+                        scheduler.execute {
+                            runCatching {
+                                WorkspaceJanitor.sweepProject(
+                                    filesDir.toPath().resolve("workspace"),
+                                    progress.projectId,
+                                )
+                            }
+                        }
                     }
                     handleProgress(
                         PipelineStage.EXPORT,

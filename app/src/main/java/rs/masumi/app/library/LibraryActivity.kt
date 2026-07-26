@@ -22,6 +22,7 @@ import rs.masumi.app.pipeline.PipelineQueueStatus
 import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
+import rs.masumi.app.pipeline.WorkspaceJanitor
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPromptRef
@@ -69,6 +70,17 @@ class LibraryActivity : Activity() {
         readingProgressStore = MangaReadingProgressStore(this)
         pipelineQueueStore = PipelineQueueStore(this)
         PipelineColdStartGuard.reconcile(pipelineQueueStore)
+        executor.execute {
+            // Sweep superseded pipeline runs left behind by crashes or by
+            // sessions that ended before their post-export sweep could run.
+            runCatching {
+                WorkspaceJanitor.sweepAll(filesDir.toPath().resolve("workspace")) { projectId ->
+                    pipelineQueueStore.entries().any {
+                        it.projectId == projectId && it.status == PipelineQueueStatus.ACTIVE
+                    }
+                }
+            }
+        }
 
         findViewById<Button>(R.id.libraryHomeImport).setOnClickListener { importChapter() }
         chooseLibraryButton.setOnClickListener { openLibraryFolder(false) }
