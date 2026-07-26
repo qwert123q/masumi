@@ -130,6 +130,32 @@ object TranslationJobReducer {
         )
     }
 
+    /**
+     * Records that a salvage pass recovered [recovered] items of a terminal
+     * window after its checkpoint was committed, so the final status and
+     * progress counters describe the published outcome instead of the first
+     * attempt.
+     */
+    fun salvageWindowItems(job: TranslationJobRecord, windowIndex: Int, recovered: Int, now: Long): TranslationJobRecord {
+        require(job.status == TranslationJobStatus.RUNNING)
+        require(recovered > 0)
+        val window = job.windows.single { it.windowIndex == windowIndex }
+        require(window.state.isTerminal())
+        require(window.preservedItemCount >= recovered)
+        return job.updated(now).copy(
+            windows = job.windows.map { candidate ->
+                if (candidate.windowIndex != windowIndex) {
+                    candidate
+                } else {
+                    candidate.copy(
+                        translatedItemCount = candidate.translatedItemCount + recovered,
+                        preservedItemCount = candidate.preservedItemCount - recovered,
+                    )
+                }
+            },
+        )
+    }
+
     fun finishSuccess(job: TranslationJobRecord, now: Long): TranslationJobRecord {
         require(job.status == TranslationJobStatus.RUNNING)
         require(job.windows.all { it.state.isTerminal() })

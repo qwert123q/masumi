@@ -186,7 +186,49 @@ class TranslationRunnerTest {
         }
     }
 
-    private fun publishOcr(workspace: Path, sourceText: String = "今日は") {
+    @Test
+    fun providerFailedItemsAreSalvagedInFreshWindows() {
+        val workspace = Files.createTempDirectory("masumi-translation-salvage")
+        try {
+            publishOcr(workspace, listOf("今日は", "退避対象"))
+            val provider = FailSecondWindowOnceProvider()
+            val runner = TranslationRunner(
+                workspaceRoot = workspace,
+                provider = provider,
+                batching = TranslationBatchingConfig(maximumItemsPerWindow = 1),
+                idSource = IdSource { "translation-salvage" },
+            )
+            val result = runner.run(
+                PROJECT_ID,
+                TranslationProviderSettings(
+                    apiUrl = "https://example.invalid/v1",
+                    apiKey = "secret-not-for-artifacts",
+                    model = "model-safe",
+                ),
+                { false },
+            ) { }
+
+            val run = requireNotNull(result.runArtifact)
+            val store = TranslationArtifactStore(workspace.resolve("projects/$PROJECT_ID"))
+            val page = requireNotNull(store.readPublishedPage(run.runArtifactKey, run.entries.single()))
+
+            assertEquals(TranslationJobStatus.SUCCEEDED, result.job.status)
+            // Both items end up translated even though the second window's
+            // provider call failed: the salvage pass re-requested it in a
+            // fresh window instead of preserving the whole batch.
+            assertEquals(2, page.items.count { it.translatedText != null })
+            assertEquals(0, result.report?.preservedItemCount)
+            assertEquals(2, result.report?.translatedItemCount)
+            assertTrue(provider.sawSalvageRetry)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
+    private fun publishOcr(workspace: Path, sourceText: String = "今日は") =
+        publishOcr(workspace, listOf(sourceText))
+
+    private fun publishOcr(workspace: Path, sourceTexts: List<String>) {
         val project = workspace.resolve("projects/$PROJECT_ID")
         val runDirectory = project.resolve("artifacts/ocr/${"a".repeat(64)}")
         val pageDirectory = runDirectory.resolve("pages/${"b".repeat(64)}")
@@ -216,23 +258,23 @@ class TranslationRunnerTest {
             runtime = descriptor.runtime.toRef(),
             generation = OcrGenerationConfig(prompt = descriptor.prompt),
         )
-        val candidate = OcrCandidate(
-            ocrRegionId = "c".repeat(64),
-            sourceRegionIds = listOf("d".repeat(64)),
-            representativeSourceRegionId = "d".repeat(64),
+        fun candidate(index: Int) = OcrCandidate(
+            ocrRegionId = "c".repeat(63) + "%x".format(index),
+            sourceRegionIds = listOf("d".repeat(63) + "%x".format(index)),
+            representativeSourceRegionId = "d".repeat(63) + "%x".format(index),
             sourceClass = DetectorClass.TEXT_IN_BUBBLE,
             detectorConfidence = 0.9,
-            box = PixelBox(1.0, 1.0, 20.0, 20.0),
+            box = PixelBox(1.0 + index * 25, 1.0, 20.0 + index * 25, 20.0),
             semanticStatus = OcrSemanticStatus.REQUIRED_TEXT,
             protectionPolicy = OcrProtectionPolicy.NONE,
-            readingOrderRank = 0,
+            readingOrderRank = index,
         )
-        val attempt = OcrAttemptArtifact(
+        fun attempt(index: Int) = OcrAttemptArtifact(
             executionBackend = OcrExecutionBackend.VULKAN,
             strategy = OcrCropStrategy.PADDED_TEXT,
-            cropBox = candidate.box,
-            rawText = sourceText,
-            normalizedText = sourceText,
+            cropBox = candidate(index).box,
+            rawText = sourceTexts[index],
+            normalizedText = sourceTexts[index],
             tokenIds = listOf(1),
             tokenProbabilities = listOf(0.9),
             sourceWidth = 20,
@@ -258,15 +300,15 @@ class TranslationRunnerTest {
             visibleHeight = 100,
             orientation = VisibleOrientation.NORMAL,
             dependencies = dependencies,
-            regions = listOf(
+            regions = sourceTexts.indices.map { index ->
                 OcrRegionArtifact(
-                    candidate = candidate,
-                    attempts = listOf(attempt),
+                    candidate = candidate(index),
+                    attempts = listOf(attempt(index)),
                     selectedAttemptIndex = 0,
                     quality = null,
                     state = OcrRegionState.RECOGNIZED,
-                ),
-            ),
+                )
+            },
         )
         val json = OcrJson()
         writeUtf8(pageDirectory.resolve("ocr.json"), json.encodePageArtifact(pageArtifact))
@@ -300,8 +342,8 @@ class TranslationRunnerTest {
             status = OcrJobStatus.SUCCEEDED,
             totalPageCount = 1,
             committedPageCount = 1,
-            totalRegionCount = 1,
-            recognizedRegionCount = 1,
+            totalRegionCount = sourceTexts.size,
+            recognizedRegionCount = sourceTexts.size,
             needsFallbackRegionCount = 0,
             noTextRegionCount = 0,
             preservedRegionCount = 0,
@@ -313,6 +355,54 @@ class TranslationRunnerTest {
 
     private fun writeUtf8(path: Path, content: String) {
         Files.newBufferedWriter(path, Charsets.UTF_8).use { it.write(content) }
+    }
+
+    private class FailSecondWindowOnceProvider : TranslationProvider {
+        private val failedOnce = java.util.concurrent.atomic.AtomicBoolean(false)
+        @Volatile var sawSalvageRetry: Boolean = false
+
+        override fun newCall(
+            settings: TranslationProviderSettings,
+            messages: rs.masumi.core.translation.TranslationPromptMessages,
+        ): TranslationProviderCall = object : TranslationProviderCall {
+            override fun execute(): TranslationProviderResult {
+                val discovery = messages.system.contains("Build a reusable")
+                if (discovery) {
+                    return TranslationProviderResult(
+                        response = TranslationModelResponse(items = emptyList()),
+                        usage = TranslationProviderUsage(1, 1, 2),
+                        modelId = "model-safe",
+                        attemptCount = 1,
+                        durationMillis = 1L,
+                    )
+                }
+                // Prompt ids are translation-region hashes, so the poisoned
+                // item is recognized by its source text instead.
+                val poisoned = messages.user.contains("退避対象")
+                if (poisoned && failedOnce.compareAndSet(false, true)) {
+                    throw TranslationProviderException(
+                        code = TranslationProviderErrorCode.HTTP_TRANSIENT,
+                        httpStatus = 502,
+                        retryable = false,
+                        attemptCount = 1,
+                    )
+                }
+                val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                    .findAll(messages.user).last().groupValues[1]
+                if (poisoned) sawSalvageRetry = true
+                return TranslationProviderResult(
+                    response = TranslationModelResponse(
+                        items = listOf(TranslationModelItem(id, TranslationRole.DIALOGUE, "已翻译")),
+                    ),
+                    usage = TranslationProviderUsage(10, 5, 15),
+                    modelId = "model-safe",
+                    attemptCount = 1,
+                    durationMillis = 1L,
+                )
+            }
+
+            override fun cancel() = Unit
+        }
     }
 
     private class RecordingProvider : TranslationProvider {

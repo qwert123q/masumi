@@ -45,6 +45,26 @@ class TranslationJobReducerTest {
     }
 
     @Test
+    fun `salvaged window items move preserved counts back to translated`() {
+        val base = TranslationArtifactFixtures.job()
+        val running = base.copy(
+            status = TranslationJobStatus.RUNNING,
+            windows = listOf(
+                base.windows.single().copy(
+                    state = TranslationWindowState.COMMITTED,
+                    translatedItemCount = 0,
+                    preservedItemCount = 1,
+                ),
+            ),
+        )
+
+        val salvaged = TranslationJobReducer.salvageWindowItems(running, 0, 1, 3L)
+
+        assertEquals(1, salvaged.windows.single().translatedItemCount)
+        assertEquals(0, salvaged.windows.single().preservedItemCount)
+    }
+
+    @Test
     fun `protected OCR makes a fully committed job successful with protection`() {
         var job = TranslationJobReducer.startRunning(TranslationArtifactFixtures.job(protectedOcrCount = 1), 2L)
         job = TranslationJobReducer.startWindow(job, 0, 3L)
