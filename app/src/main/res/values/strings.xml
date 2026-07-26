@@ -6,8 +6,11 @@
     <string name="library_home_projects_title">我的漫画</string>
     <string name="library_section_finished">成品漫画</string>
     <string name="library_section_processing">处理中</string>
+    <string name="library_tab_finished_count">成品漫画 · %1$d</string>
+    <string name="library_tab_processing_count">处理中 · %1$d</string>
     <string name="library_home_not_configured">选择一个固定文件夹保存项目、成品和模型。</string>
-    <string name="library_home_empty">还没有漫画。导入一个原稿文件夹，Masumi 会完成整章处理并保存在这里。</string>
+    <string name="library_home_empty_finished">还没有成品漫画。导入一个原稿文件夹，Masumi 完成整章处理后就能在这里阅读。</string>
+    <string name="library_home_empty_processing">没有正在处理的漫画。</string>
     <string name="library_project_cover">漫画封面</string>
     <string name="library_project_details">项目详情</string>
     <string name="library_home_choose_folder">设置</string>

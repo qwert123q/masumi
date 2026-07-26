@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import rs.masumi.app.AutomaticPipelinePlanner
+import rs.masumi.app.HorizontalSwipeViewFlipper
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.detection.ProjectCatalog
@@ -33,8 +34,13 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class LibraryActivity : Activity() {
     private lateinit var locationText: TextView
-    private lateinit var emptyText: TextView
-    private lateinit var projectsContainer: LinearLayout
+    private lateinit var pager: HorizontalSwipeViewFlipper
+    private lateinit var finishedTabButton: Button
+    private lateinit var processingTabButton: Button
+    private lateinit var finishedContainer: LinearLayout
+    private lateinit var processingContainer: LinearLayout
+    private lateinit var finishedEmptyText: TextView
+    private lateinit var processingEmptyText: TextView
     private lateinit var chooseLibraryButton: Button
     private lateinit var catalog: ProjectCatalog
     private lateinit var libraryPreferences: MangaLibraryPreferences
@@ -44,13 +50,19 @@ class LibraryActivity : Activity() {
     private val refreshGeneration = AtomicInteger()
     private var pendingImportAfterLibrary = false
     private val displayedCovers = mutableListOf<Bitmap>()
+    private var initialTabResolved = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_library)
         locationText = findViewById(R.id.libraryHomeLocation)
-        emptyText = findViewById(R.id.libraryHomeEmpty)
-        projectsContainer = findViewById(R.id.libraryHomeProjects)
+        pager = findViewById(R.id.libraryHomePager)
+        finishedTabButton = findViewById(R.id.libraryHomeTabFinished)
+        processingTabButton = findViewById(R.id.libraryHomeTabProcessing)
+        finishedContainer = findViewById(R.id.libraryHomeFinishedList)
+        processingContainer = findViewById(R.id.libraryHomeProcessingList)
+        finishedEmptyText = findViewById(R.id.libraryHomeFinishedEmpty)
+        processingEmptyText = findViewById(R.id.libraryHomeProcessingEmpty)
         chooseLibraryButton = findViewById(R.id.libraryHomeChooseFolder)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         libraryPreferences = MangaLibraryPreferences(this)
@@ -60,6 +72,29 @@ class LibraryActivity : Activity() {
 
         findViewById<Button>(R.id.libraryHomeImport).setOnClickListener { importChapter() }
         chooseLibraryButton.setOnClickListener { openLibraryFolder(false) }
+        finishedTabButton.setOnClickListener { selectTab(TAB_FINISHED) }
+        processingTabButton.setOnClickListener { selectTab(TAB_PROCESSING) }
+        savedInstanceState?.getInt(STATE_SELECTED_TAB)?.let { restored ->
+            initialTabResolved = true
+            selectTab(restored)
+        } ?: selectTab(TAB_FINISHED)
+        pager.onSwipe = { direction ->
+            when (direction) {
+                HorizontalSwipeViewFlipper.Direction.LEFT -> selectTab(TAB_PROCESSING)
+                HorizontalSwipeViewFlipper.Direction.RIGHT -> selectTab(TAB_FINISHED)
+            }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(STATE_SELECTED_TAB, pager.displayedChild)
+    }
+
+    private fun selectTab(tab: Int) {
+        pager.displayedChild = tab
+        finishedTabButton.isSelected = pager.displayedChild == TAB_FINISHED
+        processingTabButton.isSelected = pager.displayedChild == TAB_PROCESSING
     }
 
     override fun onResume() {
@@ -139,7 +174,10 @@ class LibraryActivity : Activity() {
         executor.execute {
             val result = runCatching {
                 val store = MangaLibraryStore(contentResolver, rootUri)
-                val summaries = store.projects().map { project ->
+                // Always rescan: exports write pages behind the store's back,
+                // and this screen has no later reconcile pass that would catch
+                // a stale snapshot.
+                val summaries = store.refreshProjects().map { project ->
                     buildSummary(store, project)
                 }
                 Triple(store.rootDisplayName(), rootUri, summaries)
@@ -220,7 +258,8 @@ class LibraryActivity : Activity() {
         unavailable: Boolean,
     ) {
         recycleCovers()
-        projectsContainer.removeAllViews()
+        finishedContainer.removeAllViews()
+        processingContainer.removeAllViews()
         chooseLibraryButton.setText(
             if (rootUri == null) R.string.library_home_choose_folder else R.string.library_home_change_folder,
         )
@@ -229,27 +268,28 @@ class LibraryActivity : Activity() {
             unavailable -> getString(R.string.library_unavailable)
             else -> getString(R.string.library_location, displayName ?: "Manga", projects.size)
         }
-        emptyText.visibility = if (projects.isEmpty() && !unavailable) View.VISIBLE else View.GONE
         val (finished, processing) = projects.partition { it.project.outputPageCount > 0 }
-        if (finished.isNotEmpty()) {
-            projectsContainer.addView(sectionHeader(R.string.library_section_finished))
-            finished.forEach { projectsContainer.addView(createProjectItem(rootUri, it)) }
-        }
-        if (processing.isNotEmpty()) {
-            projectsContainer.addView(sectionHeader(R.string.library_section_processing))
-            processing.forEach { projectsContainer.addView(createProjectItem(rootUri, it)) }
+        finishedTabButton.text = getString(R.string.library_tab_finished_count, finished.size)
+        processingTabButton.text = getString(R.string.library_tab_processing_count, processing.size)
+        finishedEmptyText.visibility = if (finished.isEmpty() && !unavailable) View.VISIBLE else View.GONE
+        processingEmptyText.visibility = if (processing.isEmpty() && !unavailable) View.VISIBLE else View.GONE
+        finished.forEach { finishedContainer.addView(createProjectItem(finishedContainer, rootUri, it)) }
+        processing.forEach { processingContainer.addView(createProjectItem(processingContainer, rootUri, it)) }
+        // A fresh install lands on whichever column actually has content, but a
+        // deliberate tab choice is never yanked away by a later refresh.
+        if (!initialTabResolved && !unavailable && rootUri != null) {
+            initialTabResolved = true
+            if (finished.isEmpty() && processing.isNotEmpty()) selectTab(TAB_PROCESSING)
         }
     }
 
-    private fun sectionHeader(labelRes: Int): TextView = TextView(this).apply {
-        setText(labelRes)
-        setTextAppearance(R.style.TextAppearance_Masumi_Title)
-        setPadding(0, resources.displayMetrics.density.toInt() * 18, 0, resources.displayMetrics.density.toInt() * 4)
-    }
-
-    private fun createProjectItem(rootUri: Uri?, summary: LibraryProjectSummary): View {
+    private fun createProjectItem(
+        parent: LinearLayout,
+        rootUri: Uri?,
+        summary: LibraryProjectSummary,
+    ): View {
         val project = summary.project
-        val item = LayoutInflater.from(this).inflate(R.layout.item_library_project, projectsContainer, false)
+        val item = LayoutInflater.from(this).inflate(R.layout.item_library_project, parent, false)
         item.findViewById<TextView>(R.id.libraryProjectTitle).text = project.metadata.title
         item.findViewById<TextView>(R.id.libraryProjectInitial).text =
             project.metadata.title.trim().firstOrNull()?.toString().orEmpty()
@@ -270,8 +310,14 @@ class LibraryActivity : Activity() {
         val secondary = item.findViewById<Button>(R.id.libraryProjectOpenButton)
         item.isClickable = true
         item.isFocusable = true
+        // Reader-first: tapping a finished manga card starts reading it, the
+        // way every manga shelf behaves; details stay one button away.
         item.setOnClickListener {
-            startActivity(MainActivity.projectIntent(this, project.metadata.projectId))
+            if (project.outputPageCount > 0 && rootUri != null) {
+                startActivity(MangaReaderActivity.intent(this, rootUri, project))
+            } else {
+                startActivity(MainActivity.projectIntent(this, project.metadata.projectId))
+            }
         }
         if (project.outputPageCount > 0 && rootUri != null) {
             primary.setText(
@@ -379,5 +425,8 @@ class LibraryActivity : Activity() {
 
     private companion object {
         const val REQUEST_LIBRARY_FOLDER = 2101
+        const val TAB_FINISHED = 0
+        const val TAB_PROCESSING = 1
+        const val STATE_SELECTED_TAB = "library_selected_tab"
     }
 }

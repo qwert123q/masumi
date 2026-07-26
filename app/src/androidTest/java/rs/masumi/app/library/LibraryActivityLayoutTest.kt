@@ -9,8 +9,10 @@ import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 import org.junit.runner.RunWith
+import rs.masumi.app.HorizontalSwipeViewFlipper
 import rs.masumi.app.R
 
 @RunWith(AndroidJUnit4::class)
@@ -34,4 +36,29 @@ class LibraryActivityLayoutTest {
         assertEquals("项目详情", item.findViewById<Button>(R.id.libraryProjectOpenButton).text.toString())
     }
 
+    @Test
+    fun libraryHomeSplitsFinishedAndProcessingIntoSwipeableColumns() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        lateinit var root: View
+
+        instrumentation.runOnMainSync {
+            val context = ContextThemeWrapper(instrumentation.targetContext, R.style.Theme_Masumi)
+            root = LayoutInflater.from(context).inflate(R.layout.activity_library, null, false)
+        }
+
+        val pager = root.findViewById<HorizontalSwipeViewFlipper>(R.id.libraryHomePager)
+        assertEquals(2, pager.childCount)
+        assertEquals("成品漫画", root.findViewById<Button>(R.id.libraryHomeTabFinished).text.toString())
+        assertEquals("处理中", root.findViewById<Button>(R.id.libraryHomeTabProcessing).text.toString())
+        // Each column owns its list and empty placeholder so one side never
+        // leaks into the other while swiping.
+        listOf(
+            R.id.libraryHomeFinishedList to R.id.libraryHomeFinishedEmpty,
+            R.id.libraryHomeProcessingList to R.id.libraryHomeProcessingEmpty,
+        ).forEachIndexed { index, (listId, emptyId) ->
+            val pane = pager.getChildAt(index)
+            assertNotNull(pane.findViewById<View>(listId))
+            assertNotNull(pane.findViewById<View>(emptyId))
+        }
+    }
 }
