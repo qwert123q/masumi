@@ -36,7 +36,7 @@ class OcrJobReducerTest {
             preserved,
             PAGE_ID,
             "pages/$PAGE_ID/ocr.json",
-            mapOf(0 to "previews/0000.png"),
+            mapOf(0 to "previews/0000.webp"),
             9L,
         )
         val finished = OcrJobReducer.finishSuccess(committed, 10L)

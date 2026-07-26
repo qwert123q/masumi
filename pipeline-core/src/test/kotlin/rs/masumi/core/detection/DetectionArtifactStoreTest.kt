@@ -37,14 +37,14 @@ class DetectionArtifactStoreTest {
         store.commitPage(job, pageArtifact(), PREVIEW_BYTES, listOf(0))
         val checkpoint = checkpoint(job)
         assertTrue(checkpoint.resolve("pages/$PAGE_ID/regions.json").exists())
-        assertTrue(checkpoint.resolve("previews/0000.png").exists())
+        assertTrue(checkpoint.resolve("previews/0000.webp").exists())
         assertFalse(project.resolve("artifacts/detection/${job.runArtifactKey}").exists())
 
         job = DetectionJobReducer.commitPage(
             job,
             PAGE_ID,
             "pages/$PAGE_ID/regions.json",
-            mapOf(0 to "previews/0000.png"),
+            mapOf(0 to "previews/0000.webp"),
             5,
         )
         store.writeJob(job)
@@ -56,7 +56,7 @@ class DetectionArtifactStoreTest {
         assertTrue(published.resolve("artifact.json").exists())
         assertTrue(published.resolve("report.json").exists())
         assertTrue(published.resolve("pages/$PAGE_ID/regions.json").exists())
-        assertTrue(published.resolve("previews/0000.png").exists())
+        assertTrue(published.resolve("previews/0000.webp").exists())
         assertFalse(checkpoint.exists())
         assertEquals(finished.runArtifactKey, store.readPublishedRun(finished.runArtifactKey)?.runArtifactKey)
         assertEquals(finished.jobId, store.readPublishedReport(finished.runArtifactKey)?.jobId)
@@ -73,7 +73,7 @@ class DetectionArtifactStoreTest {
         store.cleanInterruptedPage(job, job.pages.single())
 
         assertFalse(checkpoint(job).resolve("pages/$PAGE_ID").exists())
-        assertFalse(checkpoint(job).resolve("previews/0000.png").exists())
+        assertFalse(checkpoint(job).resolve("previews/0000.webp").exists())
         assertTrue(foreign.resolve("owner.marker").exists())
     }
 
@@ -130,7 +130,7 @@ class DetectionArtifactStoreTest {
             job,
             PAGE_ID,
             "pages/$PAGE_ID/regions.json",
-            mapOf(0 to "previews/0000.png"),
+            mapOf(0 to "previews/0000.webp"),
             5,
         )
         val finished = DetectionJobReducer.finish(job, 6)

@@ -232,7 +232,7 @@ class DetectionRunner(
                         }
                         val regionsPath = "pages/${sourcePage.pageId}/regions.json"
                         val previewPaths = orders.associateWith { order ->
-                            "previews/${order.toString().padStart(4, '0')}.png"
+                            "previews/${order.toString().padStart(4, '0')}.webp"
                         }
                         job = persist(
                             DetectionJobReducer.commitPage(

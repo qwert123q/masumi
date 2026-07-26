@@ -276,7 +276,7 @@ class DetectionArtifactStore(
 
     private fun previewFileName(order: Int): String {
         require(order >= 0) { "page order must not be negative" }
-        return order.toString().padStart(4, '0') + ".png"
+        return order.toString().padStart(4, '0') + ".webp"
     }
 
     private fun DetectionJobStatus.isResumable(): Boolean = when (this) {

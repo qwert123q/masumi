@@ -5,9 +5,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import rs.masumi.app.PreviewImageEncoder
 import rs.masumi.core.detection.DetectedRegion
 import rs.masumi.core.detection.DetectorClass
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 
 class DetectionPreviewRenderer(
@@ -24,12 +24,7 @@ class DetectionPreviewRenderer(
         try {
             val canvas = Canvas(derived)
             (bubbles + textRegions).forEach { region -> drawRegion(canvas, region) }
-            return ByteArrayOutputStream().use { output ->
-                check(derived.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                    "Preview PNG could not be encoded"
-                }
-                output.toByteArray()
-            }
+            return PreviewImageEncoder.encode(derived)
         } finally {
             derived.recycle()
         }

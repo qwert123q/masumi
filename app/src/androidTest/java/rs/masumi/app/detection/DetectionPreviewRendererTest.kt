@@ -37,9 +37,11 @@ class DetectionPreviewRendererTest {
         try {
             assertEquals(100, preview.width)
             assertEquals(100, preview.height)
-            assertEquals(Color.rgb(25, 118, 210), preview.getPixel(20, 30))
-            assertEquals(Color.rgb(46, 125, 50), preview.getPixel(50, 60))
-            assertEquals(Color.rgb(239, 108, 0), preview.getPixel(80, 90))
+            // Previews are lossy-encoded, so overlay colors only survive
+            // approximately.
+            assertColorNear(Color.rgb(25, 118, 210), preview.getPixel(20, 30))
+            assertColorNear(Color.rgb(46, 125, 50), preview.getPixel(50, 60))
+            assertColorNear(Color.rgb(239, 108, 0), preview.getPixel(80, 90))
             assertEquals(Color.WHITE, source.getPixel(20, 30))
             assertEquals(Color.WHITE, source.getPixel(50, 60))
             assertEquals(Color.WHITE, source.getPixel(80, 90))
@@ -47,6 +49,15 @@ class DetectionPreviewRendererTest {
             preview.recycle()
             source.recycle()
         }
+    }
+
+    private fun assertColorNear(expected: Int, actual: Int) {
+        val delta = maxOf(
+            kotlin.math.abs(Color.red(expected) - Color.red(actual)),
+            kotlin.math.abs(Color.green(expected) - Color.green(actual)),
+            kotlin.math.abs(Color.blue(expected) - Color.blue(actual)),
+        )
+        org.junit.Assert.assertTrue("expected ~$expected but was $actual (delta $delta)", delta <= 16)
     }
 
     private fun region(index: Int, type: DetectorClass, box: PixelBox): DetectedRegion =

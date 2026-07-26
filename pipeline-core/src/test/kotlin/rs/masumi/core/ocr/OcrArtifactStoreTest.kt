@@ -63,14 +63,14 @@ class OcrArtifactStoreTest {
 
         store.commitPage(job, pageArtifact(firstArtifact, secondArtifact), PREVIEW_BYTES, listOf(0))
         assertTrue(checkpoint(job).resolve("pages/$PAGE_ID/ocr.json").exists())
-        assertTrue(checkpoint(job).resolve("previews/0000.png").exists())
+        assertTrue(checkpoint(job).resolve("previews/0000.webp").exists())
         assertFalse(project.resolve("artifacts/ocr/${job.runArtifactKey}").exists())
 
         job = OcrJobReducer.commitPage(
             job,
             PAGE_ID,
             "pages/$PAGE_ID/ocr.json",
-            mapOf(0 to "previews/0000.png"),
+            mapOf(0 to "previews/0000.webp"),
             8L,
         )
         val finished = OcrJobReducer.finishSuccess(job, 9L)
@@ -127,8 +127,8 @@ class OcrArtifactStoreTest {
         store.commitPage(job, pageArtifact(first, second), PREVIEW_BYTES, listOf(0, 1))
 
         assertTrue(checkpoint(job).resolve("pages/$PAGE_ID/ocr.json").exists())
-        assertTrue(checkpoint(job).resolve("previews/0000.png").exists())
-        assertTrue(checkpoint(job).resolve("previews/0001.png").exists())
+        assertTrue(checkpoint(job).resolve("previews/0000.webp").exists())
+        assertTrue(checkpoint(job).resolve("previews/0001.webp").exists())
     }
 
     @Test

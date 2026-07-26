@@ -339,7 +339,7 @@ class OcrRunner(
                         dependencies = dependencies,
                         regions = regionArtifacts.sortedBy { it.candidate.readingOrderRank },
                     )
-                    val preview = previewRenderer.renderPng(decoded.bitmap, pageArtifact)
+                    val preview = previewRenderer.render(decoded.bitmap, pageArtifact)
                     val orders = selectedPages.map(OcrJobPage::order)
                     job = stateWriteLock.withLock {
                         val current = activeJob.get()
@@ -354,7 +354,7 @@ class OcrRunner(
                             pageId = sourcePage.pageId,
                             artifactPath = "pages/${sourcePage.pageId}/ocr.json",
                             previewPaths = orders.associateWith { order ->
-                                "previews/${order.toString().padStart(4, '0')}.png"
+                                "previews/${order.toString().padStart(4, '0')}.webp"
                             },
                             nowEpochMillis = clock.millis(),
                         ).also { committed ->

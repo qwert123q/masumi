@@ -44,7 +44,7 @@ class OcrPreviewRendererTest {
             ),
         )
 
-        val bytes = OcrPreviewRenderer().renderPng(page, artifact)
+        val bytes = OcrPreviewRenderer().render(page, artifact)
         val preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 
         assertEquals(page.width, preview.width)
@@ -52,11 +52,24 @@ class OcrPreviewRendererTest {
         val colors = IntArray(preview.width * preview.height).also {
             preview.getPixels(it, 0, preview.width, 0, 0, preview.width, preview.height)
         }.toSet()
-        assertTrue(OcrPreviewRenderer.RECOGNIZED_COLOR in colors)
-        assertTrue(OcrPreviewRenderer.NEEDS_FALLBACK_COLOR in colors)
-        assertTrue(OcrPreviewRenderer.NO_TEXT_COLOR in colors)
-        assertTrue(OcrPreviewRenderer.PRESERVED_COLOR in colors)
-        assertTrue(OcrPreviewRenderer.PROTECTED_COLOR in colors)
+        // Previews are lossy-encoded now, and the outlines here are only two
+        // pixels wide, so the overlay colors survive only approximately. The
+        // five state colors sit far apart, so a generous tolerance still tells
+        // them apart.
+        fun assertContainsNear(expected: Int) = assertTrue(
+            colors.any { color ->
+                maxOf(
+                    kotlin.math.abs(Color.red(color) - Color.red(expected)),
+                    kotlin.math.abs(Color.green(color) - Color.green(expected)),
+                    kotlin.math.abs(Color.blue(color) - Color.blue(expected)),
+                ) <= 48
+            },
+        )
+        assertContainsNear(OcrPreviewRenderer.RECOGNIZED_COLOR)
+        assertContainsNear(OcrPreviewRenderer.NEEDS_FALLBACK_COLOR)
+        assertContainsNear(OcrPreviewRenderer.NO_TEXT_COLOR)
+        assertContainsNear(OcrPreviewRenderer.PRESERVED_COLOR)
+        assertContainsNear(OcrPreviewRenderer.PROTECTED_COLOR)
         val after = IntArray(page.width * page.height).also {
             page.getPixels(it, 0, page.width, 0, 0, page.width, page.height)
         }

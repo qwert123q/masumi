@@ -4,18 +4,18 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
+import rs.masumi.app.PreviewImageEncoder
 import rs.masumi.core.ocr.OcrProtectionPolicy
 import rs.masumi.core.ocr.OcrRegionArtifact
 import rs.masumi.core.ocr.OcrRegionState
 import rs.masumi.core.ocr.PageOcrArtifact
 
 class OcrPreviewRenderer {
-    fun renderPng(page: Bitmap, artifact: PageOcrArtifact): ByteArray {
+    fun render(page: Bitmap, artifact: PageOcrArtifact): ByteArray {
         require(!page.isRecycled) { "source bitmap is recycled" }
         require(page.width == artifact.visibleWidth && page.height == artifact.visibleHeight) {
             "OCR artifact dimensions do not match visible source"
@@ -28,12 +28,7 @@ class OcrPreviewRenderer {
             artifact.regions
                 .sortedBy { it.candidate.readingOrderRank }
                 .forEach { region -> drawRegion(canvas, region, strokeWidth) }
-            return ByteArrayOutputStream().use { output ->
-                check(preview.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                    "OCR preview PNG encoding failed"
-                }
-                output.toByteArray()
-            }
+            return PreviewImageEncoder.encode(preview)
         } finally {
             preview.recycle()
         }
