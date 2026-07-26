@@ -26,6 +26,22 @@ android {
         }
     }
 
+    signingConfigs {
+        // Release installs must work from a bare APK download, which requires a
+        // real signature. The keystore stays outside the repository; point
+        // MASUMI_RELEASE_STORE_FILE (plus passwords) at it from
+        // ~/.gradle/gradle.properties. Without the properties the release build
+        // still assembles, just unsigned — debug builds are unaffected.
+        providers.gradleProperty("MASUMI_RELEASE_STORE_FILE").orNull?.let { storePath ->
+            create("release") {
+                storeFile = file(storePath)
+                storePassword = providers.gradleProperty("MASUMI_RELEASE_STORE_PASSWORD").get()
+                keyAlias = providers.gradleProperty("MASUMI_RELEASE_KEY_ALIAS").getOrElse("masumi")
+                keyPassword = providers.gradleProperty("MASUMI_RELEASE_KEY_PASSWORD").get()
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".dev"
@@ -40,6 +56,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
