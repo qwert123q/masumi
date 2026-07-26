@@ -7,7 +7,7 @@ const val TYPESETTING_SCHEMA_VERSION = 1
 
 @Serializable
 data class TypesettingPolicy(
-    val revision: String = "adaptive-comic-typesetting-v4",
+    val revision: String = "adaptive-comic-typesetting-v5",
     val fontFamily: String = "sans-serif",
     val fontWeight: Int = 400,
     val minimumFontSizePixels: Double = 10.0,

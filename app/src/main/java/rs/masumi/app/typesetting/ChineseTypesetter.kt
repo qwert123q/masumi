@@ -345,11 +345,16 @@ class ChineseTypesetter {
     }
 
     private fun resolveColors(bitmap: Bitmap, box: IntBox, style: TypesettingStyle): TextColors {
-        if (style == TypesettingStyle.BUBBLE) return TextColors(Color.BLACK, null)
         val pixels = bitmap.readPixels(box)
         val luminance = pixels.asSequence().map { color ->
             (0.2126 * Color.red(color) + 0.7152 * Color.green(color) + 0.0722 * Color.blue(color)) / 255.0
         }.average()
+        // Bubble interiors are uniform after cleanup, so no outline is needed —
+        // but the interior is not always light: a reverse-video balloon keeps
+        // its dark fill, and black ink on it would be invisible.
+        if (style == TypesettingStyle.BUBBLE) {
+            return if (luminance >= 0.52) TextColors(Color.BLACK, null) else TextColors(Color.WHITE, null)
+        }
         return if (luminance >= 0.52) {
             TextColors(Color.BLACK, Color.WHITE)
         } else {
