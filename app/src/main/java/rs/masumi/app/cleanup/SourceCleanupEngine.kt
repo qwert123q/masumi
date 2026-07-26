@@ -194,17 +194,9 @@ class SourceCleanupEngine(
                 )
                 val corePixelCount = core.width * core.height
                 val flatCoverage = flatMask.count { it }.toDouble() / corePixelCount
-                if (flatCoverage >= SOLID_REGION_COVERAGE) {
-                    // The whole box differs from its surroundings: solid artwork
-                    // mislabelled as a bubble. Filling it would erase the panel.
-                    return target.preserved(
-                        CleanupPreserveReason.MASK_UNSAFE,
-                        roiPixelCount,
-                        flatMask.count { it },
-                    )
-                }
                 val dilatedFlat = dilate(flatMask, roi.width, roi.height, policy.dilationRadiusPixels)
                 if (
+                    flatCoverage < SOLID_REGION_COVERAGE &&
                     !flatBackgroundIsTextured(pixels, width, core, roi, flatMask) &&
                     coreCoverage(dilatedFlat, core, roi) <= MAXIMUM_FLAT_COLOR_MASK_COVERAGE
                 ) {
@@ -212,9 +204,12 @@ class SourceCleanupEngine(
                     dilated = dilatedFlat
                     useBoundaryInpaint = false
                 } else {
-                    // Some detector "bubble" boxes are textured narration
-                    // panels. Filling every non-dominant pixel would erase the
-                    // halftone and artwork, so use the glyph-safe path.
+                    // Colored, gradient, or halftone interiors make the flat
+                    // color-difference mask meaningless (on full-color pages it
+                    // routinely covers the whole box). Fall back to the
+                    // glyph-shaped ink mask and let the texture-synthesizing
+                    // inpainter reconstruct the background. Only when no glyph
+                    // component exists either is the box treated as artwork.
                     background = perimeter
                     val ink = freeTextInkMask(
                         pixels,
@@ -224,6 +219,13 @@ class SourceCleanupEngine(
                         target.expectedGlyphCount,
                         cancellation,
                     )
+                    if (ink.mask.none { it } && flatCoverage >= SOLID_REGION_COVERAGE) {
+                        return target.preserved(
+                            CleanupPreserveReason.MASK_UNSAFE,
+                            roiPixelCount,
+                            flatMask.count { it },
+                        )
+                    }
                     relaxedGlyphSelection = ink.relaxedSelection
                     dilated = dilate(ink.mask, roi.width, roi.height, freeTextDilationRadius(core, policy))
                     useBoundaryInpaint = true

@@ -29,8 +29,6 @@ import rs.masumi.core.exporting.ExportReport
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.importer.UuidIdSource
 import rs.masumi.core.model.PageRecord
-import rs.masumi.core.quality.QualityPolicy
-import rs.masumi.core.quality.allowsExport
 import rs.masumi.core.typesetting.TypesettingArtifactStore
 import rs.masumi.core.typesetting.TypesettingPageState
 
@@ -86,18 +84,9 @@ class ExportRunner(
                 typesettingRun.artifact.dependencies.cleanupRunArtifactKey,
             ),
         ) { "typesetting cleanup dependency was not found" }
-        val qualityRun = requireNotNull(
-            catalog.latestPublishedQualityRun(
-                projectId,
-                typesettingRun.artifact.runArtifactKey,
-                QualityPolicy(),
-            ),
-        ) { "completed quality run was not found" }
-        require(qualityRun.report.status.allowsExport()) { "quality run blocked export" }
         validateDependencies(project, typesettingRun, cleanupRun)
         val dependencies = ExportDependencies(
             typesettingRunArtifactKey = typesettingRun.artifact.runArtifactKey,
-            qualityRunArtifactKey = qualityRun.artifact.runArtifactKey,
             policy = policy,
         )
         val store = ExportArtifactStore(project.directory)

@@ -7,7 +7,7 @@ const val CLEANUP_SCHEMA_VERSION = 1
 
 @Serializable
 data class CleanupPolicy(
-    val revision: String = "aot-hybrid-glyph-mask-v13",
+    val revision: String = "aot-hybrid-glyph-mask-v14",
     val boxPaddingFraction: Double = 0.08,
     val minimumPaddingPixels: Int = 2,
     val colorDistanceThreshold: Int = 20,

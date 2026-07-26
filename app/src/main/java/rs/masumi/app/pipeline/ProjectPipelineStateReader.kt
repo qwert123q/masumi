@@ -5,8 +5,6 @@ import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.exporting.ExportArtifactStore
 import rs.masumi.core.exporting.ExportJobStatus
-import rs.masumi.core.quality.QualityPolicy
-import rs.masumi.core.quality.allowsExport
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPromptRef
@@ -49,24 +47,9 @@ internal class ProjectPipelineStateReader(workspaceRoot: Path) {
             cleanupRunArtifactKey = cleanup.artifact.runArtifactKey,
             policy = TypesettingPolicy(),
         ) ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.TYPESETTING)
-        val quality = catalog.latestPublishedQualityRun(
-            projectId = projectId,
-            typesettingRunArtifactKey = typesetting.artifact.runArtifactKey,
-            policy = QualityPolicy(),
-        ) ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.QUALITY)
-        if (!quality.report.status.allowsExport()) {
-            return ProjectPipelineState(
-                projectId = projectId,
-                pageCount = project.manifest.pages.size,
-                nextStage = null,
-                blocked = true,
-                errorCode = quality.report.error?.code ?: "QUALITY_BLOCKED",
-            )
-        }
         val exported = ExportArtifactStore(project.directory).findLatestJob()?.takeIf { job ->
             job.projectId == projectId &&
                 job.dependencies.typesettingRunArtifactKey == typesetting.artifact.runArtifactKey &&
-                job.dependencies.qualityRunArtifactKey == quality.artifact.runArtifactKey &&
                 job.status == ExportJobStatus.SUCCEEDED
         }
         if (exported != null) {

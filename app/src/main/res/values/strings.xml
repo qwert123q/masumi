@@ -3,7 +3,9 @@
     <string name="app_name">masumi</string>
     <string name="library_home_subtitle">你的本地漫画库</string>
     <string name="library_home_import">导入漫画</string>
-    <string name="library_home_projects_title">最近项目</string>
+    <string name="library_home_projects_title">我的漫画</string>
+    <string name="library_section_finished">成品漫画</string>
+    <string name="library_section_processing">处理中</string>
     <string name="library_home_not_configured">选择一个固定文件夹保存项目、成品和模型。</string>
     <string name="library_home_empty">还没有漫画。导入一个原稿文件夹，Masumi 会完成整章处理并保存在这里。</string>
     <string name="library_project_cover">漫画封面</string>
@@ -22,6 +24,8 @@
     <string name="project_default_title">漫画项目</string>
     <string name="project_header_status">整章汉化</string>
     <string name="project_ready_to_save">正在入库</string>
+    <string name="project_saved">已入库</string>
+    <string name="process_saved">已保存到成品库，随时可以阅读。</string>
     <string name="project_content_description">漫画项目概览或处理记录</string>
     <string name="main_eyebrow">本地漫画汉化</string>
     <string name="main_title">从原稿到成品，只需三步</string>
@@ -80,7 +84,7 @@
     <string name="details_description">这里用于查看技术进度、预览中间结果，或单独重跑某一步。日常使用无需停留。</string>
     <string name="workflow_title">后台处理步骤</string>
     <string name="workflow_description">Masumi 会按顺序自动执行；出现问题时才需要在这里操作。</string>
-    <string name="workflow_path">页面分析  ·  文字识别  ·  翻译  ·  清理  ·  排版  ·  验收</string>
+    <string name="workflow_path">页面分析  ·  文字识别  ·  翻译  ·  清理  ·  排版</string>
     <string name="stage_1">01</string>
     <string name="stage_2">02</string>
     <string name="stage_3">03</string>
@@ -325,4 +329,6 @@
     <string name="reader_page_content_description">漫画成品页</string>
     <string name="reader_direction_rtl">方向：日漫（右往左）</string>
     <string name="reader_direction_ltr">方向：左往右</string>
+    <string name="reader_mode_continuous">连续滚动</string>
+    <string name="reader_mode_paged">单页翻页</string>
 </resources>

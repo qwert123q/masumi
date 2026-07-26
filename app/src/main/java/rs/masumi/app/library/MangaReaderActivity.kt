@@ -23,6 +23,8 @@ import rs.masumi.app.R
 class MangaReaderActivity : Activity() {
     private lateinit var titleView: TextView
     private lateinit var readerView: ZoomableReaderView
+    private lateinit var continuousView: ContinuousReaderView
+    private lateinit var modeButton: Button
     private lateinit var statusView: TextView
     private lateinit var topBar: View
     private lateinit var bottomBar: View
@@ -38,6 +40,8 @@ class MangaReaderActivity : Activity() {
     private var displayedBitmap: Bitmap? = null
     private var chromeVisible = false
     private var rightToLeft = true
+    private var continuousMode = true
+    private var pageAspects: List<Float> = emptyList()
     private var seekBarDragging = false
     private lateinit var projectId: String
 
@@ -49,6 +53,8 @@ class MangaReaderActivity : Activity() {
 
         titleView = findViewById(R.id.readerTitle)
         readerView = findViewById(R.id.readerImage)
+        continuousView = findViewById(R.id.readerContinuous)
+        modeButton = findViewById(R.id.readerModeButton)
         statusView = findViewById(R.id.readerStatus)
         topBar = findViewById(R.id.readerTopBar)
         bottomBar = findViewById(R.id.readerBottomBar)
@@ -70,12 +76,23 @@ class MangaReaderActivity : Activity() {
         projectId = requestedProjectId
         titleView.text = title
         rightToLeft = readingProgressStore.readsRightToLeft(projectId)
+        continuousMode = readingProgressStore.readsContinuously(projectId)
         currentIndex = savedInstanceState?.getInt(STATE_PAGE_INDEX)
             ?: readingProgressStore.load(projectId)?.pageIndex
             ?: 0
 
         readerView.onTap = ::handleTap
         readerView.onHorizontalSwipe = ::handleSwipe
+        continuousView.onTap = { setChromeVisible(!chromeVisible) }
+        continuousView.onNeedPage = { index -> ensurePageLoaded(index) }
+        continuousView.onVisiblePageChanged = { index ->
+            currentIndex = index
+            statusView.text = pageIndicator(index)
+            if (!seekBarDragging) seekBar.progress = index
+            if (pages.isNotEmpty()) readingProgressStore.save(projectId, index, pages.size)
+            evictDistantPages()
+        }
+        modeButton.setOnClickListener { toggleReadingMode() }
         directionButton.setOnClickListener { toggleDirection() }
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -88,10 +105,11 @@ class MangaReaderActivity : Activity() {
 
             override fun onStopTrackingTouch(bar: SeekBar?) {
                 seekBarDragging = false
-                bar?.let { showPage(it.progress) }
+                bar?.let { if (continuousMode) jumpToPage(it.progress) else showPage(it.progress) }
             }
         })
         applyDirectionLabel()
+        applyReadingMode()
         setChromeVisible(false)
         loadProject(rootUri, projectId)
     }
@@ -164,6 +182,36 @@ class MangaReaderActivity : Activity() {
         showPage(currentIndex + if (forward) 1 else -1)
     }
 
+    private fun toggleReadingMode() {
+        continuousMode = !continuousMode
+        readingProgressStore.saveReadingMode(projectId, continuousMode)
+        applyReadingMode()
+    }
+
+    private fun applyReadingMode() {
+        modeButton.setText(if (continuousMode) R.string.reader_mode_continuous else R.string.reader_mode_paged)
+        directionButton.visibility = if (continuousMode) View.GONE else View.VISIBLE
+        continuousView.visibility = if (continuousMode) View.VISIBLE else View.GONE
+        readerView.visibility = if (continuousMode) View.GONE else View.VISIBLE
+        if (pages.isEmpty()) return
+        if (continuousMode) {
+            readerView.setImageDrawable(null)
+            displayedBitmap = null
+            continuousView.bind(pageAspects) { index -> pageCache[index] }
+            continuousView.scrollToPage(currentIndex)
+        } else {
+            showPage(currentIndex)
+        }
+    }
+
+    private fun jumpToPage(index: Int) {
+        if (index !in pages.indices) return
+        currentIndex = index
+        continuousView.scrollToPage(index)
+        statusView.text = pageIndicator(index)
+        readingProgressStore.save(projectId, index, pages.size)
+    }
+
     private fun toggleDirection() {
         rightToLeft = !rightToLeft
         readingProgressStore.saveReadingDirection(projectId, rightToLeft)
@@ -206,8 +254,37 @@ class MangaReaderActivity : Activity() {
                     setChromeVisible(true)
                 } else {
                     seekBar.max = pages.lastIndex
-                    showPage(currentIndex.coerceIn(0, pages.lastIndex))
+                    currentIndex = currentIndex.coerceIn(0, pages.lastIndex)
+                    loadPageAspects(rootUri, generation)
                 }
+            }
+        }
+    }
+
+    /**
+     * One cheap bounds-only decode per page gives the continuous layout a
+     * stable total height before any full page is decoded.
+     */
+    private fun loadPageAspects(rootUri: Uri, generation: Int) {
+        val snapshot = pages
+        executor.execute {
+            val aspects = snapshot.map { page ->
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                runCatching {
+                    contentResolver.openInputStream(page.uri)?.use {
+                        BitmapFactory.decodeStream(it, null, bounds)
+                    }
+                }
+                if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                    bounds.outHeight.toFloat() / bounds.outWidth
+                } else {
+                    DEFAULT_PAGE_ASPECT
+                }
+            }
+            runOnUiThread {
+                if (generation != loadGeneration.get() || isFinishing || isDestroyed) return@runOnUiThread
+                pageAspects = aspects
+                applyReadingMode()
             }
         }
     }
@@ -224,6 +301,8 @@ class MangaReaderActivity : Activity() {
         ensurePageLoaded(index - 1)
         evictDistantPages()
     }
+
+    private fun cacheRadius(): Int = if (continuousMode) CONTINUOUS_CACHE_RADIUS else CACHE_RADIUS
 
     private fun display(bitmap: Bitmap) {
         displayedBitmap = bitmap
@@ -248,12 +327,16 @@ class MangaReaderActivity : Activity() {
                     }
                     return@runOnUiThread
                 }
-                if (kotlin.math.abs(index - currentIndex) > CACHE_RADIUS) {
+                if (kotlin.math.abs(index - currentIndex) > cacheRadius()) {
                     bitmap.recycle()
                     return@runOnUiThread
                 }
                 pageCache[index] = bitmap
-                if (index == currentIndex) display(bitmap)
+                if (continuousMode) {
+                    continuousView.invalidate()
+                } else if (index == currentIndex) {
+                    display(bitmap)
+                }
             }
         }
     }
@@ -262,7 +345,7 @@ class MangaReaderActivity : Activity() {
         val iterator = pageCache.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
-            if (kotlin.math.abs(entry.key - currentIndex) > CACHE_RADIUS) {
+            if (kotlin.math.abs(entry.key - currentIndex) > cacheRadius()) {
                 iterator.remove()
                 if (entry.value === displayedBitmap) {
                     readerView.setImageDrawable(null)
@@ -304,6 +387,8 @@ class MangaReaderActivity : Activity() {
         private const val STATE_PAGE_INDEX = "page_index"
         private const val MAX_BITMAP_PIXELS = 8_000_000L
         private const val CACHE_RADIUS = 1
+        private const val CONTINUOUS_CACHE_RADIUS = 2
+        private const val DEFAULT_PAGE_ASPECT = 1.45f
         private const val PREVIOUS_TAP_ZONE = 0.32f
         private const val NEXT_TAP_ZONE = 0.68f
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")

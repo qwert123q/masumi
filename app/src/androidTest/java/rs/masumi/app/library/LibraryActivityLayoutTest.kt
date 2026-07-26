@@ -28,7 +28,7 @@ class LibraryActivityLayoutTest {
         }
 
         assertEquals("导入漫画", root.findViewById<Button>(R.id.libraryHomeImport).text.toString())
-        assertEquals("最近项目", root.findViewById<TextView>(R.id.libraryHomeProjectsTitle).text.toString())
+        assertEquals("我的漫画", root.findViewById<TextView>(R.id.libraryHomeProjectsTitle).text.toString())
         assertEquals(6, item.findViewById<ProgressBar>(R.id.libraryProjectProgress).max)
         assertEquals("阅读成品", item.findViewById<Button>(R.id.libraryProjectReadButton).text.toString())
         assertEquals("项目详情", item.findViewById<Button>(R.id.libraryProjectOpenButton).text.toString())

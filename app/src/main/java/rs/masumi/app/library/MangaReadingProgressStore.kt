@@ -28,6 +28,15 @@ class MangaReadingProgressStore(context: Context) {
             .apply()
     }
 
+    /** Continuous vertical scrolling is the default browsing mode. */
+    fun readsContinuously(projectId: String): Boolean =
+        !SAFE_ID.matches(projectId) || preferences.getBoolean("$projectId.continuous", true)
+
+    fun saveReadingMode(projectId: String, continuous: Boolean) {
+        require(SAFE_ID.matches(projectId))
+        preferences.edit().putBoolean("$projectId.continuous", continuous).apply()
+    }
+
     /** Japanese manga defaults to right-to-left page order. */
     fun readsRightToLeft(projectId: String): Boolean =
         !SAFE_ID.matches(projectId) || preferences.getBoolean("$projectId.rightToLeft", true)

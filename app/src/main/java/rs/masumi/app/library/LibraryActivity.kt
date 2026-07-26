@@ -21,8 +21,6 @@ import rs.masumi.app.pipeline.PipelineQueueStatus
 import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
-import rs.masumi.core.quality.QualityPolicy
-import rs.masumi.core.quality.allowsExport
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPromptRef
@@ -182,15 +180,7 @@ class LibraryActivity : Activity() {
                 TypesettingPolicy(),
             )
         }
-        val quality = typesetting?.let {
-            catalog.latestPublishedQualityRun(
-                projectId,
-                it.artifact.runArtifactKey,
-                QualityPolicy(),
-            )
-        }
         val completedStages = when {
-            quality?.report?.status?.allowsExport() == true -> 6
             typesetting != null -> 5
             cleanup != null -> 4
             translation != null -> 3
@@ -202,12 +192,20 @@ class LibraryActivity : Activity() {
             ?.minByOrNull { it.order }
             ?.storedPath
             ?.let { resolveInside(privateProject.directory, it) }
-        val coverUri = if (coverPath == null) store.outputPages(projectId).firstOrNull()?.uri else null
+        val coverUri = if (coverPath == null) {
+            project.outputDirectoryUri
+                ?.takeIf { project.outputPageCount > 0 }
+                ?.let { store.outputPages(projectId).firstOrNull()?.uri }
+        } else {
+            null
+        }
+        // Decode on the worker thread: cover decoding on the UI thread was the
+        // multi-second stall when the home screen listed real chapters.
+        val cover = coverPath?.let(::decodeCover) ?: coverUri?.let(::decodeCover)
         return LibraryProjectSummary(
             project = project,
             completedStages = completedStages,
-            coverPath = coverPath,
-            coverUri = coverUri,
+            cover = cover,
             readingProgress = readingProgressStore.load(projectId),
             queueStatus = pipelineQueueStore.entries()
                 .firstOrNull { it.projectId == projectId }
@@ -232,9 +230,21 @@ class LibraryActivity : Activity() {
             else -> getString(R.string.library_location, displayName ?: "Manga", projects.size)
         }
         emptyText.visibility = if (projects.isEmpty() && !unavailable) View.VISIBLE else View.GONE
-        projects.forEach { summary ->
-            projectsContainer.addView(createProjectItem(rootUri, summary))
+        val (finished, processing) = projects.partition { it.project.outputPageCount > 0 }
+        if (finished.isNotEmpty()) {
+            projectsContainer.addView(sectionHeader(R.string.library_section_finished))
+            finished.forEach { projectsContainer.addView(createProjectItem(rootUri, it)) }
         }
+        if (processing.isNotEmpty()) {
+            projectsContainer.addView(sectionHeader(R.string.library_section_processing))
+            processing.forEach { projectsContainer.addView(createProjectItem(rootUri, it)) }
+        }
+    }
+
+    private fun sectionHeader(labelRes: Int): TextView = TextView(this).apply {
+        setText(labelRes)
+        setTextAppearance(R.style.TextAppearance_Masumi_Title)
+        setPadding(0, resources.displayMetrics.density.toInt() * 18, 0, resources.displayMetrics.density.toInt() * 4)
     }
 
     private fun createProjectItem(rootUri: Uri?, summary: LibraryProjectSummary): View {
@@ -248,8 +258,7 @@ class LibraryActivity : Activity() {
             progress = summary.completedStages
         }
         item.findViewById<TextView>(R.id.libraryProjectStatus).text = statusText(summary)
-        val cover = summary.coverPath?.let(::decodeCover) ?: summary.coverUri?.let(::decodeCover)
-        cover?.let { bitmap ->
+        summary.cover?.let { bitmap ->
             displayedCovers += bitmap
             item.findViewById<ImageView>(R.id.libraryProjectCover).apply {
                 setImageBitmap(bitmap)
@@ -363,8 +372,7 @@ class LibraryActivity : Activity() {
     private data class LibraryProjectSummary(
         val project: MangaLibraryProject,
         val completedStages: Int,
-        val coverPath: Path?,
-        val coverUri: Uri?,
+        val cover: Bitmap?,
         val readingProgress: MangaReadingProgress?,
         val queueStatus: PipelineQueueStatus?,
     )

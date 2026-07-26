@@ -12,7 +12,11 @@ object ExportIdentity {
     fun exportKey(destinationKey: String, dependencies: ExportDependencies): String {
         requireSha256(destinationKey)
         requireSha256(dependencies.typesettingRunArtifactKey)
-        requireSha256(dependencies.qualityRunArtifactKey)
+        // Blank means the export was created after the acceptance stage was
+        // retired; legacy records still carry a pinned quality key.
+        if (dependencies.qualityRunArtifactKey.isNotEmpty()) {
+            requireSha256(dependencies.qualityRunArtifactKey)
+        }
         return hash(
             listOf(
                 "schemaVersion" to dependencies.schemaVersion.toString(),

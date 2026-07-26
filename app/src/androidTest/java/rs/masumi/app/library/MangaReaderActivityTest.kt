@@ -12,7 +12,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.ByteArrayOutputStream
 import org.junit.After
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -69,15 +68,19 @@ class MangaReaderActivityTest {
             var loaded = false
             while (!loaded && SystemClock.uptimeMillis() < deadline) {
                 scenario.onActivity { activity ->
-                    loaded = activity.findViewById<ImageView>(R.id.readerImage).drawable != null
+                    // Continuous mode draws on ContinuousReaderView; paged mode
+                    // sets a drawable. Either way the indicator reflects load.
+                    loaded = activity.findViewById<TextView>(R.id.readerStatus)
+                        .text.toString().contains("1 / 1")
                 }
                 if (!loaded) SystemClock.sleep(50L)
             }
             assertTrue("reader did not render the first page", loaded)
             scenario.onActivity { activity ->
-                assertNotNull(activity.findViewById<ImageView>(R.id.readerImage).drawable)
                 assertTrue(
-                    activity.findViewById<TextView>(R.id.readerStatus).text.toString().contains("1 / 1"),
+                    activity.findViewById<ContinuousReaderView>(R.id.readerContinuous).visibility ==
+                        android.view.View.VISIBLE ||
+                        activity.findViewById<ImageView>(R.id.readerImage).drawable != null,
                 )
             }
         }

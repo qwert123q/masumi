@@ -147,12 +147,6 @@ class MainActivityLayoutTest {
         assertEquals("尚无嵌字结果", root.findViewById<TextView>(R.id.typesettingPageIndicator).text.toString())
         assertEquals("完成原文清理后可生成中文嵌字页面", root.findViewById<TextView>(R.id.typesettingStatus).text.toString())
 
-        assertEquals("自动检查全部成品页", root.findViewById<Button>(R.id.qualityButton).text.toString())
-        assertEquals(false, root.findViewById<Button>(R.id.qualityButton).isEnabled)
-        assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelQualityButton).visibility)
-        assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.qualityProgress).visibility)
-        assertEquals("完成中文嵌字后可自动验收成品", root.findViewById<TextView>(R.id.qualityStatus).text.toString())
-
         assertEquals("保存全部页面到漫画库", root.findViewById<Button>(R.id.exportButton).text.toString())
         assertEquals(false, root.findViewById<Button>(R.id.exportButton).isEnabled)
         assertEquals(View.GONE, root.findViewById<Button>(R.id.cancelExportButton).visibility)

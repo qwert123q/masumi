@@ -28,7 +28,6 @@ class AutomaticPipelinePlannerTest {
             AutomaticPipelineAction.START_TRANSLATION,
             AutomaticPipelineAction.START_CLEANUP,
             AutomaticPipelineAction.START_TYPESETTING,
-            AutomaticPipelineAction.START_QUALITY,
             AutomaticPipelineAction.COMPLETE,
         )
 
@@ -39,10 +38,9 @@ class AutomaticPipelinePlannerTest {
                 translationReady = completed >= 3,
                 cleanupReady = completed >= 4,
                 typesettingReady = completed >= 5,
-                qualityReady = completed >= 6,
             )
             assertEquals(action, AutomaticPipelinePlanner.next(state))
-            assertEquals(completed.coerceAtMost(6), AutomaticPipelinePlanner.completedStages(state))
+            assertEquals(completed.coerceAtMost(5), AutomaticPipelinePlanner.completedStages(state))
         }
     }
 
@@ -54,20 +52,6 @@ class AutomaticPipelinePlannerTest {
         )
     }
 
-    @Test
-    fun routesBlockedQualityToReviewInsteadOfLooping() {
-        val state = snapshot(
-            detectionReady = true,
-            ocrReady = true,
-            translationReady = true,
-            cleanupReady = true,
-            typesettingReady = true,
-            qualityBlocked = true,
-        )
-        assertEquals(AutomaticPipelineAction.REVIEW_QUALITY, AutomaticPipelinePlanner.next(state))
-        assertEquals(5, AutomaticPipelinePlanner.completedStages(state))
-    }
-
     private fun snapshot(
         hasProject: Boolean = true,
         hasTranslationSettings: Boolean = true,
@@ -77,8 +61,6 @@ class AutomaticPipelinePlannerTest {
         translationReady: Boolean = false,
         cleanupReady: Boolean = false,
         typesettingReady: Boolean = false,
-        qualityReady: Boolean = false,
-        qualityBlocked: Boolean = false,
     ) = AutomaticPipelineSnapshot(
         hasProject = hasProject,
         hasTranslationSettings = hasTranslationSettings,
@@ -88,7 +70,5 @@ class AutomaticPipelinePlannerTest {
         translationReady = translationReady,
         cleanupReady = cleanupReady,
         typesettingReady = typesettingReady,
-        qualityReady = qualityReady,
-        qualityBlocked = qualityBlocked,
     )
 }

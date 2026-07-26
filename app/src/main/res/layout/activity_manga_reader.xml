@@ -10,6 +10,13 @@
         android:layout_height="match_parent"
         android:contentDescription="@string/reader_page_content_description" />
 
+    <rs.masumi.app.library.ContinuousReaderView
+        android:id="@+id/readerContinuous"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:contentDescription="@string/reader_page_content_description" />
+
     <LinearLayout
         android:id="@+id/readerTopBar"
         android:layout_width="match_parent"
@@ -68,13 +75,27 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
-        <Button
-            android:id="@+id/readerDirectionButton"
-            style="@style/Widget.Masumi.Button.Secondary"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="6dp"
-            android:text="@string/reader_direction_rtl" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/readerModeButton"
+                style="@style/Widget.Masumi.Button.Secondary"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/reader_mode_continuous" />
+
+            <Button
+                android:id="@+id/readerDirectionButton"
+                style="@style/Widget.Masumi.Button.Secondary"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/reader_direction_rtl" />
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>
