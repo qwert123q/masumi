@@ -8,8 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -46,6 +44,7 @@ import rs.masumi.app.exporting.ExportProgress
 import rs.masumi.app.exporting.ExportResumePolicy
 import rs.masumi.app.exporting.ExportStatusBroadcast
 import rs.masumi.app.pipeline.PipelineColdStartGuard
+import rs.masumi.app.pipeline.DurablePipelineProgress
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.app.library.cachedMangaLibraryProjects
@@ -56,7 +55,6 @@ import rs.masumi.app.library.MangaLibraryModelCache
 import rs.masumi.app.library.MangaLibraryProject
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.library.MangaReaderActivity
-import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
@@ -76,36 +74,24 @@ import rs.masumi.app.typesetting.TypesettingForegroundService
 import rs.masumi.app.typesetting.TypesettingProgress
 import rs.masumi.app.typesetting.TypesettingResumePolicy
 import rs.masumi.app.typesetting.TypesettingStatusBroadcast
-import rs.masumi.core.detection.DetectionArtifactStore
 import rs.masumi.core.detection.DetectionJobStatus
 import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.detection.DetectionRunEntry
-import rs.masumi.core.exporting.ExportArtifactStore
 import rs.masumi.core.exporting.ExportJobStatus
-import rs.masumi.core.exporting.ExportPageSource
-import rs.masumi.core.exporting.ExportPageState
 import rs.masumi.core.importer.ImportOutcome
 import rs.masumi.core.importer.ProjectImportException
 import rs.masumi.core.importer.ProjectImporter
-import rs.masumi.core.ocr.OcrArtifactStore
 import rs.masumi.core.ocr.OcrJobStatus
 import rs.masumi.core.ocr.OcrPageState
 import rs.masumi.core.ocr.OcrRegionState
 import rs.masumi.core.ocr.OcrRunEntry
-import rs.masumi.core.translation.TranslationArtifactStore
 import rs.masumi.core.translation.TranslationBatchingConfig
-import rs.masumi.core.translation.TranslationDependencies
 import rs.masumi.core.translation.TranslationJobStatus
-import rs.masumi.core.translation.TranslationPageState
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPromptRef
-import rs.masumi.core.translation.TranslationWindowState
-import rs.masumi.core.translation.isTerminal
 import rs.masumi.app.detection.PublishedTypesettingRun
-import rs.masumi.core.typesetting.TypesettingArtifactStore
 import rs.masumi.core.typesetting.TypesettingJobStatus
 import rs.masumi.core.typesetting.TypesettingPageState
-import rs.masumi.core.typesetting.TypesettingPolicy
 import rs.masumi.core.typesetting.TypesettingRegionState
 import rs.masumi.core.typesetting.TypesettingRunEntry
 import java.nio.file.Files
@@ -399,10 +385,10 @@ class MainActivity : Activity() {
         exportProgress = findViewById(R.id.exportProgress)
         exportStatus = findViewById(R.id.exportStatus)
         readProjectButton = findViewById(R.id.readProjectButton)
-        detectionPreviewPane = PreviewPane(previewImage)
-        ocrPreviewPane = PreviewPane(ocrPreviewImage)
-        cleanupPreviewPane = PreviewPane(cleanupPreviewImage)
-        typesettingPreviewPane = PreviewPane(typesettingPreviewImage)
+        detectionPreviewPane = PreviewPane(this, previewImage, previewExecutor)
+        ocrPreviewPane = PreviewPane(this, ocrPreviewImage, previewExecutor)
+        cleanupPreviewPane = PreviewPane(this, cleanupPreviewImage, previewExecutor)
+        typesettingPreviewPane = PreviewPane(this, typesettingPreviewImage, previewExecutor)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
         libraryPreferences = MangaLibraryPreferences(this)
@@ -1374,7 +1360,7 @@ class MainActivity : Activity() {
         currentRun = catalog.latestPublishedRun(project.manifest.projectId)
         val durableProgress = progressOverride
             ?.takeIf { it.projectId == project.manifest.projectId }
-            ?: progressFromDurableState(project)
+            ?: DurablePipelineProgress.detection(project, currentRun)
         if (durableProgress != null) {
             renderProgress(
                 durableProgress,
@@ -1407,9 +1393,17 @@ class MainActivity : Activity() {
         val durableProgress = progressOverride
             ?.takeIf { progress ->
                 progress.projectId == project.manifest.projectId &&
-                    ocrProgressMatchesDetection(project, progress)
+                    DurablePipelineProgress.ocrMatchesDetection(
+                        project,
+                        progress,
+                        detectionRun.artifact.runArtifactKey,
+                    )
             }
-            ?: progressFromOcrDurableState(project, detectionRun.artifact.runArtifactKey)
+            ?: DurablePipelineProgress.ocr(
+                project,
+                detectionRun.artifact.runArtifactKey,
+                currentOcrRun,
+            )
         if (durableProgress != null) {
             renderOcrProgress(
                 durableProgress,
@@ -1443,9 +1437,17 @@ class MainActivity : Activity() {
         val durableProgress = progressOverride
             ?.takeIf { progress ->
                 progress.projectId == project.manifest.projectId &&
-                    translationProgressMatchesOcr(project, progress, ocrRun.artifact.runArtifactKey)
+                    DurablePipelineProgress.translationMatchesOcr(
+                        project,
+                        progress,
+                        ocrRun.artifact.runArtifactKey,
+                    )
             }
-            ?: progressFromTranslationDurableState(project, ocrRun.artifact.runArtifactKey)
+            ?: DurablePipelineProgress.translation(
+                project,
+                ocrRun.artifact.runArtifactKey,
+                currentTranslationRun,
+            )
         if (durableProgress != null) {
             renderTranslationProgress(
                 durableProgress,
@@ -1484,9 +1486,17 @@ class MainActivity : Activity() {
         val durableProgress = progressOverride
             ?.takeIf { progress ->
                 progress.projectId == project.manifest.projectId &&
-                    cleanupProgressMatchesTranslation(project, progress, translationRun.artifact.runArtifactKey)
+                    DurablePipelineProgress.cleanupMatchesTranslation(
+                        project,
+                        progress,
+                        translationRun.artifact.runArtifactKey,
+                    )
             }
-            ?: progressFromCleanupDurableState(project, translationRun.artifact.runArtifactKey)
+            ?: DurablePipelineProgress.cleanup(
+                project,
+                translationRun.artifact.runArtifactKey,
+                currentCleanupRun,
+            )
         if (durableProgress != null) {
             renderCleanupProgress(
                 durableProgress,
@@ -1519,9 +1529,17 @@ class MainActivity : Activity() {
         val durableProgress = progressOverride
             ?.takeIf { progress ->
                 progress.projectId == project.manifest.projectId &&
-                    typesettingProgressMatchesCleanup(project, progress, cleanupRun.artifact.runArtifactKey)
+                    DurablePipelineProgress.typesettingMatchesCleanup(
+                        project,
+                        progress,
+                        cleanupRun.artifact.runArtifactKey,
+                    )
             }
-            ?: progressFromTypesettingDurableState(project, cleanupRun.artifact.runArtifactKey)
+            ?: DurablePipelineProgress.typesetting(
+                project,
+                cleanupRun.artifact.runArtifactKey,
+                currentTypesettingRun,
+            )
         if (durableProgress != null) {
             renderTypesettingProgress(
                 durableProgress,
@@ -1546,33 +1564,11 @@ class MainActivity : Activity() {
             resetExportState()
             return
         }
-        val job = ExportArtifactStore(project.directory).findLatestJob()?.takeIf {
-            it.projectId == project.manifest.projectId &&
-                it.dependencies.typesettingRunArtifactKey == typesettingRun.artifact.runArtifactKey
-        }
-        val durableProgress = progressOverride
-            ?.takeIf { progress ->
-                progress.projectId == project.manifest.projectId &&
-                    job?.jobId == progress.jobId &&
-                    job.exportKey == progress.exportKey
-            }
-            ?: job?.let { exportJob ->
-                val committed = exportJob.pages.filter { it.state == ExportPageState.COMMITTED }
-                ExportProgress(
-                    projectId = exportJob.projectId,
-                    jobId = exportJob.jobId,
-                    exportKey = exportJob.exportKey,
-                    status = exportJob.status,
-                    terminalPageCount = committed.size,
-                    totalPageCount = exportJob.pages.size,
-                    flattenedPageCount = committed.count { it.source == ExportPageSource.FLATTENED },
-                    cleanedFallbackPageCount = committed.count { it.source == ExportPageSource.CLEANED_FALLBACK },
-                    sourceFallbackPageCount = committed.count { it.source == ExportPageSource.SOURCE_FALLBACK },
-                    reusedPageCount = committed.count { it.reusedExisting },
-                    currentPageOrder = exportJob.pages.firstOrNull { it.state == ExportPageState.RUNNING }?.pageOrder,
-                    errorCode = exportJob.error?.code,
-                )
-            }
+        val durableProgress = DurablePipelineProgress.export(
+            project,
+            typesettingRun.artifact.runArtifactKey,
+            progressOverride,
+        )
         exportSucceededForCurrentRun = durableProgress?.status == ExportJobStatus.SUCCEEDED
         if (durableProgress != null) {
             renderExportProgress(
@@ -1586,275 +1582,6 @@ class MainActivity : Activity() {
             exportProgress.visibility = View.GONE
             exportStatus.setText(R.string.export_status_ready)
         }
-    }
-
-    private fun typesettingProgressMatchesCleanup(
-        project: ProjectRef,
-        progress: TypesettingProgress,
-        cleanupRunArtifactKey: String,
-    ): Boolean {
-        val job = TypesettingArtifactStore(project.directory).readJob(progress.jobId) ?: return false
-        return job.runArtifactKey == progress.runArtifactKey &&
-            job.dependencies.cleanupRunArtifactKey == cleanupRunArtifactKey &&
-            job.dependencies.policy == TypesettingPolicy()
-    }
-
-    private fun progressFromTypesettingDurableState(
-        project: ProjectRef,
-        cleanupRunArtifactKey: String,
-    ): TypesettingProgress? {
-        val job = TypesettingArtifactStore(project.directory).findResumableJob()
-        if (
-            job != null &&
-            job.projectId == project.manifest.projectId &&
-            job.dependencies.cleanupRunArtifactKey == cleanupRunArtifactKey &&
-            job.dependencies.policy == TypesettingPolicy() &&
-            (
-                job.status == TypesettingJobStatus.QUEUED ||
-                    job.status == TypesettingJobStatus.RUNNING ||
-                    currentTypesettingRun == null ||
-                    job.updatedAtEpochMillis >= currentTypesettingRun!!.report.finishedAtEpochMillis
-                )
-        ) {
-            return TypesettingProgress(
-                projectId = job.projectId,
-                jobId = job.jobId,
-                runArtifactKey = job.runArtifactKey,
-                status = job.status,
-                terminalPageCount = job.pages.count {
-                    it.state == TypesettingPageState.COMMITTED ||
-                        it.state == TypesettingPageState.PRESERVED_CLEANED_PAGE
-                },
-                totalPageCount = job.pages.size,
-                typesetRegionCount = job.pages.sumOf { it.typesetRegionCount },
-                preservedRegionCount = job.pages.sumOf { it.preservedRegionCount },
-                currentPageOrder = job.pages.firstOrNull { it.state == TypesettingPageState.RUNNING }?.pageOrder,
-                errorCode = job.error?.code,
-            )
-        }
-        return currentTypesettingRun?.report?.let { report ->
-            TypesettingProgress(
-                projectId = report.projectId,
-                jobId = report.jobId,
-                runArtifactKey = report.runArtifactKey,
-                status = report.status,
-                terminalPageCount = report.committedPageCount + report.preservedPageCount,
-                totalPageCount = report.totalPageCount,
-                typesetRegionCount = report.typesetRegionCount,
-                preservedRegionCount = report.preservedRegionCount,
-                errorCode = report.error?.code,
-            )
-        }
-    }
-
-    private fun cleanupProgressMatchesTranslation(
-        project: ProjectRef,
-        progress: CleanupProgress,
-        translationRunArtifactKey: String,
-    ): Boolean {
-        val job = CleanupArtifactStore(project.directory).readJob(progress.jobId) ?: return false
-        return job.runArtifactKey == progress.runArtifactKey &&
-            job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
-            job.dependencies.policy == CleanupPolicy()
-    }
-
-    private fun progressFromCleanupDurableState(
-        project: ProjectRef,
-        translationRunArtifactKey: String,
-    ): CleanupProgress? {
-        val job = CleanupArtifactStore(project.directory).findResumableJob()
-        if (
-            job != null &&
-            job.projectId == project.manifest.projectId &&
-            job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
-            job.dependencies.policy == CleanupPolicy() &&
-            (
-                job.status == CleanupJobStatus.QUEUED ||
-                    job.status == CleanupJobStatus.RUNNING ||
-                    currentCleanupRun == null ||
-                    job.updatedAtEpochMillis >= currentCleanupRun!!.report.finishedAtEpochMillis
-                )
-        ) {
-            return CleanupProgress(
-                projectId = job.projectId,
-                jobId = job.jobId,
-                runArtifactKey = job.runArtifactKey,
-                status = job.status,
-                terminalPageCount = job.pages.count {
-                    it.state == CleanupPageState.COMMITTED || it.state == CleanupPageState.PRESERVED_SOURCE
-                },
-                totalPageCount = job.pages.size,
-                cleanedRegionCount = job.pages.sumOf { it.cleanedRegionCount },
-                preservedRegionCount = job.pages.sumOf { it.preservedRegionCount },
-                currentPageOrder = job.pages.firstOrNull { it.state == CleanupPageState.RUNNING }?.pageOrder,
-                errorCode = job.error?.code,
-            )
-        }
-        return currentCleanupRun?.report?.let { report ->
-            CleanupProgress(
-                projectId = report.projectId,
-                jobId = report.jobId,
-                runArtifactKey = report.runArtifactKey,
-                status = report.status,
-                terminalPageCount = report.committedPageCount + report.preservedPageCount,
-                totalPageCount = report.totalPageCount,
-                cleanedRegionCount = report.cleanedRegionCount,
-                preservedRegionCount = report.preservedRegionCount,
-                errorCode = report.error?.code,
-            )
-        }
-    }
-
-    private fun translationProgressMatchesOcr(
-        project: ProjectRef,
-        progress: TranslationProgress,
-        ocrRunArtifactKey: String,
-    ): Boolean {
-        val job = TranslationArtifactStore(project.directory).readJob(progress.jobId) ?: return false
-        return job.runArtifactKey == progress.runArtifactKey &&
-            translationDependenciesAreCurrent(job.dependencies, ocrRunArtifactKey)
-    }
-
-    private fun progressFromTranslationDurableState(
-        project: ProjectRef,
-        ocrRunArtifactKey: String,
-    ): TranslationProgress? {
-        val job = TranslationArtifactStore(project.directory).findResumableJob()
-        if (
-            job != null &&
-            job.projectId == project.manifest.projectId &&
-            translationDependenciesAreCurrent(job.dependencies, ocrRunArtifactKey) &&
-            (
-                job.status == TranslationJobStatus.QUEUED ||
-                    job.status == TranslationJobStatus.RUNNING ||
-                    currentTranslationRun == null ||
-                    job.updatedAtEpochMillis >= currentTranslationRun!!.report.finishedAtEpochMillis
-                )
-        ) {
-            return TranslationProgress(
-                projectId = job.projectId,
-                jobId = job.jobId,
-                runArtifactKey = job.runArtifactKey,
-                status = job.status,
-                terminalWindowCount = job.windows.count { it.state.isTerminal() },
-                totalWindowCount = job.windows.size,
-                committedPageCount = job.pages.count { it.state == TranslationPageState.COMMITTED },
-                totalPageCount = job.pages.size,
-                translatedItemCount = job.windows.sumOf { it.translatedItemCount },
-                preservedItemCount = job.windows.sumOf { it.preservedItemCount },
-                protectedOcrCount = job.pages.sumOf { it.protectedOcrRegionCount },
-                currentWindowIndex = job.windows.firstOrNull { it.state == TranslationWindowState.RUNNING }?.windowIndex,
-                errorCode = job.error?.code,
-            )
-        }
-        return currentTranslationRun?.report?.let { report ->
-            TranslationProgress(
-                projectId = report.projectId,
-                jobId = report.jobId,
-                runArtifactKey = report.runArtifactKey,
-                status = report.status,
-                terminalWindowCount = report.committedWindowCount,
-                totalWindowCount = report.totalWindowCount,
-                committedPageCount = report.committedPageCount,
-                totalPageCount = report.totalPageCount,
-                translatedItemCount = report.translatedItemCount,
-                preservedItemCount = report.preservedItemCount,
-                protectedOcrCount = report.protectedOcrRegionCount,
-                errorCode = report.error?.code,
-            )
-        }
-    }
-
-    private fun translationDependenciesAreCurrent(
-        dependencies: TranslationDependencies,
-        ocrRunArtifactKey: String,
-    ): Boolean =
-        dependencies.ocrRunArtifactKey == ocrRunArtifactKey &&
-            dependencies.policy == TranslationPolicy() &&
-            dependencies.prompt == TranslationPromptRef() &&
-            dependencies.batching == TranslationBatchingConfig()
-
-    private fun ocrProgressMatchesDetection(project: ProjectRef, progress: OcrProgress): Boolean {
-        val job = OcrArtifactStore(project.directory).readJob(progress.jobId) ?: return false
-        return job.runArtifactKey == progress.runArtifactKey &&
-            job.detectionRunArtifactKey == currentRun?.artifact?.runArtifactKey
-    }
-
-    private fun progressFromOcrDurableState(
-        project: ProjectRef,
-        detectionRunArtifactKey: String,
-    ): OcrProgress? {
-        currentOcrRun?.report?.let { report ->
-            val terminalCount = report.recognizedRegionCount +
-                report.needsFallbackRegionCount +
-                report.noTextRegionCount +
-                report.preservedRegionCount
-            return OcrProgress(
-                projectId = report.projectId,
-                jobId = report.jobId,
-                runArtifactKey = report.runArtifactKey,
-                status = report.status,
-                terminalRegionCount = terminalCount,
-                totalRegionCount = report.totalRegionCount,
-                committedPageCount = report.committedPageCount,
-                totalPageCount = report.totalPageCount,
-                errorCode = report.error?.code,
-            )
-        }
-        val job = OcrArtifactStore(project.directory).findLatestJob() ?: return null
-        if (
-            job.projectId != project.manifest.projectId ||
-            job.detectionRunArtifactKey != detectionRunArtifactKey
-        ) {
-            return null
-        }
-        return OcrProgress(
-            projectId = job.projectId,
-            jobId = job.jobId,
-            runArtifactKey = job.runArtifactKey,
-            status = job.status,
-            terminalRegionCount = job.pages.sumOf { page ->
-                page.regions.count { region -> region.state.isOcrTerminal() }
-            },
-            totalRegionCount = job.pages.sumOf { it.regions.size },
-            committedPageCount = job.pages.count { it.state == OcrPageState.COMMITTED },
-            totalPageCount = job.pages.size,
-            currentOrder = job.pages.firstOrNull { it.state == OcrPageState.RUNNING }?.order,
-            currentPageId = job.pages.firstOrNull { it.state == OcrPageState.RUNNING }?.pageId,
-            currentRegionId = job.pages.asSequence()
-                .flatMap { it.regions.asSequence() }
-                .firstOrNull { it.state == OcrRegionState.RUNNING }
-                ?.ocrRegionId,
-            errorCode = job.error?.code,
-        )
-    }
-
-    private fun progressFromDurableState(project: ProjectRef): DetectionProgress? {
-        currentRun?.report?.let { report ->
-            return DetectionProgress(
-                projectId = report.projectId,
-                jobId = report.jobId,
-                runArtifactKey = report.runArtifactKey,
-                status = report.status,
-                committedPageCount = report.committedPageCount,
-                preservedPageCount = report.preservedPageCount,
-                totalPageCount = report.totalPageCount,
-                errorCode = report.error?.code,
-            )
-        }
-        val job = DetectionArtifactStore(project.directory).findLatestJob() ?: return null
-        if (job.projectId != project.manifest.projectId) return null
-        return DetectionProgress(
-            projectId = job.projectId,
-            jobId = job.jobId,
-            runArtifactKey = job.runArtifactKey,
-            status = job.status,
-            committedPageCount = job.pages.count { it.state == DetectionPageState.COMMITTED },
-            preservedPageCount = job.pages.count { it.state == DetectionPageState.PRESERVED_SOURCE },
-            totalPageCount = job.pages.size,
-            currentOrder = job.pages.firstOrNull { it.state == DetectionPageState.RUNNING }?.order,
-            errorCode = job.error?.code,
-        )
     }
 
     private fun renderProgress(progress: DetectionProgress, interrupted: Boolean = false) {
@@ -2442,85 +2169,6 @@ class MainActivity : Activity() {
         resolved
     }.getOrNull()
 
-    private fun decodePreviewBitmap(path: Path): Bitmap? {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path.toString(), bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        val target = resources.displayMetrics.widthPixels.coerceAtLeast(1) * 2
-        var sampleSize = 1
-        while (bounds.outWidth / sampleSize > target || bounds.outHeight / sampleSize > target * 3) {
-            sampleSize *= 2
-        }
-        return BitmapFactory.decodeFile(
-            path.toString(),
-            BitmapFactory.Options().apply { inSampleSize = sampleSize },
-        )
-    }
-
-    /**
-     * Owns the bitmap shown in one preview ImageView. Decoding happens off the main
-     * thread; a generation counter drops stale results and a path cache skips
-     * re-decoding when a refresh lands on the image already being displayed.
-     */
-    private inner class PreviewPane(private val imageView: ImageView) {
-        private var generation = 0
-        private var displayedPath: Path? = null
-        private var bitmap: Bitmap? = null
-
-        fun render(requestedPath: Path?, onApplied: (Bitmap?) -> Unit) {
-            generation += 1
-            val current = generation
-            if (requestedPath == null) {
-                clearImage()
-                onApplied(null)
-                return
-            }
-            val existing = bitmap
-            if (requestedPath == displayedPath && existing != null && !existing.isRecycled) {
-                imageView.setImageBitmap(existing)
-                imageView.visibility = View.VISIBLE
-                onApplied(existing)
-                return
-            }
-            previewExecutor.execute {
-                val decoded = decodePreviewBitmap(requestedPath)
-                runOnUiThread {
-                    if (current != generation || isFinishing || isDestroyed) {
-                        decoded?.recycle()
-                        return@runOnUiThread
-                    }
-                    recycleBitmap()
-                    if (decoded != null) {
-                        displayedPath = requestedPath
-                        bitmap = decoded
-                        imageView.setImageBitmap(decoded)
-                        imageView.visibility = View.VISIBLE
-                    } else {
-                        imageView.visibility = View.GONE
-                    }
-                    onApplied(decoded)
-                }
-            }
-        }
-
-        fun clear() {
-            generation += 1
-            clearImage()
-        }
-
-        private fun clearImage() {
-            recycleBitmap()
-            imageView.visibility = View.GONE
-        }
-
-        private fun recycleBitmap() {
-            imageView.setImageDrawable(null)
-            displayedPath = null
-            bitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
-            bitmap = null
-        }
-    }
-
     /**
      * Single source of truth for every stage button, cancel control, and the
      * settings save button. Stage buttons follow one rule: enabled only when
@@ -2774,17 +2422,6 @@ class MainActivity : Activity() {
 
     private fun ExportJobStatus.isActive(): Boolean =
         this == ExportJobStatus.QUEUED || this == ExportJobStatus.RUNNING
-
-    private fun OcrRegionState.isOcrTerminal(): Boolean = when (this) {
-        OcrRegionState.RECOGNIZED,
-        OcrRegionState.NEEDS_FALLBACK,
-        OcrRegionState.NO_TEXT_CONFIRMED,
-        OcrRegionState.PRESERVED_SOURCE,
-        -> true
-        OcrRegionState.PENDING,
-        OcrRegionState.RUNNING,
-        -> false
-    }
 
     companion object {
         const val PAGE_WORKSPACE = PageNavigation.WORKSPACE

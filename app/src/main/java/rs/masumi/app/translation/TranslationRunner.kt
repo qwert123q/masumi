@@ -229,12 +229,11 @@ class TranslationRunner(
 
             failWhenEveryProviderWindowWasPreserved(job)
 
-            // One refused or dropped batch used to leave every co-batched
-            // bubble untranslated on the page, permanently: window checkpoints
-            // are never re-executed. Re-request just the failed items in small
-            // fresh windows so a single poisoned item cannot take its
-            // neighbours down with it. Checkpoints stay untouched — a resumed
-            // job simply salvages again.
+            // If a successful structured response merely omitted an item,
+            // isolate that item for one final request. Provider failures have
+            // already consumed their bounded transport retry; replaying them
+            // through progressively smaller windows only burns time when the
+            // model has refused the content.
             val recoveredIds = salvagePreservedItems(
                 windows = windows,
                 outcomes = outcomes,
@@ -704,10 +703,10 @@ class TranslationRunner(
     private class TranslationCancellationSignal : RuntimeException()
     private class FatalTranslationException(val code: String) : RuntimeException(code)
     /**
-     * Re-requests items that failed with the provider in fresh, shrinking
-     * windows and patches the successful results into [outcomes]. Returns the
-     * number of items recovered. The final single-item round isolates a
-     * genuinely refused item so it can only preserve itself.
+     * Re-requests a response-omitted item once in an isolated window and
+     * patches successful results into [outcomes]. Provider errors are not
+     * retried here because the provider itself already owns the bounded
+     * transport retry.
      */
     private fun salvagePreservedItems(
         windows: List<TranslationBatchWindow>,
@@ -720,44 +719,37 @@ class TranslationRunner(
         val template = windows.firstOrNull() ?: return emptySet()
         val batchItemsById = windows.flatMap(TranslationBatchWindow::items)
             .associateBy { it.input.translationRegionId }
-        var pending = outcomes.values
+        val pending = outcomes.values
             .filter { it.state == TranslationResultState.PRESERVED_SOURCE && it.preserveReason in SALVAGEABLE_REASONS }
             .mapNotNull { batchItemsById[it.translationRegionId] }
         if (pending.isEmpty()) return emptySet()
         val glossarySha256 = TranslationArtifactIdentity.glossarySha256(glossary)
         val recovered = mutableSetOf<String>()
-        SALVAGE_WINDOW_SIZES.forEachIndexed { round, windowSize ->
-            if (pending.isEmpty()) return recovered
-            val remaining = mutableListOf<TranslationBatchItem>()
-            pending.chunked(windowSize).forEachIndexed { chunkIndex, chunk ->
-                if (cancellation()) throw TranslationCancellationSignal()
-                val window = template.copy(
-                    windowIndex = SALVAGE_WINDOW_INDEX_BASE + round * SALVAGE_ROUND_STRIDE + chunkIndex,
-                    glossary = glossary,
-                    contextItems = emptyList(),
-                    items = chunk,
-                    estimatedInputTokens = 0,
-                    exceedsBudget = false,
-                )
-                val artifact = executeWindow(
-                    window = window,
-                    windowKey = TranslationArtifactIdentity.windowArtifactKey(window, glossarySha256, dependencies),
-                    inputGlossarySha256 = glossarySha256,
-                    inputGlossary = glossary,
-                    settings = settings,
-                    cancellation = cancellation,
-                    discoverGlossary = false,
-                )
-                artifact.items.forEach { item ->
-                    if (item.state == TranslationResultState.TRANSLATED) {
-                        outcomes[item.translationRegionId] = item
-                        recovered += item.translationRegionId
-                    } else {
-                        batchItemsById[item.translationRegionId]?.let(remaining::add)
-                    }
+        pending.forEachIndexed { itemIndex, item ->
+            if (cancellation()) throw TranslationCancellationSignal()
+            val window = template.copy(
+                windowIndex = SALVAGE_WINDOW_INDEX_BASE + itemIndex,
+                glossary = glossary,
+                contextItems = emptyList(),
+                items = listOf(item),
+                estimatedInputTokens = 0,
+                exceedsBudget = false,
+            )
+            val artifact = executeWindow(
+                window = window,
+                windowKey = TranslationArtifactIdentity.windowArtifactKey(window, glossarySha256, dependencies),
+                inputGlossarySha256 = glossarySha256,
+                inputGlossary = glossary,
+                settings = settings,
+                cancellation = cancellation,
+                discoverGlossary = false,
+            )
+            artifact.items.singleOrNull()
+                ?.takeIf { it.state == TranslationResultState.TRANSLATED }
+                ?.let { translated ->
+                    outcomes[translated.translationRegionId] = translated
+                    recovered += translated.translationRegionId
                 }
-            }
-            pending = remaining
         }
         return recovered
     }
@@ -768,12 +760,7 @@ class TranslationRunner(
         const val EXPECTED_PROVIDER_CALLS = 2
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
         val PROVIDER_FAILURE_CODES = TranslationProviderErrorCode.entries.mapTo(mutableSetOf()) { it.name }
-        val SALVAGEABLE_REASONS = setOf(
-            TranslationPreserveReason.PROVIDER_FAILURE,
-            TranslationPreserveReason.MISSING_RESPONSE,
-        )
-        val SALVAGE_WINDOW_SIZES = listOf(8, 4, 1)
+        val SALVAGEABLE_REASONS = setOf(TranslationPreserveReason.MISSING_RESPONSE)
         const val SALVAGE_WINDOW_INDEX_BASE = 100_000
-        const val SALVAGE_ROUND_STRIDE = 1_000
     }
 }

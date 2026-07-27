@@ -62,6 +62,17 @@ class OpenAiCompatibleTranslationProviderTest {
     }
 
     @Test
+    fun providerDefaultsToOneTransportRetry() {
+        val settings = TranslationProviderSettings(
+            apiUrl = "https://example.invalid/v1",
+            apiKey = "test-secret",
+            model = "test-model",
+        )
+
+        assertEquals(2, settings.maximumAttempts)
+    }
+
+    @Test
     fun fullCompletionEndpointIsNotAppendedTwiceAndCleartextIsLocalOnly() {
         server.enqueue(MockResponse().setResponseCode(200).setBody(successBody()))
         provider().newCall(

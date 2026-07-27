@@ -595,9 +595,25 @@ class SourceCleanupEngine(
         if (primaryCandidates.isEmpty()) {
             return InkMaskResult(BooleanArray(roi.width * roi.height), false)
         }
+        // A glyph is not a connected component. Japanese fonts commonly
+        // render one character as several disconnected bold strokes, and the
+        // previous one-component-per-OCR-codepoint limit left every component
+        // after that count visible on the page. Keep a small bounded component
+        // budget per expected glyph instead. The glyph-shape and area guards
+        // above still reject the large artwork masses that share free-text
+        // detector boxes.
+        val primaryLimit = expectedGlyphCount
+            ?.coerceAtLeast(1)
+            ?.let { glyphCount ->
+                min(
+                    primaryCandidates.size.toLong(),
+                    glyphCount.toLong() * MAXIMUM_COMPONENTS_PER_GLYPH,
+                ).toInt()
+            }
+            ?: primaryCandidates.size
         val primary = primaryCandidates
             .sortedByDescending(InkComponent::thickPixelCount)
-            .take(expectedGlyphCount?.coerceIn(1, primaryCandidates.size) ?: primaryCandidates.size)
+            .take(primaryLimit)
         val typicalExtent = primary.map { max(it.width, it.height) }.sorted()
             .let { it[it.size / 2] }
         val typicalArea = primary.map { it.members.size }.sorted()
@@ -1040,6 +1056,7 @@ class SourceCleanupEngine(
         const val MINIMUM_GLYPH_AREA = 6
         const val MINIMUM_GLYPH_DENSITY = 0.10
         const val MAXIMUM_GLYPH_ASPECT_RATIO = 12.0
+        const val MAXIMUM_COMPONENTS_PER_GLYPH = 4L
         // Deliberately strict: it keeps a large artwork mass sharing the box with
         // the lettering from being mistaken for the glyph. Tight boxes where the
         // glyphs legitimately dominate are handled by the relaxed retry below,

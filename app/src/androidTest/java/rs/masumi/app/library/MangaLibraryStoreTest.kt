@@ -43,7 +43,7 @@ class MangaLibraryStoreTest {
         val output = requireNotNull(project.outputDirectoryUri)
         createOutput(output, "0002.png", "two")
         createOutput(output, "0001.png", "one")
-        // Newer chapters export lossless WebP; both formats must count and list.
+        // Older chapters may still contain WebP; both formats remain readable.
         createOutput(output, "0003.webp", "three")
         createOutput(output, "notes.txt", "ignored")
 

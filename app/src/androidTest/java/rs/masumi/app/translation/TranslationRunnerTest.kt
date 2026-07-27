@@ -187,7 +187,7 @@ class TranslationRunnerTest {
     }
 
     @Test
-    fun providerFailedItemsAreSalvagedInFreshWindows() {
+    fun providerFailedItemsArePreservedWithoutExtraSalvageRequests() {
         val workspace = Files.createTempDirectory("masumi-translation-salvage")
         try {
             publishOcr(workspace, listOf("今日は", "退避対象"))
@@ -212,14 +212,45 @@ class TranslationRunnerTest {
             val store = TranslationArtifactStore(workspace.resolve("projects/$PROJECT_ID"))
             val page = requireNotNull(store.readPublishedPage(run.runArtifactKey, run.entries.single()))
 
+            assertEquals(TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS, result.job.status)
+            assertEquals(1, page.items.count { it.translatedText != null })
+            assertEquals(1, result.report?.preservedItemCount)
+            assertEquals(1, result.report?.translatedItemCount)
+            assertTrue(!provider.sawSalvageRetry)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun responseOmittedItemGetsOneIsolatedRecoveryRequest() {
+        val workspace = Files.createTempDirectory("masumi-translation-missing-item")
+        try {
+            publishOcr(workspace, listOf("今日は", "退避対象"))
+            val provider = OmitSecondItemOnceProvider()
+            val runner = TranslationRunner(
+                workspaceRoot = workspace,
+                provider = provider,
+                batching = TranslationBatchingConfig(maximumItemsPerWindow = 2),
+                idSource = IdSource { "translation-missing-item" },
+            )
+            val result = runner.run(
+                PROJECT_ID,
+                TranslationProviderSettings(
+                    apiUrl = "https://example.invalid/v1",
+                    apiKey = "secret-not-for-artifacts",
+                    model = "model-safe",
+                ),
+                { false },
+            ) { }
+
+            val run = requireNotNull(result.runArtifact)
+            val store = TranslationArtifactStore(workspace.resolve("projects/$PROJECT_ID"))
+            val page = requireNotNull(store.readPublishedPage(run.runArtifactKey, run.entries.single()))
+
             assertEquals(TranslationJobStatus.SUCCEEDED, result.job.status)
-            // Both items end up translated even though the second window's
-            // provider call failed: the salvage pass re-requested it in a
-            // fresh window instead of preserving the whole batch.
             assertEquals(2, page.items.count { it.translatedText != null })
-            assertEquals(0, result.report?.preservedItemCount)
-            assertEquals(2, result.report?.translatedItemCount)
-            assertTrue(provider.sawSalvageRetry)
+            assertEquals(1, provider.recoveryRequestCount)
         } finally {
             workspace.toFile().deleteRecursively()
         }
@@ -393,6 +424,50 @@ class TranslationRunnerTest {
                 return TranslationProviderResult(
                     response = TranslationModelResponse(
                         items = listOf(TranslationModelItem(id, TranslationRole.DIALOGUE, "已翻译")),
+                    ),
+                    usage = TranslationProviderUsage(10, 5, 15),
+                    modelId = "model-safe",
+                    attemptCount = 1,
+                    durationMillis = 1L,
+                )
+            }
+
+            override fun cancel() = Unit
+        }
+    }
+
+    private class OmitSecondItemOnceProvider : TranslationProvider {
+        private var translationRequestCount = 0
+        var recoveryRequestCount = 0
+
+        override fun newCall(
+            settings: TranslationProviderSettings,
+            messages: rs.masumi.core.translation.TranslationPromptMessages,
+        ): TranslationProviderCall = object : TranslationProviderCall {
+            override fun execute(): TranslationProviderResult {
+                val discovery = messages.system.contains("Build a reusable")
+                if (discovery) {
+                    return TranslationProviderResult(
+                        response = TranslationModelResponse(items = emptyList()),
+                        usage = TranslationProviderUsage(1, 1, 2),
+                        modelId = "model-safe",
+                        attemptCount = 1,
+                        durationMillis = 1L,
+                    )
+                }
+                translationRequestCount += 1
+                val ids = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                    .findAll(messages.user)
+                    .map { it.groupValues[1] }
+                    .toList()
+                    .distinct()
+                val returnedIds = if (translationRequestCount == 1) ids.take(1) else ids
+                if (translationRequestCount > 1) recoveryRequestCount += 1
+                return TranslationProviderResult(
+                    response = TranslationModelResponse(
+                        items = returnedIds.map { id ->
+                            TranslationModelItem(id, TranslationRole.DIALOGUE, "已翻译")
+                        },
                     ),
                     usage = TranslationProviderUsage(10, 5, 15),
                     modelId = "model-safe",

@@ -139,6 +139,46 @@ class SourceCleanupEngineTest {
     }
 
     @Test
+    fun freeTextRemovesDisconnectedBoldStrokesBelongingToOneJapaneseGlyph() {
+        val source = Bitmap.createBitmap(90, 58, Bitmap.Config.ARGB_8888).apply {
+            for (y in 0 until height) for (x in 0 until width) {
+                val shade = 220 + (x + y) % 21
+                setPixel(x, y, Color.rgb(shade, shade, shade))
+            }
+            // One stylized bold glyph made from four disconnected strokes.
+            for (y in 14 until 25) for (x in 13 until 18) setPixel(x, y, Color.BLACK)
+            for (y in 14 until 19) for (x in 21 until 32) setPixel(x, y, Color.BLACK)
+            for (y in 28 until 39) for (x in 21 until 26) setPixel(x, y, Color.BLACK)
+            for (y in 34 until 39) for (x in 29 until 40) setPixel(x, y, Color.BLACK)
+            // A large illustration mass in the same detector box must remain.
+            for (y in 11 until 45) for (x in 60 until 82) setPixel(x, y, Color.BLACK)
+        }
+
+        val cleaned = SourceCleanupEngine().clean(
+            source,
+            listOf(
+                target(
+                    PixelBox(8.0, 7.0, 85.0, 49.0),
+                    CleanupStrategy.LOCAL_BOUNDARY_INPAINT,
+                    expectedGlyphCount = 1,
+                ),
+            ),
+            CleanupPolicy(),
+        )
+
+        try {
+            assertEquals(CleanupRegionState.CLEANED, cleaned.regions.single().state)
+            listOf(15 to 18, 25 to 16, 23 to 33, 34 to 36).forEach { (x, y) ->
+                assertTrue("disconnected glyph stroke remained at $x,$y", cleaned.bitmap.getPixel(x, y) != Color.BLACK)
+            }
+            assertEquals(Color.BLACK, cleaned.bitmap.getPixel(70, 25))
+        } finally {
+            cleaned.bitmap.recycle()
+            source.recycle()
+        }
+    }
+
+    @Test
     fun texturedNarrationBoxUsesGlyphMaskInsteadOfErasingThePattern() {
         val source = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply {
             for (y in 0 until height) for (x in 0 until width) {
