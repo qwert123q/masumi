@@ -12,6 +12,12 @@ internal object TranslationArtifactFixtures {
             temperature = 0.2,
             maximumOutputTokens = 4_096,
             requestJsonObjectFormat = true,
+            reference = TranslationProviderReference(
+                profileId = "example",
+                displayName = "Example Provider",
+                endpointHost = "example.invalid",
+                endpointSha256 = "d".repeat(64),
+            ),
         ),
         initialGlossarySha256 = TranslationArtifactIdentity.glossarySha256(initialGlossary),
     )

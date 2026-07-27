@@ -13,6 +13,15 @@ class TranslationArtifactIdentityTest {
             base.copy(provider = base.provider.copy(modelId = "other-model")),
             base.copy(batching = base.batching.copy(maximumContextItems = 12)),
             base.copy(batching = base.batching.copy(maximumItemsPerWindow = 8)),
+            base.copy(
+                provider = base.provider.copy(
+                    reference = TranslationProviderReference(
+                        displayName = "Other",
+                        endpointHost = "other.example",
+                        endpointSha256 = "e".repeat(64),
+                    ),
+                ),
+            ),
             base.copy(initialGlossarySha256 = "f".repeat(64)),
         ).map { TranslationArtifactIdentity.pageArtifactKey("b".repeat(64), it) }
 

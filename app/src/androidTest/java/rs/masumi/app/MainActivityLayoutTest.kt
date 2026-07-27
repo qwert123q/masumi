@@ -9,10 +9,12 @@ import android.view.View
 import android.view.View.MeasureSpec
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -122,8 +124,29 @@ class MainActivityLayoutTest {
         assertEquals("尚无 OCR 结果", root.findViewById<TextView>(R.id.ocrPageIndicator).text.toString())
         assertEquals("", root.findViewById<TextView>(R.id.ocrDetailText).text.toString())
 
-        assertEquals("保存翻译设置", root.findViewById<Button>(R.id.saveTranslationSettingsButton).text.toString())
-        assertEquals("展开翻译服务设置", root.findViewById<Button>(R.id.translationSettingsToggleButton).text.toString())
+        assertEquals(
+            "保存并设为当前厂商",
+            root.findViewById<Button>(R.id.saveTranslationSettingsButton).text.toString(),
+        )
+        assertEquals(
+            "API 地址（HTTPS）",
+            root.findViewById<EditText>(R.id.translationApiUrl).hint.toString(),
+        )
+        assertEquals(
+            View.VISIBLE,
+            root.findViewById<Spinner>(R.id.translationEndpointPreset).visibility,
+        )
+        assertEquals(
+            "获取可用模型",
+            root.findViewById<Button>(R.id.fetchTranslationModelsButton).text.toString(),
+        )
+        assertEquals(
+            View.GONE,
+            root.findViewById<ProgressBar>(R.id.translationModelsProgress).visibility,
+        )
+        assertEquals(View.GONE, root.findViewById<Spinner>(R.id.translationModelPreset).visibility)
+        assertEquals(View.VISIBLE, root.findViewById<EditText>(R.id.translationModel).visibility)
+        assertEquals("选择或配置翻译厂商", root.findViewById<Button>(R.id.translationSettingsToggleButton).text.toString())
         assertEquals(View.GONE, root.findViewById<LinearLayout>(R.id.translationSettingsContainer).visibility)
         assertEquals("开始整章翻译", root.findViewById<Button>(R.id.translationButton).text.toString())
         assertEquals(false, root.findViewById<Button>(R.id.translationButton).isEnabled)

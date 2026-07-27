@@ -6,9 +6,6 @@ import java.net.URL
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
-import rs.masumi.app.library.MangaLibraryModelCache
-import rs.masumi.app.library.PersistentModelFile
-import rs.masumi.app.library.PersistentModelPackage
 import rs.masumi.core.modelpackage.InstalledOcrModelPackage
 import rs.masumi.core.modelpackage.OcrModelCapabilityValidator
 import rs.masumi.core.modelpackage.OcrModelFileDescriptor
@@ -32,7 +29,6 @@ class DefaultOcrModelProvider(
     private val rangeSource: OcrRangeSource = HttpOcrRangeSource(),
     private val capabilityValidator: OcrModelCapabilityValidator,
     private val clock: Clock = Clock.systemUTC(),
-    private val persistentCache: MangaLibraryModelCache? = null,
 ) : OcrModelProvider {
     private val workspaceRoot = workspaceRoot.toAbsolutePath().normalize()
     private val store = OcrModelPackageStore(
@@ -46,28 +42,14 @@ class DefaultOcrModelProvider(
         progress: (downloaded: Long, total: Long) -> Unit,
     ): InstalledOcrModelPackage {
         val packageDirectory = packageDirectory()
-        var installed = readTrustedPrivatePackage(packageDirectory)
-        if (installed == null) {
-            persistentCache?.restore(
-                persistentPackage(),
-                packageDirectory,
-                progress,
-            )
-            installed = readTrustedPrivatePackage(packageDirectory)
-        }
-        if (installed == null) {
-            installed = store.ensureInstalled(
+        return readTrustedPrivatePackage(packageDirectory)
+            ?: store.ensureInstalled(
                 installId = descriptor.packageSha256,
                 descriptor = descriptor,
                 source = rangeSource,
                 capabilityValidator = capabilityValidator,
                 onProgress = progress,
             )
-        }
-        runCatching {
-            persistentCache?.backup(persistentPackage(), packageDirectory, progress)
-        }
-        return installed
     }
 
     private fun readTrustedPrivatePackage(directory: Path): InstalledOcrModelPackage? = runCatching {
@@ -97,23 +79,6 @@ class DefaultOcrModelProvider(
         .resolve("models")
         .resolve(descriptor.storageKey)
         .resolve(descriptor.packageSha256)
-
-    private fun persistentPackage(): PersistentModelPackage = PersistentModelPackage(
-        cacheKey = "文字识别",
-        version = descriptor.packageSha256,
-        files = listOf(
-            PersistentModelFile(
-                descriptor.model.fileName,
-                descriptor.model.byteLength,
-                descriptor.model.installedSha256,
-            ),
-            PersistentModelFile(
-                descriptor.projector.fileName,
-                descriptor.projector.byteLength,
-                descriptor.projector.installedSha256,
-            ),
-        ),
-    )
 
     private companion object {
         const val PACKAGE_METADATA_FILE_NAME = "package.json"

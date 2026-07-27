@@ -849,15 +849,66 @@
                             android:text="@string/translation_settings_privacy"
                             android:textAppearance="@style/TextAppearance.Masumi.Body" />
 
+                        <TextView
+                            android:id="@+id/activeTranslationProviderStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="@string/translation_provider_none"
+                            android:textAppearance="@style/TextAppearance.Masumi.Caption" />
+
+                        <Spinner
+                            android:id="@+id/translationProviderProfile"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:minHeight="52dp"
+                            android:prompt="@string/translation_provider_prompt" />
+
+                        <Button
+                            android:id="@+id/newTranslationProviderButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/new_translation_provider" />
+
+                        <EditText
+                            android:id="@+id/translationProviderName"
+                            style="@style/Widget.Masumi.EditText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:hint="@string/translation_provider_name_hint"
+                            android:importantForAutofill="no"
+                            android:inputType="text"
+                            android:singleLine="true" />
+
+                        <Spinner
+                            android:id="@+id/translationEndpointPreset"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:minHeight="52dp"
+                            android:prompt="@string/translation_endpoint_prompt" />
+
                         <EditText
                             android:id="@+id/translationApiUrl"
                             style="@style/Widget.Masumi.EditText"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:hint="@string/translation_api_url_hint"
+                            android:layout_marginTop="2dp"
+                            android:hint="@string/translation_custom_api_url_hint"
                             android:importantForAutofill="no"
-                            android:inputType="textUri" />
+                            android:inputType="textUri"
+                            android:singleLine="true" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/translation_api_url_help"
+                            android:textAppearance="@style/TextAppearance.Masumi.Caption" />
 
                         <EditText
                             android:id="@+id/translationApiKey"
@@ -868,6 +919,40 @@
                             android:importantForAutofill="no"
                             android:inputType="textPassword" />
 
+                        <Button
+                            android:id="@+id/fetchTranslationModelsButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="@string/fetch_translation_models" />
+
+                        <ProgressBar
+                            android:id="@+id/translationModelsProgress"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:indeterminate="true"
+                            android:visibility="gone" />
+
+                        <TextView
+                            android:id="@+id/translationModelsStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/translation_models_hint"
+                            android:textAppearance="@style/TextAppearance.Masumi.Caption" />
+
+                        <Spinner
+                            android:id="@+id/translationModelPreset"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:minHeight="52dp"
+                            android:prompt="@string/translation_model_prompt"
+                            android:visibility="gone" />
+
                         <EditText
                             android:id="@+id/translationModel"
                             style="@style/Widget.Masumi.EditText"
@@ -875,7 +960,8 @@
                             android:layout_height="wrap_content"
                             android:hint="@string/translation_model_hint"
                             android:importantForAutofill="no"
-                            android:inputType="text" />
+                            android:inputType="text"
+                            android:singleLine="true" />
 
                         <Button
                             android:id="@+id/saveTranslationSettingsButton"
@@ -883,7 +969,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="10dp"
-                            android:text="@string/save_translation_settings" />
+                            android:text="@string/save_translation_provider" />
                     </LinearLayout>
 
                     <Button

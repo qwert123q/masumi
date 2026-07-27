@@ -18,13 +18,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import okhttp3.Call
-import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import rs.masumi.core.serialization.TranslationJson
 import rs.masumi.core.translation.TranslationModelResponse
 import rs.masumi.core.translation.TranslationPromptMessages
@@ -231,27 +229,16 @@ class OpenAiCompatibleTranslationProvider(
             }
         }
         return Request.Builder()
-            .url(completionUrl(settings))
+            .url(
+                OpenAiCompatibleEndpointResolver.completionUrl(
+                    settings.apiUrl,
+                    settings.allowInsecureLocalhost,
+                ),
+            )
             .header("Authorization", "Bearer ${settings.apiKey}")
             .header("User-Agent", USER_AGENT)
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
-    }
-
-    private fun completionUrl(settings: TranslationProviderSettings): HttpUrl {
-        val parsed = settings.apiUrl.trim().trimEnd('/').toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("apiUrl is invalid")
-        require(parsed.query == null && parsed.fragment == null) { "apiUrl must not contain query or fragment" }
-        if (parsed.scheme != "https") {
-            require(settings.allowInsecureLocalhost && parsed.host in LOCALHOSTS) {
-                "apiUrl must use HTTPS"
-            }
-        }
-        return if (parsed.encodedPath.trimEnd('/').endsWith(CHAT_COMPLETIONS_PATH)) {
-            parsed
-        } else {
-            parsed.newBuilder().addPathSegments("chat/completions").build()
-        }
     }
 
     private fun parseUsage(root: JsonObject): TranslationProviderUsage? {
@@ -276,14 +263,12 @@ class OpenAiCompatibleTranslationProvider(
     )
 
     private companion object {
-        const val CHAT_COMPLETIONS_PATH = "/chat/completions"
         const val USER_AGENT = "Masumi/0.1"
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val MAX_BACKOFF_DELAY_MILLIS = 30_000L
         const val MAX_RETRY_AFTER_MILLIS = 60_000L
         const val MAX_BACKOFF_SHIFT = 10
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
-        val LOCALHOSTS = setOf("localhost", "127.0.0.1", "::1")
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
 
         fun retryDelayMillis(

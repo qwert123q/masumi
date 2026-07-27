@@ -55,6 +55,7 @@
         android:paddingEnd="20dp">
 
         <LinearLayout
+            android:id="@+id/libraryHomeStorageSetup"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="@drawable/masumi_status_background"

@@ -33,7 +33,7 @@ class LibraryActivityLayoutTest {
         assertEquals("我的漫画", root.findViewById<TextView>(R.id.libraryHomeProjectsTitle).text.toString())
         assertEquals(6, item.findViewById<ProgressBar>(R.id.libraryProjectProgress).max)
         assertEquals("阅读成品", item.findViewById<Button>(R.id.libraryProjectReadButton).text.toString())
-        assertEquals("项目详情", item.findViewById<Button>(R.id.libraryProjectOpenButton).text.toString())
+        assertEquals("管理", item.findViewById<Button>(R.id.libraryProjectOpenButton).text.toString())
     }
 
     @Test

@@ -17,6 +17,8 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.library.MangaLibraryPreferences
+import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.pipeline.PipelineResourceLease
 import rs.masumi.core.exporting.ExportJobStatus
 
@@ -137,6 +139,15 @@ class ExportForegroundService : Service() {
     }
 
     private fun publishProgress(progress: ExportProgress) {
+        if (progress.status == ExportJobStatus.SUCCEEDED) {
+            runCatching {
+                val root = MangaLibraryPreferences(this).rootUri() ?: return@runCatching
+                MangaLibraryStore(contentResolver, root).markProjectCompleted(
+                    projectId = progress.projectId,
+                    completedAtEpochMillis = System.currentTimeMillis(),
+                )
+            }
+        }
         sendBroadcast(
             ExportStatusBroadcast.create(packageName, progress),
             "$packageName.permission.INTERNAL_EXPORT_STATUS",

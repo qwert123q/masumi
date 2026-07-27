@@ -46,6 +46,16 @@ class MangaReadingProgressStore(context: Context) {
         preferences.edit().putBoolean("$projectId.rightToLeft", rightToLeft).apply()
     }
 
+    fun remove(projectId: String) {
+        require(SAFE_ID.matches(projectId))
+        preferences.edit()
+            .remove("$projectId.pageIndex")
+            .remove("$projectId.pageCount")
+            .remove("$projectId.continuous")
+            .remove("$projectId.rightToLeft")
+            .apply()
+    }
+
     private companion object {
         const val PREFERENCES_NAME = "manga_reading_progress"
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")

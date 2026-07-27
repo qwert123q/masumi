@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -93,6 +94,8 @@ class TranslationRunnerTest {
                 apiUrl = "https://example.invalid/v1",
                 apiKey = "secret-not-for-artifacts",
                 model = "model-safe",
+                profileId = "example-provider",
+                providerName = "Example Provider",
             )
             val cancel = AtomicBoolean(false)
 
@@ -111,6 +114,12 @@ class TranslationRunnerTest {
             assertEquals(20L, completed.report?.promptTokens)
             assertEquals(10L, completed.report?.completionTokens)
             assertEquals(30L, completed.report?.totalTokens)
+            assertEquals("example-provider", completed.report?.provider?.profileId)
+            assertEquals("Example Provider", completed.report?.provider?.displayName)
+            assertEquals("example.invalid", completed.report?.provider?.endpointHost)
+            assertFalse(
+                completed.report.toString().contains("secret-not-for-artifacts"),
+            )
             assertNotNull(completed.publishedDirectory)
 
             val cached = runner.run(PROJECT_ID, settings, { false }) { }

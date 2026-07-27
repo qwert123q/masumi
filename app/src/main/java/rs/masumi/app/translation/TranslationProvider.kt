@@ -1,7 +1,11 @@
 package rs.masumi.app.translation
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import rs.masumi.core.translation.TranslationModelResponse
 import rs.masumi.core.translation.TranslationPromptMessages
+import rs.masumi.core.translation.TranslationProviderReference
 
 interface TranslationProvider {
     fun newCall(
@@ -30,6 +34,8 @@ class TranslationProviderSettings(
     val maximumOutputTokens: Int = 4_096,
     val requestJsonObjectFormat: Boolean = true,
     val allowInsecureLocalhost: Boolean = false,
+    val profileId: String = "",
+    val providerName: String = "",
 ) {
     init {
         require(apiUrl.isNotBlank() && apiUrl.length <= 2_048 && apiUrl.none(Char::isISOControl)) {
@@ -48,6 +54,32 @@ class TranslationProviderSettings(
         require(retryDelayMillis >= 0L) { "retryDelayMillis must not be negative" }
         require(temperature in 0.0..2.0) { "temperature must be between 0 and 2" }
         require(maximumOutputTokens > 0) { "maximumOutputTokens must be positive" }
+        require(profileId.length <= 64 && profileId.none(Char::isISOControl)) {
+            "profileId must be a bounded printable value"
+        }
+        require(providerName.length <= 80 && providerName.none(Char::isISOControl)) {
+            "providerName must be a bounded printable value"
+        }
+    }
+
+    fun artifactReference(): TranslationProviderReference {
+        val normalizedEndpoint = OpenAiCompatibleEndpointResolver
+            .completionUrl(apiUrl, allowInsecureLocalhost)
+            .newBuilder()
+            .query(null)
+            .fragment(null)
+            .build()
+            .toString()
+        return TranslationProviderReference(
+            profileId = profileId,
+            displayName = providerName.ifBlank {
+                TranslationProviderCatalog.suggestedName(apiUrl)
+            },
+            endpointHost = requireNotNull(normalizedEndpoint.toHttpUrlOrNull()).host,
+            endpointSha256 = MessageDigest.getInstance("SHA-256")
+                .digest(normalizedEndpoint.toByteArray(StandardCharsets.UTF_8))
+                .joinToString("") { "%02x".format(it) },
+        )
     }
 
     override fun toString(): String =

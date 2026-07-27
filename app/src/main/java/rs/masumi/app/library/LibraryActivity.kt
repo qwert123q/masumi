@@ -1,6 +1,7 @@
 package rs.masumi.app.library
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -9,20 +10,29 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import rs.masumi.app.AutomaticPipelinePlanner
 import rs.masumi.app.HorizontalSwipeViewFlipper
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.detection.ProjectCatalog
+import rs.masumi.app.detection.DetectionForegroundService
+import rs.masumi.app.cleanup.CleanupForegroundService
+import rs.masumi.app.exporting.ExportForegroundService
+import rs.masumi.app.ocr.OcrForegroundService
 import rs.masumi.app.pipeline.PipelineQueueStatus
 import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.app.pipeline.WorkspaceJanitor
+import rs.masumi.app.quality.QualityForegroundService
+import rs.masumi.app.translation.TranslationForegroundService
+import rs.masumi.app.typesetting.TypesettingForegroundService
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPromptRef
@@ -35,6 +45,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class LibraryActivity : Activity() {
     private lateinit var locationText: TextView
+    private lateinit var storageSetup: View
     private lateinit var pager: HorizontalSwipeViewFlipper
     private lateinit var finishedTabButton: Button
     private lateinit var processingTabButton: Button
@@ -57,6 +68,7 @@ class LibraryActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_library)
         locationText = findViewById(R.id.libraryHomeLocation)
+        storageSetup = findViewById(R.id.libraryHomeStorageSetup)
         pager = findViewById(R.id.libraryHomePager)
         finishedTabButton = findViewById(R.id.libraryHomeTabFinished)
         processingTabButton = findViewById(R.id.libraryHomeTabProcessing)
@@ -95,6 +107,9 @@ class LibraryActivity : Activity() {
                 HorizontalSwipeViewFlipper.Direction.LEFT -> selectTab(TAB_PROCESSING)
                 HorizontalSwipeViewFlipper.Direction.RIGHT -> selectTab(TAB_FINISHED)
             }
+        }
+        if (libraryPreferences.rootUri() == null && savedInstanceState == null) {
+            storageSetup.post { openLibraryFolder(false) }
         }
     }
 
@@ -272,13 +287,11 @@ class LibraryActivity : Activity() {
         recycleCovers()
         finishedContainer.removeAllViews()
         processingContainer.removeAllViews()
-        chooseLibraryButton.setText(
-            if (rootUri == null) R.string.library_home_choose_folder else R.string.library_home_change_folder,
-        )
+        storageSetup.visibility = if (rootUri == null || unavailable) View.VISIBLE else View.GONE
+        chooseLibraryButton.setText(R.string.library_home_choose_folder)
         locationText.text = when {
-            rootUri == null -> getString(R.string.library_home_not_configured)
-            unavailable -> getString(R.string.library_unavailable)
-            else -> getString(R.string.library_location, displayName ?: "Manga", projects.size)
+            unavailable -> getString(R.string.library_home_storage_repair)
+            else -> getString(R.string.library_home_storage_setup)
         }
         val (finished, processing) = projects.partition { it.project.outputPageCount > 0 }
         finishedTabButton.text = getString(R.string.library_tab_finished_count, finished.size)
@@ -359,12 +372,125 @@ class LibraryActivity : Activity() {
                 startActivity(MainActivity.projectIntent(this, project.metadata.projectId))
             }
         }
-        secondary.setText(R.string.library_project_details)
+        secondary.setText(R.string.library_manage)
         secondary.setOnClickListener {
-            startActivity(MainActivity.projectIntent(this, project.metadata.projectId))
+            showProjectManagement(rootUri, summary)
         }
         return item
     }
+
+    private fun showProjectManagement(rootUri: Uri?, summary: LibraryProjectSummary) {
+        if (rootUri == null) return
+        val project = summary.project
+        AlertDialog.Builder(this)
+            .setTitle(project.metadata.title)
+            .setItems(
+                arrayOf(
+                    getString(R.string.library_manage_details),
+                    getString(R.string.library_manage_rename),
+                    getString(R.string.library_manage_delete),
+                ),
+            ) { _, which ->
+                when (which) {
+                    0 -> startActivity(MainActivity.projectIntent(this, project.metadata.projectId))
+                    1 -> showRenameDialog(rootUri, project)
+                    2 -> showDeleteDialog(rootUri, summary)
+                }
+            }
+            .show()
+    }
+
+    private fun showRenameDialog(rootUri: Uri, project: MangaLibraryProject) {
+        val input = EditText(this).apply {
+            setText(project.metadata.title)
+            setSelection(text.length)
+            hint = getString(R.string.library_rename_hint)
+            isSingleLine = true
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.library_rename_title)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val requested = input.text.toString()
+                executor.execute {
+                    val renamed = runCatching {
+                        MangaLibraryStore(contentResolver, rootUri)
+                            .renameProject(project.metadata.projectId, requested)
+                    }
+                    runOnUiThread {
+                        Toast.makeText(
+                            this,
+                            if (renamed.isSuccess) {
+                                R.string.library_rename_success
+                            } else {
+                                R.string.library_rename_failed
+                            },
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        if (renamed.isSuccess) refreshLibrary()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun showDeleteDialog(rootUri: Uri, summary: LibraryProjectSummary) {
+        if (summary.queueStatus == PipelineQueueStatus.ACTIVE || anyPipelineTaskActive()) {
+            Toast.makeText(this, R.string.library_delete_busy, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val project = summary.project
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.library_delete_title, project.metadata.title))
+            .setMessage(R.string.library_delete_message)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.library_delete_confirm) { _, _ ->
+                executor.execute {
+                    val deleted = runCatching {
+                        val removed = MangaLibraryStore(contentResolver, rootUri)
+                            .deleteProject(project.metadata.projectId)
+                        check(removed)
+                        pipelineQueueStore.remove(project.metadata.projectId)
+                        readingProgressStore.remove(project.metadata.projectId)
+                        deletePrivateProject(project.metadata.projectId)
+                    }
+                    runOnUiThread {
+                        Toast.makeText(
+                            this,
+                            if (deleted.isSuccess) {
+                                R.string.library_delete_success
+                            } else {
+                                R.string.library_delete_failed
+                            },
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        if (deleted.isSuccess) refreshLibrary()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun deletePrivateProject(projectId: String) {
+        val projectsRoot = filesDir.toPath()
+            .resolve("workspace")
+            .resolve("projects")
+            .toAbsolutePath()
+            .normalize()
+        val target = projectsRoot.resolve(projectId).normalize()
+        require(target.parent == projectsRoot)
+        if (Files.exists(target)) check(target.toFile().deleteRecursively())
+    }
+
+    private fun anyPipelineTaskActive(): Boolean =
+        DetectionForegroundService.isTaskActive() ||
+            OcrForegroundService.isTaskActive() ||
+            TranslationForegroundService.isTaskActive() ||
+            CleanupForegroundService.isTaskActive() ||
+            TypesettingForegroundService.isTaskActive() ||
+            QualityForegroundService.isTaskActive() ||
+            ExportForegroundService.isTaskActive()
 
     private fun statusText(summary: LibraryProjectSummary): String = when {
         summary.project.outputPageCount > 0 && summary.readingProgress != null ->

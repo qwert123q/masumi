@@ -6,6 +6,7 @@ import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -39,6 +40,66 @@ class TranslationSettingsStoreTest {
         } finally {
             context.deleteSharedPreferences(preferencesName)
             Files.deleteIfExists(projectRoot)
+        }
+    }
+
+    @Test
+    fun legacySettingsBecomeTheActiveProviderWithoutBeingCleared() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferencesName = "translation_provider_legacy_test_${System.nanoTime()}"
+        val preferences = context.getSharedPreferences(preferencesName, 0)
+        val secret = "legacy-secret"
+        preferences.edit()
+            .putString("api_url", "https://api.deepseek.com")
+            .putString("api_key", secret)
+            .putString("model", "deepseek-chat")
+            .commit()
+        val store = TranslationSettingsStore(context, preferencesName)
+
+        try {
+            val active = requireNotNull(store.loadActiveProvider())
+            assertEquals("legacy", active.id)
+            assertEquals("DeepSeek", active.name)
+            assertEquals(secret, active.apiKey)
+            assertEquals("deepseek-chat", store.loadProviderSettings()?.model)
+            assertNull(preferences.getString("provider_profiles_v1", null))
+        } finally {
+            context.deleteSharedPreferences(preferencesName)
+        }
+    }
+
+    @Test
+    fun multipleProvidersCanBeSavedAndSelectedIndependently() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferencesName = "translation_provider_profiles_test_${System.nanoTime()}"
+        val store = TranslationSettingsStore(context, preferencesName)
+        val first = SavedTranslationProvider(
+            id = "deepseek",
+            name = "DeepSeek",
+            apiUrl = "https://api.deepseek.com",
+            apiKey = "first-secret",
+            model = "deepseek-chat",
+        )
+        val second = SavedTranslationProvider(
+            id = "openrouter",
+            name = "OpenRouter",
+            apiUrl = "https://openrouter.ai/api/v1",
+            apiKey = "second-secret",
+            model = "anthropic/claude-sonnet-4",
+        )
+
+        try {
+            store.saveProvider(first)
+            store.saveProvider(second)
+            assertEquals(second.id, store.loadActiveProvider()?.id)
+            assertEquals(2, store.loadProviders().size)
+
+            store.selectActiveProvider(first.id)
+
+            assertEquals(first, store.loadActiveProvider())
+            assertEquals(first.apiKey, store.loadProviderSettings()?.apiKey)
+        } finally {
+            context.deleteSharedPreferences(preferencesName)
         }
     }
 }

@@ -88,7 +88,7 @@
                 android:layout_marginStart="6dp"
                 android:layout_weight="1"
                 android:minHeight="44dp"
-                android:text="@string/library_project_details" />
+                android:text="@string/library_manage" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

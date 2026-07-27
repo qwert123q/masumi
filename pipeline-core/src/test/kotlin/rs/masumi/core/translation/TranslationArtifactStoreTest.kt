@@ -100,6 +100,7 @@ class TranslationArtifactStoreTest {
             completionTokens = 5,
             totalTokens = 15,
             retryCount = 0,
+            provider = job.dependencies.provider.reference,
         )
         val published = store.publishRun(
             job,

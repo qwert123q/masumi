@@ -3,12 +3,21 @@ package rs.masumi.core.translation
 import kotlinx.serialization.Serializable
 
 @Serializable
+data class TranslationProviderReference(
+    val profileId: String = "",
+    val displayName: String = "",
+    val endpointHost: String = "",
+    val endpointSha256: String = "",
+)
+
+@Serializable
 data class TranslationProviderDependency(
     val protocolRevision: String = "openai-chat-completions-v1",
     val modelId: String,
     val temperature: Double,
     val maximumOutputTokens: Int,
     val requestJsonObjectFormat: Boolean,
+    val reference: TranslationProviderReference = TranslationProviderReference(),
 )
 
 @Serializable
@@ -172,6 +181,7 @@ data class TranslationReport(
     val retryCount: Int,
     val error: TranslationError? = null,
     val durationMillis: Long = finishedAtEpochMillis - startedAtEpochMillis,
+    val provider: TranslationProviderReference? = null,
 )
 
 fun TranslationJobStatus.isSuccessful(): Boolean =

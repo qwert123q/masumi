@@ -4,19 +4,28 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import java.nio.file.Files
+import java.nio.file.Path
+import java.security.MessageDigest
+import java.util.Locale
 import org.json.JSONObject
+import rs.masumi.core.model.PageRecord
 
 data class MangaLibraryProjectMetadata(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = CURRENT_PROJECT_SCHEMA_VERSION,
     val projectId: String,
     val title: String,
     val createdAtEpochMillis: Long,
     val sourceTreeUri: String,
+    val sourceFingerprint: String = "",
 )
 
 data class MangaLibraryProject(
     val metadata: MangaLibraryProjectMetadata,
+    /** One visible folder is one manga project. */
     val directoryUri: Uri,
+    val mangaDirectoryUri: Uri,
+    val sourceDirectoryUri: Uri?,
     val outputDirectoryUri: Uri?,
     val outputPageCount: Int,
 )
@@ -39,18 +48,27 @@ class MangaLibraryPreferences(context: Context) {
         check(preferences.edit().putString(KEY_ROOT_URI, uri.toString()).commit())
     }
 
+    fun clearRootUri() {
+        check(preferences.edit().remove(KEY_ROOT_URI).commit())
+    }
+
     private companion object {
         const val PREFERENCES_NAME = "manga_library"
         const val KEY_ROOT_URI = "root_uri"
     }
 }
 
-/**
- * Enumerating the library costs one `DocumentsProvider` query per directory, and
- * the main screen re-reads it on every resume. Snapshots are cached for the
- * process so a resume paints immediately, and every write invalidates the entry
- * that it touched.
- */
+fun mangaSourceFingerprint(pages: List<PageRecord>): String {
+    require(pages.isNotEmpty())
+    val digest = MessageDigest.getInstance("SHA-256")
+    pages.sortedBy(PageRecord::order).forEach { page ->
+        require(SHA256.matches(page.sourceSha256))
+        digest.update(page.sourceSha256.toByteArray(Charsets.US_ASCII))
+        digest.update(0)
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
 private object MangaLibraryCache {
     private val lock = Any()
     private val projectSnapshots = mutableMapOf<String, List<MangaLibraryProject>>()
@@ -73,17 +91,12 @@ private object MangaLibraryCache {
     }
 }
 
-/**
- * The last known library snapshot, or null when this process has not scanned the
- * root yet. Callers render it straight away and then refresh in the background.
- */
 fun cachedMangaLibraryProjects(rootTreeUri: Uri): List<MangaLibraryProject>? =
     MangaLibraryCache.projects(rootTreeUri.toString())
 
 fun cachedMangaLibraryRootName(rootTreeUri: Uri): String? =
     MangaLibraryCache.rootName(rootTreeUri.toString())
 
-/** Drops the cached snapshot when the tree was changed behind the store's back. */
 fun invalidateMangaLibraryCache(rootTreeUri: Uri) {
     MangaLibraryCache.invalidate(rootTreeUri.toString())
 }
@@ -100,51 +113,121 @@ class MangaLibraryStore(
         ) { "library root must be a document tree" }
     }
 
-    fun rootDisplayName(): String = (displayName(rootDocumentUri()) ?: "Masumi")
+    fun rootDisplayName(): String = (displayName(rootDocumentUri()) ?: "Manga")
         .also { MangaLibraryCache.putRootName(cacheKey, it) }
 
+    /**
+     * One import always creates one independent folder:
+     *
+     * Manga/漫画名/生肉
+     * Manga/漫画名/翻译后
+     *
+     * Importing the same source again creates 漫画名 (2), which can be renamed
+     * later from the library screen. No translation-version folders exist.
+     */
     fun ensureProject(
         projectId: String,
         title: String,
         createdAtEpochMillis: Long,
         sourceTreeUri: Uri,
+        sourceFingerprint: String = sha256(sourceTreeUri.toString()),
     ): MangaLibraryProject {
         require(SAFE_ID.matches(projectId))
+        require(SHA256.matches(sourceFingerprint))
         refreshProjects().firstOrNull { it.metadata.projectId == projectId }?.let { existing ->
-            val output = existing.outputDirectoryUri ?: ensureDirectory(existing.directoryUri, OUTPUT_DIRECTORY_NAME)
+            val source = existing.sourceDirectoryUri
+                ?: ensureDirectory(existing.directoryUri, SOURCE_DIRECTORY_NAME)
+            val output = existing.outputDirectoryUri
+                ?: ensureDirectory(existing.directoryUri, OUTPUT_DIRECTORY_NAME)
             return existing.copy(
+                sourceDirectoryUri = source,
                 outputDirectoryUri = output,
                 outputPageCount = outputPages(output).size,
             )
         }
 
-        val normalizedTitle = title.trim().ifBlank { "未命名漫画" }.take(MAX_TITLE_LENGTH)
-        val directoryName = "${safeDirectoryName(normalizedTitle)} · ${projectId.take(8)}"
-        val projectDirectory = ensureDirectory(rootDocumentUri(), directoryName)
+        val occupiedNames = children(rootDocumentUri())
+            .filter { it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR }
+            .mapTo(mutableSetOf(), DocumentRef::displayName)
+        val directoryName = uniqueDirectoryName(
+            safeDirectoryName(title.trim().ifBlank { "未命名漫画" }),
+            occupiedNames,
+        )
+        val directory = ensureDirectory(rootDocumentUri(), directoryName)
+        val source = ensureDirectory(directory, SOURCE_DIRECTORY_NAME)
+        val output = ensureDirectory(directory, OUTPUT_DIRECTORY_NAME)
         val metadata = MangaLibraryProjectMetadata(
             projectId = projectId,
-            title = normalizedTitle,
+            title = directoryName,
             createdAtEpochMillis = createdAtEpochMillis,
             sourceTreeUri = sourceTreeUri.toString(),
+            sourceFingerprint = sourceFingerprint,
         )
-        writeMetadata(projectDirectory, metadata)
-        val outputDirectory = ensureDirectory(projectDirectory, OUTPUT_DIRECTORY_NAME)
+        writeProjectMetadata(directory, metadata)
         MangaLibraryCache.invalidate(cacheKey)
-        return MangaLibraryProject(metadata, projectDirectory, outputDirectory, 0)
+        return MangaLibraryProject(
+            metadata = metadata,
+            directoryUri = directory,
+            mangaDirectoryUri = directory,
+            sourceDirectoryUri = source,
+            outputDirectoryUri = output,
+            outputPageCount = 0,
+        )
     }
 
-    /** Cached snapshot when this process already scanned the root, otherwise a fresh scan. */
+    fun archiveSourcePages(
+        projectId: String,
+        privateProjectDirectory: Path,
+        pages: List<PageRecord>,
+    ) {
+        require(SAFE_ID.matches(projectId))
+        val project = requireNotNull(project(projectId)) { "library project was not found" }
+        val sourceDirectory = project.sourceDirectoryUri
+            ?: ensureDirectory(project.directoryUri, SOURCE_DIRECTORY_NAME)
+        val existing = children(sourceDirectory).associateBy(DocumentRef::displayName).toMutableMap()
+        pages.sortedBy(PageRecord::order).forEach { page ->
+            val source = resolveInside(privateProjectDirectory, page.storedPath)
+            require(Files.isRegularFile(source) && Files.size(source) == page.byteLength)
+            val outputName = safeSourceFileName(page)
+            val current = existing[outputName]
+            if (current?.byteLength == page.byteLength) return@forEach
+
+            val target = current?.uri ?: DocumentsContract.createDocument(
+                resolver,
+                sourceDirectory,
+                page.mediaType,
+                outputName,
+            ) ?: error("could not create source archive page")
+            var created = current == null
+            try {
+                Files.newInputStream(source).buffered().use { input ->
+                    resolver.openOutputStream(target, "w")?.buffered()?.use { output ->
+                        input.copyTo(output, COPY_BUFFER_SIZE)
+                        output.flush()
+                    } ?: error("could not write source archive page")
+                }
+                require(documentLength(target) == page.byteLength) { "source archive length mismatch" }
+                created = false
+                existing[outputName] = DocumentRef(target, outputName, page.mediaType, page.byteLength)
+            } finally {
+                if (created) runCatching { DocumentsContract.deleteDocument(resolver, target) }
+            }
+        }
+    }
+
     fun projects(): List<MangaLibraryProject> =
         MangaLibraryCache.projects(cacheKey) ?: refreshProjects()
 
-    /** Rescans the library root and replaces the cached snapshot. */
     fun refreshProjects(): List<MangaLibraryProject> = children(rootDocumentUri())
         .asSequence()
-        .filter { it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR }
+        .filter {
+            it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR &&
+                !it.displayName.startsWith('.')
+        }
         .mapNotNull(::readProject)
         .sortedWith(
             compareByDescending<MangaLibraryProject> { it.metadata.createdAtEpochMillis }
-                .thenByDescending { it.metadata.projectId },
+                .thenBy { it.metadata.title.lowercase(Locale.ROOT) },
         )
         .toList()
         .also { MangaLibraryCache.putProjects(cacheKey, it) }
@@ -155,17 +238,63 @@ class MangaLibraryStore(
     }
 
     fun ensureOutputDirectory(projectId: String): Uri {
-        require(SAFE_ID.matches(projectId)) { "library project id is invalid" }
-        val project = requireNotNull(
-            refreshProjects().firstOrNull { it.metadata.projectId == projectId },
-        ) { "library project was not found" }
-        return project.outputDirectoryUri ?: ensureDirectory(project.directoryUri, OUTPUT_DIRECTORY_NAME)
+        require(SAFE_ID.matches(projectId))
+        val project = requireNotNull(refreshProjects().firstOrNull {
+            it.metadata.projectId == projectId
+        }) { "library project was not found" }
+        return project.outputDirectoryUri
+            ?: ensureDirectory(project.directoryUri, OUTPUT_DIRECTORY_NAME)
     }
 
-    fun outputPages(projectId: String): List<MangaLibraryPage> {
-        val project = project(projectId) ?: return emptyList()
-        return project.outputDirectoryUri?.let(::outputPages).orEmpty()
+    fun markProjectCompleted(projectId: String, completedAtEpochMillis: Long) {
+        require(SAFE_ID.matches(projectId) && completedAtEpochMillis > 0L)
+        val project = refreshProjects().firstOrNull { it.metadata.projectId == projectId } ?: return
+        writeProjectMetadata(
+            project.directoryUri,
+            project.metadata.copy(createdAtEpochMillis = completedAtEpochMillis),
+        )
+        MangaLibraryCache.invalidate(cacheKey)
     }
+
+    fun renameProject(projectId: String, requestedTitle: String): MangaLibraryProject {
+        require(SAFE_ID.matches(projectId))
+        val project = requireNotNull(refreshProjects().firstOrNull {
+            it.metadata.projectId == projectId
+        }) { "library project was not found" }
+        val title = safeDirectoryName(requestedTitle)
+        require(title.isNotBlank())
+        val conflicting = children(rootDocumentUri()).any {
+            it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR &&
+                it.uri != project.directoryUri &&
+                it.displayName.equals(title, ignoreCase = true)
+        }
+        require(!conflicting) { "library project name already exists" }
+        val renamed = if (displayName(project.directoryUri) == title) {
+            project.directoryUri
+        } else {
+            requireNotNull(DocumentsContract.renameDocument(resolver, project.directoryUri, title)) {
+                "library project could not be renamed"
+            }
+        }
+        val actualTitle = displayName(renamed)?.let(::safeDirectoryName) ?: title
+        writeProjectMetadata(renamed, project.metadata.copy(title = actualTitle))
+        MangaLibraryCache.invalidate(cacheKey)
+        return requireNotNull(refreshProjects().firstOrNull { it.metadata.projectId == projectId })
+    }
+
+    fun deleteProject(projectId: String): Boolean {
+        require(SAFE_ID.matches(projectId))
+        val project = refreshProjects().firstOrNull { it.metadata.projectId == projectId } ?: return false
+        val deleted = DocumentsContract.deleteDocument(resolver, project.directoryUri)
+        if (deleted) MangaLibraryCache.invalidate(cacheKey)
+        return deleted
+    }
+
+    fun outputPages(projectId: String): List<MangaLibraryPage> =
+        project(projectId)?.outputDirectoryUri?.let(::outputPages).orEmpty()
+
+    fun sourcePages(projectId: String): List<MangaLibraryPage> =
+        project(projectId)?.sourceDirectoryUri?.let(::sourcePages).orEmpty()
 
     fun documentDisplayName(uri: Uri): String? = displayName(
         runCatching {
@@ -177,26 +306,50 @@ class MangaLibraryStore(
     )
 
     private fun readProject(directory: DocumentRef): MangaLibraryProject? = runCatching {
-        // One children() call is one IPC round trip into the DocumentsProvider,
-        // so read the project directory once and pick both entries out of it.
         val entries = children(directory.uri)
         val metadataDocument = entries.singleOrNull {
-            it.displayName == METADATA_FILE_NAME && it.mimeType != DocumentsContract.Document.MIME_TYPE_DIR
+            it.displayName == PROJECT_METADATA_FILE_NAME &&
+                it.mimeType != DocumentsContract.Document.MIME_TYPE_DIR
         } ?: return@runCatching null
-        val metadata = resolver.openInputStream(metadataDocument.uri)?.bufferedReader(Charsets.UTF_8)?.use {
-            decodeMetadata(it.readText())
-        } ?: return@runCatching null
-        require(metadata.schemaVersion == 1 && SAFE_ID.matches(metadata.projectId) && metadata.title.isNotBlank())
+        val metadata = resolver.openInputStream(metadataDocument.uri)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { decodeProjectMetadata(it.readText()) }
+            ?: return@runCatching null
+        validateProjectMetadata(metadata)
+        if (metadata.schemaVersion != CURRENT_PROJECT_SCHEMA_VERSION) return@runCatching null
+        val actualName = safeDirectoryName(directory.displayName)
+        val normalizedMetadata = if (metadata.title == actualName) {
+            metadata
+        } else {
+            metadata.copy(title = actualName)
+        }
+        val source = entries.singleOrNull {
+            it.displayName == SOURCE_DIRECTORY_NAME &&
+                it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+        }?.uri
         val output = entries.singleOrNull {
-            it.displayName == OUTPUT_DIRECTORY_NAME && it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+            it.displayName == OUTPUT_DIRECTORY_NAME &&
+                it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR
         }?.uri
         MangaLibraryProject(
-            metadata = metadata,
+            metadata = normalizedMetadata,
             directoryUri = directory.uri,
+            mangaDirectoryUri = directory.uri,
+            sourceDirectoryUri = source,
             outputDirectoryUri = output,
             outputPageCount = output?.let(::outputPages)?.size ?: 0,
         )
     }.getOrNull()
+
+    private fun validateProjectMetadata(metadata: MangaLibraryProjectMetadata) {
+        require(
+            metadata.schemaVersion == CURRENT_PROJECT_SCHEMA_VERSION &&
+                SAFE_ID.matches(metadata.projectId) &&
+                metadata.title.isNotBlank() &&
+                metadata.createdAtEpochMillis >= 0L &&
+                SHA256.matches(metadata.sourceFingerprint),
+        )
+    }
 
     private fun outputPages(directoryUri: Uri): List<MangaLibraryPage> = children(directoryUri)
         .asSequence()
@@ -205,32 +358,61 @@ class MangaLibraryStore(
         .map { MangaLibraryPage(it.displayName, it.uri) }
         .toList()
 
-    private fun writeMetadata(directoryUri: Uri, metadata: MangaLibraryProjectMetadata) {
-        val existing = children(directoryUri).singleOrNull { it.displayName == METADATA_FILE_NAME }
+    private fun sourcePages(directoryUri: Uri): List<MangaLibraryPage> = children(directoryUri)
+        .asSequence()
+        .filter { it.mimeType.startsWith("image/") && SOURCE_FILE.matches(it.displayName) }
+        .sortedBy { it.displayName.lowercase(Locale.ROOT) }
+        .map { MangaLibraryPage(it.displayName, it.uri) }
+        .toList()
+
+    private fun writeProjectMetadata(directoryUri: Uri, metadata: MangaLibraryProjectMetadata) {
+        val content = JSONObject()
+            .put("schemaVersion", metadata.schemaVersion)
+            .put("projectId", metadata.projectId)
+            .put("title", metadata.title)
+            .put("createdAtEpochMillis", metadata.createdAtEpochMillis)
+            .put("sourceTreeUri", metadata.sourceTreeUri)
+            .put("sourceFingerprint", metadata.sourceFingerprint)
+            .toString()
+        val existing = children(directoryUri).singleOrNull {
+            it.displayName == PROJECT_METADATA_FILE_NAME
+        }
         val metadataUri = existing?.uri ?: DocumentsContract.createDocument(
             resolver,
             directoryUri,
-            "application/json",
-            METADATA_FILE_NAME,
+            JSON_MIME_TYPE,
+            PROJECT_METADATA_FILE_NAME,
         ) ?: error("could not create library metadata")
-        resolver.openOutputStream(metadataUri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { writer ->
-            writer.write(encodeMetadata(metadata))
+        resolver.openOutputStream(metadataUri, "w")?.bufferedWriter(Charsets.UTF_8)?.use {
+            it.write(content)
         } ?: error("could not write library metadata")
         MangaLibraryCache.invalidate(cacheKey)
+    }
+
+    private fun decodeProjectMetadata(content: String): MangaLibraryProjectMetadata {
+        val value = JSONObject(content)
+        return MangaLibraryProjectMetadata(
+            schemaVersion = value.getInt("schemaVersion"),
+            projectId = value.getString("projectId"),
+            title = value.getString("title"),
+            createdAtEpochMillis = value.getLong("createdAtEpochMillis"),
+            sourceTreeUri = value.getString("sourceTreeUri"),
+            sourceFingerprint = value.getString("sourceFingerprint"),
+        )
     }
 
     private fun ensureDirectory(parentUri: Uri, displayName: String): Uri {
         children(parentUri).firstOrNull {
             it.displayName == displayName && it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR
         }?.let { return it.uri }
-        return (
+        return requireNotNull(
             DocumentsContract.createDocument(
                 resolver,
                 parentUri,
                 DocumentsContract.Document.MIME_TYPE_DIR,
                 displayName,
-            ) ?: error("could not create library directory")
-            ).also { MangaLibraryCache.invalidate(cacheKey) }
+            ),
+        ).also { MangaLibraryCache.invalidate(cacheKey) }
     }
 
     private fun children(parentUri: Uri): List<DocumentRef> {
@@ -240,6 +422,7 @@ class MangaLibraryStore(
             val idColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
             val nameColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             val typeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            val sizeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
             buildList {
                 while (cursor.moveToNext()) {
                     val id = cursor.getString(idColumn)
@@ -250,6 +433,7 @@ class MangaLibraryStore(
                             uri = DocumentsContract.buildDocumentUriUsingTree(rootTreeUri, id),
                             displayName = name,
                             mimeType = type,
+                            byteLength = if (cursor.isNull(sizeColumn)) -1L else cursor.getLong(sizeColumn),
                         ),
                     )
                 }
@@ -265,6 +449,16 @@ class MangaLibraryStore(
         null,
     )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
+    private fun documentLength(uri: Uri): Long = resolver.query(
+        uri,
+        arrayOf(DocumentsContract.Document.COLUMN_SIZE),
+        null,
+        null,
+        null,
+    )?.use { cursor ->
+        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
+    } ?: -1L
+
     private fun rootDocumentUri(): Uri = DocumentsContract.buildDocumentUriUsingTree(
         rootTreeUri,
         DocumentsContract.getTreeDocumentId(rootTreeUri),
@@ -277,46 +471,77 @@ class MangaLibraryStore(
         .ifBlank { "未命名漫画" }
         .take(MAX_DIRECTORY_NAME_LENGTH)
 
-    private fun outputOrder(name: String): Long = name.substringBeforeLast('.').toLongOrNull() ?: Long.MAX_VALUE
-
-    private fun encodeMetadata(metadata: MangaLibraryProjectMetadata): String = JSONObject()
-        .put("schemaVersion", metadata.schemaVersion)
-        .put("projectId", metadata.projectId)
-        .put("title", metadata.title)
-        .put("createdAtEpochMillis", metadata.createdAtEpochMillis)
-        .put("sourceTreeUri", metadata.sourceTreeUri)
-        .toString()
-
-    private fun decodeMetadata(content: String): MangaLibraryProjectMetadata {
-        val value = JSONObject(content)
-        return MangaLibraryProjectMetadata(
-            schemaVersion = value.getInt("schemaVersion"),
-            projectId = value.getString("projectId"),
-            title = value.getString("title"),
-            createdAtEpochMillis = value.getLong("createdAtEpochMillis"),
-            sourceTreeUri = value.getString("sourceTreeUri"),
-        )
+    private fun safeSourceFileName(page: PageRecord): String {
+        val extension = page.mediaType.substringAfter('/').let {
+            when (it) {
+                "jpeg", "jpg" -> "jpg"
+                "png" -> "png"
+                "webp" -> "webp"
+                else -> page.storedPath.substringAfterLast('.', "img")
+            }
+        }
+        return page.originalName
+            .replace(UNSAFE_DIRECTORY_CHARACTER, "_")
+            .trim(' ', '.')
+            .take(MAX_SOURCE_FILE_NAME_LENGTH)
+            .ifBlank { "${(page.order + 1).toString().padStart(4, '0')}.$extension" }
     }
+
+    private fun uniqueDirectoryName(base: String, occupied: Set<String>): String {
+        val occupiedLower = occupied.mapTo(mutableSetOf()) { it.lowercase(Locale.ROOT) }
+        if (base.lowercase(Locale.ROOT) !in occupiedLower) return base
+        var suffix = 2
+        while (true) {
+            val suffixText = " ($suffix)"
+            val candidate = "${base.take(MAX_DIRECTORY_NAME_LENGTH - suffixText.length)}$suffixText"
+            if (candidate.lowercase(Locale.ROOT) !in occupiedLower) return candidate
+            suffix += 1
+        }
+    }
+
+    private fun outputOrder(name: String): Long =
+        name.substringBeforeLast('.').toLongOrNull() ?: Long.MAX_VALUE
+
+    private fun resolveInside(root: Path, relative: String): Path {
+        require(relative.isNotBlank() && !relative.startsWith('/'))
+        val normalizedRoot = root.toAbsolutePath().normalize()
+        return normalizedRoot.resolve(relative).normalize().also {
+            require(it.startsWith(normalizedRoot))
+        }
+    }
+
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 
     private data class DocumentRef(
         val uri: Uri,
         val displayName: String,
         val mimeType: String,
+        val byteLength: Long,
     )
 
     private companion object {
-        const val METADATA_FILE_NAME = ".masumi-project.json"
-        const val OUTPUT_DIRECTORY_NAME = "成品"
-        const val MAX_TITLE_LENGTH = 120
-        const val MAX_DIRECTORY_NAME_LENGTH = 48
+        const val PROJECT_METADATA_FILE_NAME = ".masumi-project.json"
+        const val SOURCE_DIRECTORY_NAME = "生肉"
+        const val OUTPUT_DIRECTORY_NAME = "翻译后"
+        const val JSON_MIME_TYPE = "application/json"
+        const val COPY_BUFFER_SIZE = 64 * 1024
+        const val MAX_DIRECTORY_NAME_LENGTH = 80
+        const val MAX_SOURCE_FILE_NAME_LENGTH = 180
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         val OUTPUT_FILE = Regex("[0-9]{1,12}\\.(png|webp)", RegexOption.IGNORE_CASE)
+        val SOURCE_FILE = Regex(".+\\.(jpe?g|png|webp)", RegexOption.IGNORE_CASE)
         val UNSAFE_DIRECTORY_CHARACTER = Regex("[/\\\\:*?\"<>|]")
         val WHITESPACE = Regex("\\s+")
         val CHILD_PROJECTION = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
         )
     }
 }
+
+private const val CURRENT_PROJECT_SCHEMA_VERSION = 3
+private val SHA256 = Regex("[0-9a-f]{64}")

@@ -72,6 +72,7 @@ object TranslationArtifactIdentity {
         add("temperature" to value.provider.temperature.toString())
         add("maximumOutputTokens" to value.provider.maximumOutputTokens.toString())
         add("requestJsonObjectFormat" to value.provider.requestJsonObjectFormat.toString())
+        add("providerEndpointSha256" to value.provider.reference.endpointSha256)
         add("initialGlossarySha256" to value.initialGlossarySha256)
     }
 

@@ -126,6 +126,7 @@ class TranslationRunner(
                 temperature = settings.temperature,
                 maximumOutputTokens = settings.maximumOutputTokens,
                 requestJsonObjectFormat = settings.requestJsonObjectFormat,
+                reference = settings.artifactReference(),
             ),
             initialGlossarySha256 = initialGlossarySha256,
         )
@@ -655,6 +656,7 @@ class TranslationRunner(
         completionTokens = artifacts.sumOf { it.usage?.completionTokens ?: 0L },
         totalTokens = artifacts.sumOf { it.usage?.totalTokens ?: 0L },
         retryCount = artifacts.sumOf { (it.attemptCount - EXPECTED_PROVIDER_CALLS).coerceAtLeast(0) },
+        provider = dependencies.provider.reference,
     )
 
     private fun TranslationJobRecord.toProgress(

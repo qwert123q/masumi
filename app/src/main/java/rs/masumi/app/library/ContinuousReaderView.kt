@@ -37,9 +37,14 @@ class ContinuousReaderView @JvmOverloads constructor(
     private var scrollOffset = 0f
     private val placeholderPaint = Paint().apply { color = Color.rgb(24, 26, 30) }
     private val dividerPaint = Paint().apply { color = Color.BLACK }
+    private val bitmapPaint = Paint(
+        Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG,
+    )
     private val sourceRect = Rect()
     private val targetRect = RectF()
     private var lastReportedPage = -1
+
+    internal fun usesFilteredBitmapSampling(): Boolean = bitmapPaint.isFilterBitmap
 
     private val gestureDetector = GestureDetector(
         context,
@@ -136,7 +141,7 @@ class ContinuousReaderView @JvmOverloads constructor(
                 targetRect.set(0f, top - viewportTop, width.toFloat(), bottom - viewportTop)
                 if (bitmap != null && !bitmap.isRecycled) {
                     sourceRect.set(0, 0, bitmap.width, bitmap.height)
-                    canvas.drawBitmap(bitmap, sourceRect, targetRect, null)
+                    canvas.drawBitmap(bitmap, sourceRect, targetRect, bitmapPaint)
                 } else {
                     canvas.drawRect(targetRect, placeholderPaint)
                     onNeedPage?.invoke(index)

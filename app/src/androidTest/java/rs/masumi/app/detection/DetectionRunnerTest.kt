@@ -56,7 +56,7 @@ class DetectionRunnerTest {
             assertEquals(300, artifact.rawQueries.size)
             assertEquals(1, artifact.textRegions.size)
             listOf(0, 1).forEach { order ->
-                val preview = published.resolve("previews/${order.toString().padStart(4, '0')}.png")
+                val preview = published.resolve("previews/${order.toString().padStart(4, '0')}.webp")
                 assertTrue(Files.exists(preview))
                 val bitmap = BitmapFactory.decodeFile(preview.toString())
                 assertNotNull(bitmap)

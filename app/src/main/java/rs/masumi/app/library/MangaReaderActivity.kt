@@ -361,16 +361,26 @@ class MangaReaderActivity : Activity() {
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         val targetWidth = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+        val detailWidth = (targetWidth.toLong() * READER_DETAIL_WIDTH_MULTIPLIER)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
         var sampleSize = 1
+        while (bounds.outWidth / (sampleSize * 2) >= detailWidth) {
+            sampleSize *= 2
+        }
+        // Memory pressure may require another step down, but never decode a
+        // page narrower than the screen and then upscale it. That was the
+        // second source of visible jagged text on very tall pages.
         while (
-            bounds.outWidth / (sampleSize * 2) >= targetWidth ||
-            sampledPixelCount(bounds.outWidth, bounds.outHeight, sampleSize) > MAX_BITMAP_PIXELS
+            sampledPixelCount(bounds.outWidth, bounds.outHeight, sampleSize) > MAX_BITMAP_PIXELS &&
+            bounds.outWidth / (sampleSize * 2) >= targetWidth
         ) {
             sampleSize *= 2
         }
         val options = BitmapFactory.Options().apply {
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
         }
         return runCatching {
             contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
@@ -385,9 +395,10 @@ class MangaReaderActivity : Activity() {
         private const val EXTRA_PROJECT_ID = "project_id"
         private const val EXTRA_TITLE = "title"
         private const val STATE_PAGE_INDEX = "page_index"
-        private const val MAX_BITMAP_PIXELS = 8_000_000L
+        private const val MAX_BITMAP_PIXELS = 12_000_000L
+        private const val READER_DETAIL_WIDTH_MULTIPLIER = 2
         private const val CACHE_RADIUS = 1
-        private const val CONTINUOUS_CACHE_RADIUS = 2
+        private const val CONTINUOUS_CACHE_RADIUS = 1
         private const val DEFAULT_PAGE_ASPECT = 1.45f
         private const val PREVIOUS_TAP_ZONE = 0.32f
         private const val NEXT_TAP_ZONE = 0.68f

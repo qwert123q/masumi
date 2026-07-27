@@ -12,9 +12,6 @@ import java.net.URL
 import java.nio.file.Path
 import java.nio.file.Files
 import java.time.Clock
-import rs.masumi.app.library.MangaLibraryModelCache
-import rs.masumi.app.library.PersistentModelFile
-import rs.masumi.app.library.PersistentModelPackage
 import rs.masumi.core.serialization.DetectionJson
 
 fun interface ModelStreamSource {
@@ -27,7 +24,6 @@ class DefaultDetectorModelProvider(
     private val streamSource: ModelStreamSource = HttpModelStreamSource(),
     private val signatureValidator: ModelSignatureValidator,
     private val clock: Clock = Clock.systemUTC(),
-    private val persistentCache: MangaLibraryModelCache? = null,
 ) : DetectorModelProvider {
     private val workspaceRoot = workspaceRoot.toAbsolutePath().normalize()
     private val store = DetectorModelPackageStore(this.workspaceRoot)
@@ -38,13 +34,8 @@ class DefaultDetectorModelProvider(
         progress: (downloaded: Long, total: Long) -> Unit,
     ): Path {
         val packageDirectory = packageDirectory()
-        var model = readTrustedPrivatePackage(packageDirectory)
-        if (model == null) {
-            persistentCache?.restore(persistentPackage(), packageDirectory, progress)
-            model = readTrustedPrivatePackage(packageDirectory)
-        }
-        if (model == null) {
-            model = store.ensureInstalled(
+        return readTrustedPrivatePackage(packageDirectory)
+            ?: store.ensureInstalled(
                 installId = installId,
                 descriptor = descriptor,
                 acquiredAtEpochMillis = clock.millis(),
@@ -52,11 +43,6 @@ class DefaultDetectorModelProvider(
                 signatureValidator = signatureValidator,
                 onProgress = progress,
             )
-        }
-        runCatching {
-            persistentCache?.backup(persistentPackage(), packageDirectory, progress)
-        }
-        return model
     }
 
     private fun readTrustedPrivatePackage(directory: Path): Path? = runCatching {
@@ -79,14 +65,6 @@ class DefaultDetectorModelProvider(
         .resolve("models")
         .resolve(descriptor.storageKey)
         .resolve(descriptor.sha256)
-
-    private fun persistentPackage(): PersistentModelPackage = PersistentModelPackage(
-        cacheKey = "漫画检测",
-        version = descriptor.sha256,
-        files = listOf(
-            PersistentModelFile(MODEL_FILE_NAME, descriptor.byteLength, descriptor.sha256),
-        ),
-    )
 
     private companion object {
         const val MODEL_FILE_NAME = "model.onnx"

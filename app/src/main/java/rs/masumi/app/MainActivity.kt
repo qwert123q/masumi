@@ -16,7 +16,6 @@ import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
-import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -50,11 +49,10 @@ import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.app.library.cachedMangaLibraryProjects
 import rs.masumi.app.library.cachedMangaLibraryRootName
 import rs.masumi.app.library.MangaLibraryPreferences
-import rs.masumi.app.library.MangaLibraryInstalledModelSynchronizer
-import rs.masumi.app.library.MangaLibraryModelCache
 import rs.masumi.app.library.MangaLibraryProject
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.library.MangaReaderActivity
+import rs.masumi.app.library.mangaSourceFingerprint
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
@@ -64,10 +62,10 @@ import rs.masumi.app.ocr.OcrForegroundService
 import rs.masumi.app.ocr.OcrProgress
 import rs.masumi.app.ocr.OcrResumePolicy
 import rs.masumi.app.ocr.OcrStatusBroadcast
-import rs.masumi.app.translation.SavedTranslationSettings
 import rs.masumi.app.translation.TranslationForegroundService
 import rs.masumi.app.translation.TranslationProgress
 import rs.masumi.app.translation.TranslationResumePolicy
+import rs.masumi.app.translation.TranslationSettingsPane
 import rs.masumi.app.translation.TranslationSettingsStore
 import rs.masumi.app.translation.TranslationStatusBroadcast
 import rs.masumi.app.typesetting.TypesettingForegroundService
@@ -89,6 +87,7 @@ import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationJobStatus
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPromptRef
+import rs.masumi.core.translation.isSuccessful
 import rs.masumi.app.detection.PublishedTypesettingRun
 import rs.masumi.core.typesetting.TypesettingJobStatus
 import rs.masumi.core.typesetting.TypesettingPageState
@@ -140,12 +139,7 @@ class MainActivity : Activity() {
     private lateinit var previousOcrPageButton: Button
     private lateinit var nextOcrPageButton: Button
     private lateinit var ocrDetailText: TextView
-    private lateinit var translationApiUrl: EditText
-    private lateinit var translationApiKey: EditText
-    private lateinit var translationModel: EditText
-    private lateinit var translationSettingsToggleButton: Button
-    private lateinit var translationSettingsContainer: View
-    private lateinit var saveTranslationSettingsButton: Button
+    private lateinit var translationSettingsPane: TranslationSettingsPane
     private lateinit var translationButton: Button
     private lateinit var cancelTranslationButton: Button
     private lateinit var translationProgress: ProgressBar
@@ -226,7 +220,6 @@ class MainActivity : Activity() {
     private var pendingChapterSelectionAfterLibrary = false
     private var pendingExportAfterLibrary = false
     private var libraryRefreshGeneration = 0
-    private var synchronizedModelLibraryRoot: String? = null
     private var requestedProjectId: String? = null
     private var autoSaveCheckInFlight = false
     private var exportSucceededForCurrentRun = false
@@ -350,12 +343,6 @@ class MainActivity : Activity() {
         previousOcrPageButton = findViewById(R.id.previousOcrPageButton)
         nextOcrPageButton = findViewById(R.id.nextOcrPageButton)
         ocrDetailText = findViewById(R.id.ocrDetailText)
-        translationApiUrl = findViewById(R.id.translationApiUrl)
-        translationApiKey = findViewById(R.id.translationApiKey)
-        translationModel = findViewById(R.id.translationModel)
-        translationSettingsToggleButton = findViewById(R.id.translationSettingsToggleButton)
-        translationSettingsContainer = findViewById(R.id.translationSettingsContainer)
-        saveTranslationSettingsButton = findViewById(R.id.saveTranslationSettingsButton)
         translationButton = findViewById(R.id.translationButton)
         cancelTranslationButton = findViewById(R.id.cancelTranslationButton)
         translationProgress = findViewById(R.id.translationProgress)
@@ -391,6 +378,11 @@ class MainActivity : Activity() {
         typesettingPreviewPane = PreviewPane(this, typesettingPreviewImage, previewExecutor)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         translationSettingsStore = TranslationSettingsStore(this)
+        translationSettingsPane = TranslationSettingsPane(
+            activity = this,
+            store = translationSettingsStore,
+            onSettingsSaved = ::onTranslationSettingsSaved,
+        )
         libraryPreferences = MangaLibraryPreferences(this)
         pipelineQueueStore = PipelineQueueStore(this)
         PipelineColdStartGuard.reconcile(pipelineQueueStore)
@@ -398,13 +390,6 @@ class MainActivity : Activity() {
             ?.takeIf(SAFE_PROJECT_ID::matches)
         automaticPipelineRequested = getPreferences(MODE_PRIVATE)
             .getBoolean(PREF_AUTOMATIC_PIPELINE, false)
-        val savedTranslationSettings = translationSettingsStore.loadSaved()
-        savedTranslationSettings?.let { saved ->
-            translationApiUrl.setText(saved.apiUrl)
-            translationApiKey.setText(saved.apiKey)
-            translationModel.setText(saved.model)
-        }
-        setTranslationSettingsExpanded(false)
         val initialPage = if (intent.getBooleanExtra(EXTRA_SHOW_DETAILS, false)) {
             PAGE_DETAILS
         } else {
@@ -434,10 +419,6 @@ class MainActivity : Activity() {
         cancelOcrButton.setOnClickListener { cancelOcr() }
         previousOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex - 1) }
         nextOcrPageButton.setOnClickListener { showOcrPreview(currentOcrPreviewIndex + 1) }
-        translationSettingsToggleButton.setOnClickListener {
-            setTranslationSettingsExpanded(translationSettingsContainer.visibility != View.VISIBLE)
-        }
-        saveTranslationSettingsButton.setOnClickListener { saveTranslationSettings() }
         translationButton.setOnClickListener { requestTranslationStart() }
         cancelTranslationButton.setOnClickListener { cancelTranslation() }
         cleanupButton.setOnClickListener { requestCleanupStart() }
@@ -483,7 +464,6 @@ class MainActivity : Activity() {
             enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
         }
         refreshLibraryHistory()
-        syncInstalledModelsToLibrary()
         onPipelineStateChanged()
     }
 
@@ -518,6 +498,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         unregisterPredictiveBackCallback()
         contentPager.onSwipe = null
+        translationSettingsPane.close()
         previewExecutor.shutdownNow()
         detectionPreviewPane.clear()
         ocrPreviewPane.clear()
@@ -573,10 +554,7 @@ class MainActivity : Activity() {
 
     private fun showTranslationSettings() {
         showPage(PAGE_DETAILS)
-        setTranslationSettingsExpanded(true)
-        translationSettingsToggleButton.post {
-            translationSettingsToggleButton.requestFocus()
-        }
+        translationSettingsPane.showAndFocus()
     }
 
     private fun startAutomaticPipeline() {
@@ -839,9 +817,7 @@ class MainActivity : Activity() {
             REQUEST_LIBRARY_FOLDER -> {
                 retainReadWritePermission(treeUri, data.flags)
                 libraryPreferences.saveRootUri(treeUri)
-                synchronizedModelLibraryRoot = null
                 refreshLibraryHistory()
-                syncInstalledModelsToLibrary()
                 if (pendingChapterSelectionAfterLibrary) {
                     pendingChapterSelectionAfterLibrary = false
                     contentPager.post { openChapterFolder() }
@@ -913,19 +889,6 @@ class MainActivity : Activity() {
         startActivityForResult(intent, REQUEST_LIBRARY_FOLDER)
     }
 
-    private fun syncInstalledModelsToLibrary() {
-        val rootUri = libraryPreferences.rootUri() ?: return
-        val rootKey = rootUri.toString()
-        if (synchronizedModelLibraryRoot == rootKey) return
-        synchronizedModelLibraryRoot = rootKey
-        Thread({
-            MangaLibraryInstalledModelSynchronizer(
-                workspaceRoot = filesDir.toPath().resolve("workspace"),
-                cache = MangaLibraryModelCache(contentResolver, rootUri),
-            ).sync()
-        }, MODEL_LIBRARY_SYNC_THREAD_NAME).start()
-    }
-
     private fun retainReadPermission(treeUri: Uri, resultFlags: Int) {
         if (resultFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) return
 
@@ -969,8 +932,14 @@ class MainActivity : Activity() {
                             .ifBlank { "漫画项目 ${project.manifest.projectId.take(8)}" },
                         createdAtEpochMillis = project.manifest.createdAtEpochMillis,
                         sourceTreeUri = rootUri,
+                        sourceFingerprint = mangaSourceFingerprint(project.manifest.pages),
                     )
                 }
+                store.archiveSourcePages(
+                    projectId = project.manifest.projectId,
+                    privateProjectDirectory = project.directory,
+                    pages = project.manifest.pages,
+                )
                 store.ensureOutputDirectory(project.manifest.projectId)
             }
             runOnUiThread {
@@ -1032,6 +1001,12 @@ class MainActivity : Activity() {
                         title = title,
                         createdAtEpochMillis = outcome.manifest.createdAtEpochMillis,
                         sourceTreeUri = treeUri,
+                        sourceFingerprint = mangaSourceFingerprint(outcome.manifest.pages),
+                    )
+                    library.archiveSourcePages(
+                        projectId = outcome.manifest.projectId,
+                        privateProjectDirectory = outcome.projectDirectory,
+                        pages = outcome.manifest.pages,
                     )
                 }.isSuccess
                 ChapterImportResult(outcome, storedInLibrary)
@@ -1154,28 +1129,13 @@ class MainActivity : Activity() {
         ocrStatus.setText(R.string.ocr_notification_cancelling)
     }
 
-    private fun saveTranslationSettings() {
-        val result = runCatching {
-            translationSettingsStore.save(
-                SavedTranslationSettings(
-                    apiUrl = translationApiUrl.text.toString(),
-                    apiKey = translationApiKey.text.toString(),
-                    model = translationModel.text.toString(),
-                ),
-            )
-        }
-        if (result.isSuccess) {
-            Toast.makeText(this, R.string.translation_settings_saved, Toast.LENGTH_SHORT).show()
-            setTranslationSettingsExpanded(false)
-            refreshTranslationDurableState()
-            if (currentProject != null && !typesettingRunComplete()) {
-                enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
-                onPipelineStateChanged()
-            } else {
-                startForegroundService(PipelineSchedulerService.wakeIntent(this))
-            }
+    private fun onTranslationSettingsSaved() {
+        refreshTranslationDurableState()
+        if (currentProject != null && !typesettingRunComplete()) {
+            enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
+            onPipelineStateChanged()
         } else {
-            Toast.makeText(this, R.string.translation_settings_invalid, Toast.LENGTH_SHORT).show()
+            startForegroundService(PipelineSchedulerService.wakeIntent(this))
         }
     }
 
@@ -1187,7 +1147,7 @@ class MainActivity : Activity() {
         ) return
         if (translationSettingsStore.loadProviderSettings() == null) {
             translationStatus.setText(R.string.translation_status_settings_missing)
-            setTranslationSettingsExpanded(true)
+            translationSettingsPane.showAndFocus()
             return
         }
         if (
@@ -1224,13 +1184,6 @@ class MainActivity : Activity() {
         startService(TranslationForegroundService.cancelIntent(this, projectId))
         cancelTranslationButton.isEnabled = false
         translationStatus.setText(R.string.translation_notification_cancelling)
-    }
-
-    private fun setTranslationSettingsExpanded(expanded: Boolean) {
-        translationSettingsContainer.visibility = if (expanded) View.VISIBLE else View.GONE
-        translationSettingsToggleButton.setText(
-            if (expanded) R.string.translation_settings_hide else R.string.translation_settings_show,
-        )
     }
 
     private fun requestCleanupStart() {
@@ -1668,7 +1621,7 @@ class MainActivity : Activity() {
         translationProgress.max = progress.totalWindowCount.coerceAtLeast(1)
         translationProgress.progress = progress.terminalWindowCount.coerceIn(0, translationProgress.max)
         val protectedCount = progress.preservedItemCount + progress.protectedOcrCount
-        translationStatus.text = if (interrupted) {
+        val statusText = if (interrupted) {
             getString(R.string.stage_status_interrupted)
         } else when (progress.status) {
             TranslationJobStatus.QUEUED -> getString(R.string.translation_status_starting)
@@ -1693,6 +1646,21 @@ class MainActivity : Activity() {
                 R.string.translation_status_failed,
                 describePipelineError(progress.errorCode),
             )
+        }
+        translationStatus.text = if (progress.status.isSuccessful()) {
+            currentTranslationRun?.report?.provider
+                ?.takeIf { it.displayName.isNotBlank() }
+                ?.let { provider ->
+                    getString(
+                        R.string.translation_status_provider_record,
+                        statusText,
+                        provider.displayName,
+                        currentTranslationRun?.artifact?.dependencies?.provider?.modelId.orEmpty(),
+                    )
+                }
+                ?: statusText
+        } else {
+            statusText
         }
     }
 
@@ -2184,8 +2152,9 @@ class MainActivity : Activity() {
         cleanupButton.isEnabled = !busy && currentTranslationRun != null
         typesettingButton.isEnabled = !busy && currentCleanupRun != null
         exportButton.isEnabled = !busy && currentTypesettingRun != null
-        saveTranslationSettingsButton.isEnabled = !translationActive && !cleanupActive &&
-            !typesettingActive && !exportActive
+        translationSettingsPane.setSaveEnabled(
+            !translationActive && !cleanupActive && !typesettingActive && !exportActive,
+        )
         bindCancelControl(cancelAnalysisButton, analysisActive)
         bindCancelControl(cancelOcrButton, ocrActive)
         bindCancelControl(cancelTranslationButton, translationActive)
@@ -2433,7 +2402,6 @@ class MainActivity : Activity() {
         const val REQUEST_LIBRARY_FOLDER = 1004
         const val IMPORT_THREAD_NAME = "masumi-import"
         const val LIBRARY_THREAD_NAME = "masumi-library"
-        const val MODEL_LIBRARY_SYNC_THREAD_NAME = "masumi-model-library-sync"
         const val PREVIEW_THREAD_NAME = "masumi-preview-decode"
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
         const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"

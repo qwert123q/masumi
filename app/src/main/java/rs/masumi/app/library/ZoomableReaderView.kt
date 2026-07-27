@@ -4,6 +4,7 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.util.AttributeSet
 import android.view.GestureDetector
@@ -112,10 +113,12 @@ class ZoomableReaderView @JvmOverloads constructor(
 
     override fun setImageBitmap(bitmap: Bitmap?) {
         super.setImageBitmap(bitmap)
+        (drawable as? BitmapDrawable)?.paint?.isFilterBitmap = true
         resetTransform()
     }
 
     override fun setImageDrawable(drawable: Drawable?) {
+        (drawable as? BitmapDrawable)?.paint?.isFilterBitmap = true
         super.setImageDrawable(drawable)
         resetTransform()
     }
