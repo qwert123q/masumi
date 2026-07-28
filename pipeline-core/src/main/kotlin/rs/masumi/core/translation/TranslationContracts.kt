@@ -52,7 +52,7 @@ enum class TranslationPreserveReason {
 
 @Serializable
 data class TranslationPolicy(
-    val revision: String = "ja-zh-hans-v4-salvage",
+    val revision: String = "ja-zh-hans-v5-complete-output",
     val sourceLanguage: TranslationSourceLanguage = TranslationSourceLanguage.JA,
     val targetLanguage: TranslationTargetLanguage = TranslationTargetLanguage.ZH_HANS,
     val translateDialogue: Boolean = true,

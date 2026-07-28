@@ -1,6 +1,8 @@
 package rs.masumi.app.translation
 
 import android.content.Context
+import android.util.AtomicFile
+import java.nio.charset.StandardCharsets
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,18 +26,33 @@ class TranslationSettingsStore(
     preferencesName: String = PREFERENCES_NAME,
 ) {
     private val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+    private val backupFile = AtomicFile(
+        context.noBackupFilesDir.resolve("$preferencesName.providers.json"),
+    )
 
-    fun loadProviders(): List<SavedTranslationProvider> {
-        val encoded = preferences.getString(KEY_PROFILES_JSON, null)
-        val decoded = encoded?.let { runCatching { decodeProfiles(it) }.getOrNull() }.orEmpty()
-        if (decoded.isNotEmpty()) return decoded
-        return listOfNotNull(loadLegacyProvider())
-    }
+    fun loadProviders(): List<SavedTranslationProvider> = loadSnapshot()?.providers.orEmpty()
 
     fun loadActiveProvider(): SavedTranslationProvider? {
-        val providers = loadProviders()
-        val activeId = preferences.getString(KEY_ACTIVE_PROFILE_ID, null)
-        return providers.firstOrNull { it.id == activeId } ?: providers.firstOrNull()
+        val snapshot = loadSnapshot() ?: return null
+        return snapshot.providers.firstOrNull { it.id == snapshot.activeId }
+            ?: snapshot.providers.firstOrNull()
+    }
+
+    private fun loadSnapshot(): ProviderSnapshot? {
+        val encoded = preferences.getString(KEY_PROFILES_JSON, null)
+        val decoded = encoded?.let { runCatching { decodeProfiles(it) }.getOrNull() }.orEmpty()
+        if (decoded.isNotEmpty()) {
+            return ProviderSnapshot(
+                providers = decoded,
+                activeId = preferences.getString(KEY_ACTIVE_PROFILE_ID, null)
+                    ?.takeIf { active -> decoded.any { it.id == active } }
+                    ?: decoded.first().id,
+            ).also(::ensureBackup)
+        }
+        loadLegacyProvider()?.let { legacy ->
+            return ProviderSnapshot(listOf(legacy), legacy.id).also(::ensureBackup)
+        }
+        return readBackup()?.also(::restorePreferences)
     }
 
     fun saveProvider(value: SavedTranslationProvider) {
@@ -117,6 +134,7 @@ class TranslationSettingsStore(
                 .putString(KEY_MODEL, active.model)
                 .commit(),
         ) { "translation settings could not be persisted" }
+        writeBackup(ProviderSnapshot(validated, active.id))
     }
 
     private fun encodeProfiles(providers: List<SavedTranslationProvider>): String = JSONArray().apply {
@@ -157,6 +175,50 @@ class TranslationSettingsStore(
         }
     }
 
+    private fun writeBackup(snapshot: ProviderSnapshot) {
+        val encoded = JSONObject()
+            .put(JSON_BACKUP_VERSION, BACKUP_VERSION)
+            .put(JSON_ACTIVE_ID, snapshot.activeId)
+            .put(JSON_PROVIDERS, JSONArray(encodeProfiles(snapshot.providers)))
+            .toString()
+            .toByteArray(StandardCharsets.UTF_8)
+        val output = backupFile.startWrite()
+        try {
+            output.write(encoded)
+            backupFile.finishWrite(output)
+        } catch (failure: Throwable) {
+            backupFile.failWrite(output)
+            throw failure
+        }
+    }
+
+    private fun readBackup(): ProviderSnapshot? = runCatching {
+        val root = backupFile.openRead().bufferedReader(StandardCharsets.UTF_8).use { reader ->
+            JSONObject(reader.readText())
+        }
+        require(root.getInt(JSON_BACKUP_VERSION) == BACKUP_VERSION)
+        val providers = decodeProfiles(root.getJSONArray(JSON_PROVIDERS).toString())
+        val activeId = root.getString(JSON_ACTIVE_ID)
+        require(providers.any { it.id == activeId })
+        ProviderSnapshot(providers, activeId)
+    }.getOrNull()
+
+    private fun ensureBackup(snapshot: ProviderSnapshot) {
+        if (readBackup() == snapshot) return
+        runCatching { writeBackup(snapshot) }
+    }
+
+    private fun restorePreferences(snapshot: ProviderSnapshot) {
+        val active = snapshot.providers.single { it.id == snapshot.activeId }
+        preferences.edit()
+            .putString(KEY_PROFILES_JSON, encodeProfiles(snapshot.providers))
+            .putString(KEY_ACTIVE_PROFILE_ID, active.id)
+            .putString(KEY_API_URL, active.apiUrl)
+            .putString(KEY_API_KEY, active.apiKey)
+            .putString(KEY_MODEL, active.model)
+            .commit()
+    }
+
     private fun SavedTranslationProvider.validated(): SavedTranslationProvider {
         val normalized = copy(
             id = id.trim(),
@@ -186,7 +248,13 @@ class TranslationSettingsStore(
     }
 
     private companion object {
+        data class ProviderSnapshot(
+            val providers: List<SavedTranslationProvider>,
+            val activeId: String,
+        )
+
         const val PREFERENCES_NAME = "translation_provider"
+        const val BACKUP_VERSION = 1
         const val KEY_API_URL = "api_url"
         const val KEY_API_KEY = "api_key"
         const val KEY_MODEL = "model"
@@ -199,6 +267,9 @@ class TranslationSettingsStore(
         const val JSON_API_URL = "api_url"
         const val JSON_API_KEY = "api_key"
         const val JSON_MODEL = "model"
+        const val JSON_BACKUP_VERSION = "version"
+        const val JSON_ACTIVE_ID = "active_id"
+        const val JSON_PROVIDERS = "providers"
         val PROFILE_ID = Regex("[A-Za-z0-9_-]{1,64}")
     }
 }

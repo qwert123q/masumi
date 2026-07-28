@@ -28,7 +28,7 @@ Requires JDK 17, Android SDK 36, Android NDK 28.2, CMake 3.22, and an `arm64-v8a
 ```bash
 git submodule update --init --recursive
 ./gradlew :pipeline-core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
-adb install -r -t app/build/outputs/apk/debug/app-debug.apk
+tools/install-debug-preserving-data.sh
 ```
 
 ## Project structure

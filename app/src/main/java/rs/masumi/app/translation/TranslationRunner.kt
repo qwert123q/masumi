@@ -228,15 +228,12 @@ class TranslationRunner(
                 windowArtifacts += artifact
             }
 
-            failWhenEveryProviderWindowWasPreserved(job)
-
-            // If a successful structured response merely omitted an item,
-            // isolate that item for one final request. Provider failures have
-            // already consumed their bounded transport retry; replaying them
-            // through progressively smaller windows only burns time when the
-            // model has refused the content.
+            // A model can return valid prose wrapped in malformed JSON for a
+            // large batch. Split only those failed batches and retry smaller
+            // groups; semantic item omissions are retried in isolation.
             val recoveredIds = salvagePreservedItems(
                 windows = windows,
+                artifacts = windowArtifacts,
                 outcomes = outcomes,
                 glossary = glossary,
                 dependencies = dependencies,
@@ -266,6 +263,7 @@ class TranslationRunner(
                         )
                     }
             }
+            failWhenRequiredTranslationsRemain(outcomes, windowArtifacts)
 
             occurrenceInputs.sortedBy(PageTranslationInput::pageOrder).forEach { input ->
                 val checkpoint = job.pages.single { it.pageOrder == input.pageOrder }
@@ -602,21 +600,6 @@ class TranslationRunner(
             .sortedWith(compareBy(TranslationGlossaryEntry::source, TranslationGlossaryEntry::translation))
     }
 
-    private fun failWhenEveryProviderWindowWasPreserved(job: TranslationJobRecord) {
-        if (job.windows.isEmpty()) return
-        val failures = job.windows.mapNotNull { window ->
-            window.error?.takeIf {
-                window.state == TranslationWindowState.PRESERVED_SOURCE &&
-                    it.code in PROVIDER_FAILURE_CODES
-            }
-        }
-        if (failures.size != job.windows.size) return
-        val commonCode = failures.map(TranslationError::code).distinct().singleOrNull()
-            ?: "ALL_WINDOWS_PROVIDER_FAILED"
-        val commonHttpStatus = failures.map(TranslationError::httpStatus).distinct().singleOrNull()
-        throw TerminalProviderFailure(TranslationError(commonCode, commonHttpStatus))
-    }
-
     private fun TranslationJobRecord.toRunArtifact(createdAt: Long): TranslationRunArtifact =
         TranslationRunArtifact(
             runArtifactKey = runArtifactKey,
@@ -704,14 +687,9 @@ class TranslationRunner(
 
     private class TranslationCancellationSignal : RuntimeException()
     private class FatalTranslationException(val code: String) : RuntimeException(code)
-    /**
-     * Re-requests a response-omitted item once in an isolated window and
-     * patches successful results into [outcomes]. Provider errors are not
-     * retried here because the provider itself already owns the bounded
-     * transport retry.
-     */
     private fun salvagePreservedItems(
         windows: List<TranslationBatchWindow>,
+        artifacts: List<TranslationWindowArtifact>,
         outcomes: MutableMap<String, ValidatedTranslationItem>,
         glossary: List<TranslationGlossaryEntry>,
         dependencies: TranslationDependencies,
@@ -721,23 +699,21 @@ class TranslationRunner(
         val template = windows.firstOrNull() ?: return emptySet()
         val batchItemsById = windows.flatMap(TranslationBatchWindow::items)
             .associateBy { it.input.translationRegionId }
-        val pending = outcomes.values
-            .filter { it.state == TranslationResultState.PRESERVED_SOURCE && it.preserveReason in SALVAGEABLE_REASONS }
-            .mapNotNull { batchItemsById[it.translationRegionId] }
-        if (pending.isEmpty()) return emptySet()
         val glossarySha256 = TranslationArtifactIdentity.glossarySha256(glossary)
         val recovered = mutableSetOf<String>()
-        pending.forEachIndexed { itemIndex, item ->
+        var recoveryWindowIndex = SALVAGE_WINDOW_INDEX_BASE
+
+        fun request(items: List<TranslationBatchItem>): TranslationWindowArtifact {
             if (cancellation()) throw TranslationCancellationSignal()
             val window = template.copy(
-                windowIndex = SALVAGE_WINDOW_INDEX_BASE + itemIndex,
+                windowIndex = recoveryWindowIndex++,
                 glossary = glossary,
                 contextItems = emptyList(),
-                items = listOf(item),
+                items = items,
                 estimatedInputTokens = 0,
                 exceedsBudget = false,
             )
-            val artifact = executeWindow(
+            return executeWindow(
                 window = window,
                 windowKey = TranslationArtifactIdentity.windowArtifactKey(window, glossarySha256, dependencies),
                 inputGlossarySha256 = glossarySha256,
@@ -746,14 +722,88 @@ class TranslationRunner(
                 cancellation = cancellation,
                 discoverGlossary = false,
             )
-            artifact.items.singleOrNull()
-                ?.takeIf { it.state == TranslationResultState.TRANSLATED }
-                ?.let { translated ->
+        }
+
+        fun recoverGroup(items: List<TranslationBatchItem>, retryWholeGroup: Boolean) {
+            if (items.isEmpty()) return
+            if (!retryWholeGroup && items.size > 1) {
+                val midpoint = items.size / 2
+                recoverGroup(items.subList(0, midpoint), retryWholeGroup = true)
+                recoverGroup(items.subList(midpoint, items.size), retryWholeGroup = true)
+                return
+            }
+            val artifact = request(items)
+            artifact.items
+                .filter { it.state == TranslationResultState.TRANSLATED }
+                .forEach { translated ->
                     outcomes[translated.translationRegionId] = translated
                     recovered += translated.translationRegionId
                 }
+            val remaining = artifact.items
+                .filter { it.state == TranslationResultState.PRESERVED_SOURCE }
+                .mapNotNull { batchItemsById[it.translationRegionId] }
+            if (
+                remaining.isNotEmpty() &&
+                items.size > 1 &&
+                artifact.error?.code
+                    ?.let { it == TranslationProviderErrorCode.MALFORMED_RESPONSE.name }
+                    != false
+            ) {
+                if (remaining.size == 1) {
+                    recoverGroup(remaining, retryWholeGroup = true)
+                } else {
+                    val midpoint = remaining.size / 2
+                    recoverGroup(remaining.subList(0, midpoint), retryWholeGroup = true)
+                    recoverGroup(remaining.subList(midpoint, remaining.size), retryWholeGroup = true)
+                }
+            }
         }
+
+        // Retrying the same malformed batch tends to reproduce the same JSON
+        // truncation. Start one level smaller, then keep bisecting only a group
+        // that still fails.
+        artifacts
+            .filter { it.error?.code == TranslationProviderErrorCode.MALFORMED_RESPONSE.name }
+            .forEach { artifact ->
+                recoverGroup(
+                    items = artifact.items.mapNotNull { batchItemsById[it.translationRegionId] },
+                    retryWholeGroup = artifact.items.size == 1,
+                )
+            }
+
+        // Successful responses can still omit or invalidate individual items.
+        // One isolated request removes batch interactions and gives each item a
+        // final bounded provider retry.
+        outcomes.values
+            .filter {
+                it.state == TranslationResultState.PRESERVED_SOURCE &&
+                    it.preserveReason in SEMANTIC_RECOVERY_REASONS
+            }
+            .mapNotNull { batchItemsById[it.translationRegionId] }
+            .forEach { item ->
+                recoverGroup(listOf(item), retryWholeGroup = true)
+            }
+
         return recovered
+    }
+
+    private fun failWhenRequiredTranslationsRemain(
+        outcomes: Map<String, ValidatedTranslationItem>,
+        artifacts: List<TranslationWindowArtifact>,
+    ) {
+        val remainingIds = outcomes.values
+            .filter {
+                it.state == TranslationResultState.PRESERVED_SOURCE &&
+                    it.preserveReason in NON_PUBLISHABLE_REASONS
+            }
+            .mapTo(mutableSetOf(), ValidatedTranslationItem::translationRegionId)
+        if (remainingIds.isEmpty()) return
+        val providerError = artifacts.firstNotNullOfOrNull { artifact ->
+            artifact.error?.takeIf {
+                artifact.items.any { item -> item.translationRegionId in remainingIds }
+            }
+        }
+        throw TerminalProviderFailure(providerError ?: TranslationError("INCOMPLETE_TRANSLATION_RESPONSE"))
     }
 
     private class TerminalProviderFailure(val error: TranslationError) : RuntimeException(error.code)
@@ -761,8 +811,13 @@ class TranslationRunner(
     private companion object {
         const val EXPECTED_PROVIDER_CALLS = 2
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
-        val PROVIDER_FAILURE_CODES = TranslationProviderErrorCode.entries.mapTo(mutableSetOf()) { it.name }
-        val SALVAGEABLE_REASONS = setOf(TranslationPreserveReason.MISSING_RESPONSE)
+        val SEMANTIC_RECOVERY_REASONS = setOf(
+            TranslationPreserveReason.MISSING_RESPONSE,
+            TranslationPreserveReason.DUPLICATE_RESPONSE,
+            TranslationPreserveReason.INVALID_ROLE,
+            TranslationPreserveReason.BLANK_TRANSLATION,
+        )
+        val NON_PUBLISHABLE_REASONS = SEMANTIC_RECOVERY_REASONS + TranslationPreserveReason.PROVIDER_FAILURE
         const val SALVAGE_WINDOW_INDEX_BASE = 100_000
     }
 }

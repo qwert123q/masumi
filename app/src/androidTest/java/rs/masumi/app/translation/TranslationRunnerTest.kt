@@ -196,7 +196,7 @@ class TranslationRunnerTest {
     }
 
     @Test
-    fun providerFailedItemsArePreservedWithoutExtraSalvageRequests() {
+    fun providerFailedItemsStopPublicationWithoutRetryingUnrelatedTransportErrors() {
         val workspace = Files.createTempDirectory("masumi-translation-salvage")
         try {
             publishOcr(workspace, listOf("今日は", "退避対象"))
@@ -217,15 +217,47 @@ class TranslationRunnerTest {
                 { false },
             ) { }
 
+            assertEquals(TranslationJobStatus.FAILED, result.job.status)
+            assertEquals("HTTP_TRANSIENT", result.job.error?.code)
+            assertNull(result.runArtifact)
+            assertNull(result.publishedDirectory)
+            assertFalse(provider.sawSalvageRetry)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun malformedBatchIsBisectedBeforePublishingCompleteOutput() {
+        val workspace = Files.createTempDirectory("masumi-translation-malformed-batch")
+        try {
+            publishOcr(workspace, listOf("今日は", "大丈夫です"))
+            val provider = MalformedBatchProvider()
+            val runner = TranslationRunner(
+                workspaceRoot = workspace,
+                provider = provider,
+                batching = TranslationBatchingConfig(maximumItemsPerWindow = 2),
+                idSource = IdSource { "translation-malformed-batch" },
+            )
+
+            val result = runner.run(
+                PROJECT_ID,
+                TranslationProviderSettings(
+                    apiUrl = "https://example.invalid/v1",
+                    apiKey = "secret-not-for-artifacts",
+                    model = "model-safe",
+                ),
+                { false },
+            ) { }
+
             val run = requireNotNull(result.runArtifact)
             val store = TranslationArtifactStore(workspace.resolve("projects/$PROJECT_ID"))
             val page = requireNotNull(store.readPublishedPage(run.runArtifactKey, run.entries.single()))
 
-            assertEquals(TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS, result.job.status)
-            assertEquals(1, page.items.count { it.translatedText != null })
-            assertEquals(1, result.report?.preservedItemCount)
-            assertEquals(1, result.report?.translatedItemCount)
-            assertTrue(!provider.sawSalvageRetry)
+            assertEquals(TranslationJobStatus.SUCCEEDED, result.job.status)
+            assertEquals(2, page.items.count { it.translatedText != null })
+            assertEquals(1, provider.failedBatchCount)
+            assertEquals(2, provider.isolatedRecoveryCount)
         } finally {
             workspace.toFile().deleteRecursively()
         }
@@ -477,6 +509,55 @@ class TranslationRunnerTest {
                         items = returnedIds.map { id ->
                             TranslationModelItem(id, TranslationRole.DIALOGUE, "已翻译")
                         },
+                    ),
+                    usage = TranslationProviderUsage(10, 5, 15),
+                    modelId = "model-safe",
+                    attemptCount = 1,
+                    durationMillis = 1L,
+                )
+            }
+
+            override fun cancel() = Unit
+        }
+    }
+
+    private class MalformedBatchProvider : TranslationProvider {
+        var failedBatchCount = 0
+        var isolatedRecoveryCount = 0
+
+        override fun newCall(
+            settings: TranslationProviderSettings,
+            messages: rs.masumi.core.translation.TranslationPromptMessages,
+        ): TranslationProviderCall = object : TranslationProviderCall {
+            override fun execute(): TranslationProviderResult {
+                if (messages.system.contains("Build a reusable")) {
+                    return TranslationProviderResult(
+                        response = TranslationModelResponse(items = emptyList()),
+                        usage = TranslationProviderUsage(1, 1, 2),
+                        modelId = "model-safe",
+                        attemptCount = 1,
+                        durationMillis = 1L,
+                    )
+                }
+                val ids = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                    .findAll(messages.user)
+                    .map { it.groupValues[1] }
+                    .toList()
+                    .distinct()
+                if (ids.size > 1) {
+                    failedBatchCount += 1
+                    throw TranslationProviderException(
+                        code = TranslationProviderErrorCode.MALFORMED_RESPONSE,
+                        retryable = true,
+                        attemptCount = 2,
+                    )
+                }
+                isolatedRecoveryCount += 1
+                return TranslationProviderResult(
+                    response = TranslationModelResponse(
+                        items = listOf(
+                            TranslationModelItem(ids.single(), TranslationRole.DIALOGUE, "已翻译"),
+                        ),
                     ),
                     usage = TranslationProviderUsage(10, 5, 15),
                     modelId = "model-safe",

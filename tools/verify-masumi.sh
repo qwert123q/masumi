@@ -9,7 +9,7 @@
 #
 # Usage:
 #   tools/verify-masumi.sh compile     # unit tests + compile only (no device)
-#   tools/verify-masumi.sh device      # install + cleanup instrumentation tests
+#   tools/verify-masumi.sh device      # data-preserving install on a user device
 #   tools/verify-masumi.sh report      # pull cleanup/translation stats off device
 #   tools/verify-masumi.sh all         # compile + device + report
 #
@@ -69,6 +69,9 @@ if [ "$STAGE" = compile ] || [ "$STAGE" = all ]; then
   run_stage "pipeline-core unit tests" ./gradlew --no-daemon :pipeline-core:test
   # Compiling the app is what actually proves the Kotlin edits are sound.
   run_stage "app assembleDebug" ./gradlew --no-daemon :app:assembleDebug
+  # Instrumentation sources are compiled, but never executed against the
+  # user's data-bearing package.
+  run_stage "app instrumentation compile" ./gradlew --no-daemon :app:compileDebugAndroidTestKotlin
 fi
 
 # ----------------------------------------------------------------- device stage
@@ -80,21 +83,12 @@ if [ "$STAGE" = device ] || [ "$STAGE" = all ]; then
   if [ "$device_count" = "0" ]; then
     note "SKIP  device stage (no adb device in 'device' state)"
   else
-    run_stage "app installDebug" ./gradlew --no-daemon :app:installDebug
-    # These six cases are the regression net for the cleanup mask thresholds.
-    run_stage "SourceCleanupEngineTest" ./gradlew --no-daemon :app:connectedDebugAndroidTest \
-      -Pandroid.testInstrumentationRunnerArguments.class=rs.masumi.app.cleanup.SourceCleanupEngineTest
-    run_stage "CleanupRunnerTest" ./gradlew --no-daemon :app:connectedDebugAndroidTest \
-      -Pandroid.testInstrumentationRunnerArguments.class=rs.masumi.app.cleanup.CleanupRunnerTest
-    run_stage "MangaLibraryStoreTest" ./gradlew --no-daemon :app:connectedDebugAndroidTest \
-      -Pandroid.testInstrumentationRunnerArguments.class=rs.masumi.app.library.MangaLibraryStoreTest
+    run_stage "data-preserving debug install" tools/install-debug-preserving-data.sh
 
-    # Copy the HTML/XML test reports so failures are readable without a device.
-    for report in \
-      "$REPO_ROOT/app/build/reports/androidTests/connected" \
-      "$REPO_ROOT/pipeline-core/build/reports/tests/test"; do
-      [ -d "$report" ] && cp -R "$report" "$OUT_DIR/$(basename "$(dirname "$report")")-$(basename "$report")" 2>/dev/null
-    done
+    # Copy the JVM test report so failures are readable without a device.
+    report="$REPO_ROOT/pipeline-core/build/reports/tests/test"
+    [ -d "$report" ] &&
+      cp -R "$report" "$OUT_DIR/$(basename "$(dirname "$report")")-$(basename "$report")" 2>/dev/null
     banner "test result xml"
     find "$REPO_ROOT/app/build/outputs" "$REPO_ROOT/pipeline-core/build/test-results" \
       -name '*.xml' -print 2>/dev/null >>"$LOG"

@@ -13,9 +13,10 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class TranslationSettingsStoreTest {
     @Test
-    fun credentialsPersistOnlyInApplicationPreferences() {
+    fun credentialsStayInsideApplicationPrivateData() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val preferencesName = "translation_provider_test_${System.nanoTime()}"
+        val backup = context.noBackupFilesDir.resolve("$preferencesName.providers.json")
         val projectRoot = Files.createTempDirectory(
             context.cacheDir.toPath(),
             "translation-settings-test-",
@@ -39,6 +40,7 @@ class TranslationSettingsStoreTest {
             assertFalse(leaked)
         } finally {
             context.deleteSharedPreferences(preferencesName)
+            backup.delete()
             Files.deleteIfExists(projectRoot)
         }
     }
@@ -47,6 +49,7 @@ class TranslationSettingsStoreTest {
     fun legacySettingsBecomeTheActiveProviderWithoutBeingCleared() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val preferencesName = "translation_provider_legacy_test_${System.nanoTime()}"
+        val backup = context.noBackupFilesDir.resolve("$preferencesName.providers.json")
         val preferences = context.getSharedPreferences(preferencesName, 0)
         val secret = "legacy-secret"
         preferences.edit()
@@ -65,6 +68,7 @@ class TranslationSettingsStoreTest {
             assertNull(preferences.getString("provider_profiles_v1", null))
         } finally {
             context.deleteSharedPreferences(preferencesName)
+            backup.delete()
         }
     }
 
@@ -72,6 +76,7 @@ class TranslationSettingsStoreTest {
     fun multipleProvidersCanBeSavedAndSelectedIndependently() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val preferencesName = "translation_provider_profiles_test_${System.nanoTime()}"
+        val backup = context.noBackupFilesDir.resolve("$preferencesName.providers.json")
         val store = TranslationSettingsStore(context, preferencesName)
         val first = SavedTranslationProvider(
             id = "deepseek",
@@ -100,6 +105,45 @@ class TranslationSettingsStoreTest {
             assertEquals(first.apiKey, store.loadProviderSettings()?.apiKey)
         } finally {
             context.deleteSharedPreferences(preferencesName)
+            backup.delete()
+        }
+    }
+
+    @Test
+    fun privateSnapshotRecoversProfilesWhenPreferencesAreUnexpectedlyCleared() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferencesName = "translation_provider_backup_test_${System.nanoTime()}"
+        val preferences = context.getSharedPreferences(preferencesName, 0)
+        val backup = context.noBackupFilesDir.resolve("$preferencesName.providers.json")
+        val store = TranslationSettingsStore(context, preferencesName)
+        val first = SavedTranslationProvider(
+            id = "deepseek",
+            name = "DeepSeek",
+            apiUrl = "https://api.deepseek.com",
+            apiKey = "first-secret",
+            model = "deepseek-chat",
+        )
+        val second = SavedTranslationProvider(
+            id = "openrouter",
+            name = "OpenRouter",
+            apiUrl = "https://openrouter.ai/api/v1",
+            apiKey = "second-secret",
+            model = "anthropic/claude-sonnet-4",
+        )
+
+        try {
+            store.saveProvider(first)
+            store.saveProvider(second)
+            store.selectActiveProvider(first.id)
+            preferences.edit().clear().commit()
+
+            val recovered = TranslationSettingsStore(context, preferencesName)
+
+            assertEquals(listOf(first, second), recovered.loadProviders())
+            assertEquals(first, recovered.loadActiveProvider())
+        } finally {
+            context.deleteSharedPreferences(preferencesName)
+            backup.delete()
         }
     }
 }
