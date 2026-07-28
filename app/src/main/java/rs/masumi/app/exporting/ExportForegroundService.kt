@@ -20,6 +20,7 @@ import rs.masumi.app.describePipelineError
 import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.exporting.ExportJobStatus
 
 class ExportForegroundService : Service() {
@@ -32,7 +33,7 @@ class ExportForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
+        executor = Executors.newSingleThreadExecutor(PipelineThreading.factory(WORKER_THREAD_NAME))
         notificationManager = getSystemService(NotificationManager::class.java)
         taskWakeLock = ForegroundTaskWakeLock(this, "export")
         notificationManager.createNotificationChannel(

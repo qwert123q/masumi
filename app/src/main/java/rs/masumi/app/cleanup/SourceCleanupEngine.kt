@@ -17,6 +17,7 @@ import rs.masumi.core.cleanup.CleanupRegionArtifact
 import rs.masumi.core.cleanup.CleanupRegionState
 import rs.masumi.core.cleanup.CleanupStrategy
 import rs.masumi.core.detection.PixelBox
+import rs.masumi.app.pipeline.PipelineThreading
 
 data class CleanupTarget(
     val translationRegionId: String,
@@ -80,9 +81,10 @@ class SourceCleanupEngine(
                 artifacts[index] = cleanTarget(pixels, width, height, target, policy, cancellation)
             }
         } else {
-            val executor = Executors.newFixedThreadPool(parallelism) { task ->
-                Thread(task, CLEANUP_WORKER_THREAD_NAME)
-            }
+            val executor = Executors.newFixedThreadPool(
+                parallelism,
+                PipelineThreading.factory(CLEANUP_WORKER_THREAD_NAME, numbered = true),
+            )
             try {
                 val futures = groups.map { group ->
                     executor.submit(
@@ -110,7 +112,8 @@ class SourceCleanupEngine(
     }
 
     private fun cleanupParallelism(): Int =
-        (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, MAXIMUM_CLEANUP_WORKERS)
+        (Runtime.getRuntime().availableProcessors() - RESERVED_INTERACTIVE_PROCESSORS)
+            .coerceIn(1, MAXIMUM_CLEANUP_WORKERS)
 
     private fun groupByRoiOverlap(
         targets: List<CleanupTarget>,
@@ -1017,7 +1020,8 @@ class SourceCleanupEngine(
         const val BOUNDARY_COLOR_SCORE_WEIGHT = 4
         const val SINGLE_BOUNDARY_SCORE = 10_000
         const val CLEANUP_WORKER_THREAD_NAME = "masumi-cleanup-worker"
-        const val MAXIMUM_CLEANUP_WORKERS = 6
+        const val MAXIMUM_CLEANUP_WORKERS = 4
+        const val RESERVED_INTERACTIVE_PROCESSORS = 2
         const val DISTANCE_INFINITY = Int.MAX_VALUE / 4
         const val CHAMFER_ORTHOGONAL = 3
         const val CHAMFER_DIAGONAL = 4

@@ -23,6 +23,8 @@ import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
 import rs.masumi.app.detection.PageBitmapDecoder
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineDeviceCapacity
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.ocr.OcrJobStatus
 
 class OcrForegroundService : Service() {
@@ -43,7 +45,7 @@ class OcrForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
+        executor = Executors.newSingleThreadExecutor(PipelineThreading.factory(WORKER_THREAD_NAME))
         cancellationWatchdog = Executors.newSingleThreadScheduledExecutor { task ->
             Thread(task, CANCELLATION_WATCHDOG_THREAD_NAME)
         }
@@ -53,33 +55,25 @@ class OcrForegroundService : Service() {
         val backendHealth = OcrBackendHealthStore(
             workspace.resolve("runtime/ocr-vulkan-unavailable"),
         )
-        // On big-core devices with headroom, split the CPU threads between two
-        // engines so two regions of a page are recognized concurrently. The
-        // vision encoder is the dominant cost and runs on CPU either way.
-        val dualEngine = supportsDualEngines()
-        val primaryThreads = if (dualEngine) DUAL_ENGINE_THREADS else SINGLE_ENGINE_THREADS
+        // Keep two logical CPUs free for input, rendering, and library I/O.
+        // Xiaomi 14 previously ran two four-thread engines and saturated all
+        // eight CPUs, making even a simple swipe visibly freeze.
+        val capacity = PipelineDeviceCapacity.ocrPlan(this)
         engineCache = OcrEngineSessionCache(
             OcrEngineFactory { model, projector ->
-                DevicePaddleOcrEngine.open(model, projector, backendHealth, primaryThreads)
+                DevicePaddleOcrEngine.open(model, projector, backendHealth, capacity.threadsPerEngine)
             },
         )
-        secondaryEngineCache = if (dualEngine) {
+        secondaryEngineCache = if (capacity.engineCount > 1) {
             OcrEngineSessionCache(
                 OcrEngineFactory { model, projector ->
-                    NativePaddleOcrEngine.openCpuOnly(model, projector, DUAL_ENGINE_THREADS)
+                    NativePaddleOcrEngine.openCpuOnly(model, projector, capacity.threadsPerEngine)
                 },
             )
         } else {
             null
         }
         createNotificationChannel()
-    }
-
-    private fun supportsDualEngines(): Boolean {
-        if (Runtime.getRuntime().availableProcessors() < MINIMUM_DUAL_ENGINE_PROCESSORS) return false
-        val memoryInfo = android.app.ActivityManager.MemoryInfo()
-        getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(memoryInfo)
-        return memoryInfo.totalMem >= MINIMUM_DUAL_ENGINE_MEMORY_BYTES
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -154,7 +148,6 @@ class OcrForegroundService : Service() {
         taskWakeLock.acquire()
         executor.execute {
             try {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                 val workspace = filesDir.toPath().resolve("workspace")
                 PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
                     val activeRunner = createRunner()
@@ -362,10 +355,6 @@ class OcrForegroundService : Service() {
         private const val CANCELLATION_WATCHDOG_THREAD_NAME = "masumi-ocr-cancel-watchdog"
         private const val FORCED_CANCELLATION_GRACE_MILLIS = 1_500L
         private const val ENGINE_IDLE_TIMEOUT_MILLIS = 60_000L
-        private const val SINGLE_ENGINE_THREADS = 6
-        private const val DUAL_ENGINE_THREADS = 4
-        private const val MINIMUM_DUAL_ENGINE_PROCESSORS = 8
-        private const val MINIMUM_DUAL_ENGINE_MEMORY_BYTES = 7L * 1_024L * 1_024L * 1_024L
         private val ACTIVE_PROJECT = AtomicReference<String?>()
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     }

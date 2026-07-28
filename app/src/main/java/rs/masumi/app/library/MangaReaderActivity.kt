@@ -19,6 +19,7 @@ import android.widget.Toast
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import rs.masumi.app.R
+import rs.masumi.app.pipeline.PipelineThreading
 
 class MangaReaderActivity : Activity() {
     private lateinit var titleView: TextView
@@ -31,7 +32,9 @@ class MangaReaderActivity : Activity() {
     private lateinit var seekBar: SeekBar
     private lateinit var directionButton: Button
     private lateinit var readingProgressStore: MangaReadingProgressStore
-    private val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "masumi-reader") }
+    private val executor = Executors.newSingleThreadExecutor(
+        PipelineThreading.factory("masumi-reader"),
+    )
     private val loadGeneration = AtomicInteger()
     private var pages: List<MangaLibraryPage> = emptyList()
     private var currentIndex = 0

@@ -17,6 +17,7 @@ import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.cleanup.CleanupJobStatus
 
 class CleanupForegroundService : Service() {
@@ -32,7 +33,7 @@ class CleanupForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
+        executor = Executors.newSingleThreadExecutor(PipelineThreading.factory(WORKER_THREAD_NAME))
         notificationManager = getSystemService(NotificationManager::class.java)
         taskWakeLock = ForegroundTaskWakeLock(this, "cleanup")
         notificationManager.createNotificationChannel(

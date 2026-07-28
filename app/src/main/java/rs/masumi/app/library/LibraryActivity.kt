@@ -29,6 +29,7 @@ import rs.masumi.app.pipeline.PipelineQueueStatus
 import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.app.pipeline.WorkspaceJanitor
 import rs.masumi.app.quality.QualityForegroundService
 import rs.masumi.app.translation.TranslationForegroundService
@@ -41,6 +42,7 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class LibraryActivity : Activity() {
@@ -58,10 +60,19 @@ class LibraryActivity : Activity() {
     private lateinit var libraryPreferences: MangaLibraryPreferences
     private lateinit var readingProgressStore: MangaReadingProgressStore
     private lateinit var pipelineQueueStore: PipelineQueueStore
-    private val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "masumi-library-home") }
+    private lateinit var snapshotStore: LibraryHomeSnapshotStore
+    private val executor = Executors.newSingleThreadExecutor(
+        PipelineThreading.factory("masumi-library-home"),
+    )
+    private val maintenanceExecutor = Executors.newSingleThreadExecutor(
+        PipelineThreading.factory("masumi-library-maintenance"),
+    )
     private val refreshGeneration = AtomicInteger()
+    private val maintenanceScheduled = AtomicBoolean(false)
     private var pendingImportAfterLibrary = false
     private val displayedCovers = mutableListOf<Bitmap>()
+    private val renderedProjectItems = mutableMapOf<String, View>()
+    private var renderedSignature = emptyList<String>()
     private var initialTabResolved = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,18 +92,8 @@ class LibraryActivity : Activity() {
         libraryPreferences = MangaLibraryPreferences(this)
         readingProgressStore = MangaReadingProgressStore(this)
         pipelineQueueStore = PipelineQueueStore(this)
+        snapshotStore = LibraryHomeSnapshotStore(this)
         PipelineColdStartGuard.reconcile(pipelineQueueStore)
-        executor.execute {
-            // Sweep superseded pipeline runs left behind by crashes or by
-            // sessions that ended before their post-export sweep could run.
-            runCatching {
-                WorkspaceJanitor.sweepAll(filesDir.toPath().resolve("workspace")) { projectId ->
-                    pipelineQueueStore.entries().any {
-                        it.projectId == projectId && it.status == PipelineQueueStatus.ACTIVE
-                    }
-                }
-            }
-        }
 
         findViewById<Button>(R.id.libraryHomeImport).setOnClickListener { importChapter() }
         chooseLibraryButton.setOnClickListener { openLibraryFolder(false) }
@@ -110,6 +111,8 @@ class LibraryActivity : Activity() {
         }
         if (libraryPreferences.rootUri() == null && savedInstanceState == null) {
             storageSetup.post { openLibraryFolder(false) }
+        } else {
+            renderCachedLibrary()
         }
     }
 
@@ -135,6 +138,7 @@ class LibraryActivity : Activity() {
     override fun onDestroy() {
         refreshGeneration.incrementAndGet()
         executor.shutdownNow()
+        maintenanceExecutor.shutdownNow()
         recycleCovers()
         super.onDestroy()
     }
@@ -143,8 +147,16 @@ class LibraryActivity : Activity() {
         if (libraryPreferences.rootUri() == null) {
             openLibraryFolder(true)
         } else {
-            startActivity(MainActivity.importIntent(this))
+            openChapterFolder()
         }
+    }
+
+    private fun openChapterFolder() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        startActivityForResult(intent, REQUEST_OPEN_CHAPTER)
     }
 
     private fun openLibraryFolder(continueToImport: Boolean) {
@@ -161,12 +173,17 @@ class LibraryActivity : Activity() {
     @Deprecated("Uses the platform result API to keep the app dependency-free")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_LIBRARY_FOLDER) return
         if (resultCode != RESULT_OK) {
-            pendingImportAfterLibrary = false
+            if (requestCode == REQUEST_LIBRARY_FOLDER) pendingImportAfterLibrary = false
             return
         }
         val uri = data?.data ?: return
+        if (requestCode == REQUEST_OPEN_CHAPTER) {
+            retainReadPermission(uri, data.flags)
+            startActivity(MainActivity.importIntent(this, uri))
+            return
+        }
+        if (requestCode != REQUEST_LIBRARY_FOLDER) return
         val hasRead = data.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0
         val hasWrite = data.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION != 0
         when {
@@ -187,8 +204,35 @@ class LibraryActivity : Activity() {
         refreshLibrary()
         if (pendingImportAfterLibrary) {
             pendingImportAfterLibrary = false
-            startActivity(MainActivity.importIntent(this))
+            pager.post(::openChapterFolder)
         }
+    }
+
+    private fun retainReadPermission(uri: Uri, resultFlags: Int) {
+        if (resultFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) return
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+
+    private fun renderCachedLibrary() {
+        val rootUri = libraryPreferences.rootUri() ?: return
+        val snapshot = snapshotStore.load(rootUri) ?: return
+        val queueStatuses = pipelineQueueStore.entries().associate { it.projectId to it.status }
+        val summaries = snapshot.projects.map { project ->
+            LibraryProjectSummary(
+                project = project,
+                completedStages = if (project.outputPageCount > 0) {
+                    AutomaticPipelinePlanner.STAGE_COUNT
+                } else {
+                    0
+                },
+                cover = null,
+                readingProgress = readingProgressStore.load(project.metadata.projectId),
+                queueStatus = queueStatuses[project.metadata.projectId],
+            )
+        }
+        renderLibrary(rootUri, snapshot.rootDisplayName, summaries, unavailable = false)
     }
 
     private fun refreshLibrary() {
@@ -201,18 +245,22 @@ class LibraryActivity : Activity() {
         executor.execute {
             val result = runCatching {
                 val store = MangaLibraryStore(contentResolver, rootUri)
-                // Always rescan: exports write pages behind the store's back,
-                // and this screen has no later reconcile pass that would catch
-                // a stale snapshot.
-                val summaries = store.refreshProjects().map { project ->
-                    buildSummary(store, project)
+                val projects = store.refreshProjects()
+                val name = store.rootDisplayName()
+                snapshotStore.save(rootUri, name, projects)
+                val queueStatuses = pipelineQueueStore.entries().associate { it.projectId to it.status }
+                val summaries = projects.map { project ->
+                    buildSummary(store, project, queueStatuses[project.metadata.projectId])
                 }
-                Triple(store.rootDisplayName(), rootUri, summaries)
+                Triple(name, rootUri, summaries)
             }
             runOnUiThread {
                 if (generation != refreshGeneration.get() || isFinishing || isDestroyed) return@runOnUiThread
                 result.fold(
-                    onSuccess = { (name, uri, projects) -> renderLibrary(uri, name, projects, false) },
+                    onSuccess = { (name, uri, projects) ->
+                        renderLibrary(uri, name, projects, false)
+                        scheduleWorkspaceMaintenance()
+                    },
                     onFailure = { renderLibrary(rootUri, null, emptyList(), true) },
                 )
             }
@@ -222,36 +270,41 @@ class LibraryActivity : Activity() {
     private fun buildSummary(
         store: MangaLibraryStore,
         project: MangaLibraryProject,
+        queueStatus: PipelineQueueStatus?,
     ): LibraryProjectSummary {
         val projectId = project.metadata.projectId
         val privateProject = runCatching { catalog.openProject(projectId) }.getOrNull()
-        val detection = privateProject?.let { catalog.latestPublishedRun(projectId) }
-        val ocr = detection?.let { catalog.latestPublishedOcrRun(projectId) }
-            ?.takeIf { it.artifact.detectionRunArtifactKey == detection.artifact.runArtifactKey }
-        val translation = ocr?.let { catalog.latestPublishedTranslationRun(projectId) }
-            ?.takeIf {
-                it.artifact.dependencies.ocrRunArtifactKey == ocr.artifact.runArtifactKey &&
-                    it.artifact.dependencies.policy == TranslationPolicy() &&
-                    it.artifact.dependencies.prompt == TranslationPromptRef() &&
-                    it.artifact.dependencies.batching == TranslationBatchingConfig()
+        val completedStages = if (project.outputPageCount > 0) {
+            AutomaticPipelinePlanner.STAGE_COUNT
+        } else {
+            val detection = privateProject?.let { catalog.latestPublishedRun(projectId) }
+            val ocr = detection?.let { catalog.latestPublishedOcrRun(projectId) }
+                ?.takeIf { it.artifact.detectionRunArtifactKey == detection.artifact.runArtifactKey }
+            val translation = ocr?.let { catalog.latestPublishedTranslationRun(projectId) }
+                ?.takeIf {
+                    it.artifact.dependencies.ocrRunArtifactKey == ocr.artifact.runArtifactKey &&
+                        it.artifact.dependencies.policy == TranslationPolicy() &&
+                        it.artifact.dependencies.prompt == TranslationPromptRef() &&
+                        it.artifact.dependencies.batching == TranslationBatchingConfig()
+                }
+            val cleanup = translation?.let {
+                catalog.latestPublishedCleanupRun(projectId, it.artifact.runArtifactKey)
             }
-        val cleanup = translation?.let {
-            catalog.latestPublishedCleanupRun(projectId, it.artifact.runArtifactKey)
-        }
-        val typesetting = cleanup?.let {
-            catalog.latestPublishedTypesettingRun(
-                projectId,
-                it.artifact.runArtifactKey,
-                TypesettingPolicy(),
-            )
-        }
-        val completedStages = when {
-            typesetting != null -> 5
-            cleanup != null -> 4
-            translation != null -> 3
-            ocr != null -> 2
-            detection != null -> 1
-            else -> 0
+            val typesetting = cleanup?.let {
+                catalog.latestPublishedTypesettingRun(
+                    projectId,
+                    it.artifact.runArtifactKey,
+                    TypesettingPolicy(),
+                )
+            }
+            when {
+                typesetting != null -> 5
+                cleanup != null -> 4
+                translation != null -> 3
+                ocr != null -> 2
+                detection != null -> 1
+                else -> 0
+            }
         }
         val coverPath = privateProject?.manifest?.pages
             ?.minByOrNull { it.order }
@@ -272,10 +325,20 @@ class LibraryActivity : Activity() {
             completedStages = completedStages,
             cover = cover,
             readingProgress = readingProgressStore.load(projectId),
-            queueStatus = pipelineQueueStore.entries()
-                .firstOrNull { it.projectId == projectId }
-                ?.status,
+            queueStatus = queueStatus,
         )
+    }
+
+    private fun scheduleWorkspaceMaintenance() {
+        if (!maintenanceScheduled.compareAndSet(false, true)) return
+        maintenanceExecutor.execute {
+            runCatching {
+                val activeProjects = pipelineQueueStore.entries()
+                    .filter { it.status == PipelineQueueStatus.ACTIVE }
+                    .mapTo(mutableSetOf()) { it.projectId }
+                WorkspaceJanitor.sweepAll(filesDir.toPath().resolve("workspace"), activeProjects::contains)
+            }
+        }
     }
 
     private fun renderLibrary(
@@ -284,9 +347,6 @@ class LibraryActivity : Activity() {
         projects: List<LibraryProjectSummary>,
         unavailable: Boolean,
     ) {
-        recycleCovers()
-        finishedContainer.removeAllViews()
-        processingContainer.removeAllViews()
         storageSetup.visibility = if (rootUri == null || unavailable) View.VISIBLE else View.GONE
         chooseLibraryButton.setText(R.string.library_home_choose_folder)
         locationText.text = when {
@@ -298,8 +358,43 @@ class LibraryActivity : Activity() {
         processingTabButton.text = getString(R.string.library_tab_processing_count, processing.size)
         finishedEmptyText.visibility = if (finished.isEmpty() && !unavailable) View.VISIBLE else View.GONE
         processingEmptyText.visibility = if (processing.isEmpty() && !unavailable) View.VISIBLE else View.GONE
-        finished.forEach { finishedContainer.addView(createProjectItem(finishedContainer, rootUri, it)) }
-        processing.forEach { processingContainer.addView(createProjectItem(processingContainer, rootUri, it)) }
+        val signature = buildList {
+            finished.forEach { add("finished:${it.project.metadata.projectId}") }
+            processing.forEach { add("processing:${it.project.metadata.projectId}") }
+        }
+        val canRebind = signature == renderedSignature &&
+            projects.all { renderedProjectItems.containsKey(it.project.metadata.projectId) }
+        val previousCovers = displayedCovers.toList()
+        displayedCovers.clear()
+        if (!canRebind) {
+            finishedContainer.removeAllViews()
+            processingContainer.removeAllViews()
+            renderedProjectItems.clear()
+        }
+        finished.forEach { summary ->
+            bindProjectItem(
+                item = renderedProjectItems[summary.project.metadata.projectId]
+                    ?: createProjectItem(finishedContainer).also { item ->
+                        renderedProjectItems[summary.project.metadata.projectId] = item
+                        finishedContainer.addView(item)
+                    },
+                rootUri = rootUri,
+                summary = summary,
+            )
+        }
+        processing.forEach { summary ->
+            bindProjectItem(
+                item = renderedProjectItems[summary.project.metadata.projectId]
+                    ?: createProjectItem(processingContainer).also { item ->
+                        renderedProjectItems[summary.project.metadata.projectId] = item
+                        processingContainer.addView(item)
+                    },
+                rootUri = rootUri,
+                summary = summary,
+            )
+        }
+        renderedSignature = signature
+        previousCovers.forEach { bitmap -> if (!bitmap.isRecycled) bitmap.recycle() }
         // A fresh install lands on whichever column actually has content, but a
         // deliberate tab choice is never yanked away by a later refresh.
         if (!initialTabResolved && !unavailable && rootUri != null) {
@@ -308,16 +403,24 @@ class LibraryActivity : Activity() {
         }
     }
 
-    private fun createProjectItem(
-        parent: LinearLayout,
+    private fun createProjectItem(parent: LinearLayout): View =
+        LayoutInflater.from(this).inflate(R.layout.item_library_project, parent, false)
+
+    private fun bindProjectItem(
+        item: View,
         rootUri: Uri?,
         summary: LibraryProjectSummary,
-    ): View {
+    ) {
         val project = summary.project
-        val item = LayoutInflater.from(this).inflate(R.layout.item_library_project, parent, false)
         item.findViewById<TextView>(R.id.libraryProjectTitle).text = project.metadata.title
-        item.findViewById<TextView>(R.id.libraryProjectInitial).text =
-            project.metadata.title.trim().firstOrNull()?.toString().orEmpty()
+        val initial = item.findViewById<TextView>(R.id.libraryProjectInitial).apply {
+            text = project.metadata.title.trim().firstOrNull()?.toString().orEmpty()
+            visibility = View.VISIBLE
+        }
+        val cover = item.findViewById<ImageView>(R.id.libraryProjectCover).apply {
+            setImageDrawable(null)
+            visibility = View.GONE
+        }
         item.findViewById<ProgressBar>(R.id.libraryProjectProgress).apply {
             max = AutomaticPipelinePlanner.STAGE_COUNT
             progress = summary.completedStages
@@ -325,11 +428,11 @@ class LibraryActivity : Activity() {
         item.findViewById<TextView>(R.id.libraryProjectStatus).text = statusText(summary)
         summary.cover?.let { bitmap ->
             displayedCovers += bitmap
-            item.findViewById<ImageView>(R.id.libraryProjectCover).apply {
+            cover.apply {
                 setImageBitmap(bitmap)
                 visibility = View.VISIBLE
             }
-            item.findViewById<TextView>(R.id.libraryProjectInitial).visibility = View.GONE
+            initial.visibility = View.GONE
         }
         val primary = item.findViewById<Button>(R.id.libraryProjectReadButton)
         val secondary = item.findViewById<Button>(R.id.libraryProjectOpenButton)
@@ -376,7 +479,6 @@ class LibraryActivity : Activity() {
         secondary.setOnClickListener {
             showProjectManagement(rootUri, summary)
         }
-        return item
     }
 
     private fun showProjectManagement(rootUri: Uri?, summary: LibraryProjectSummary) {
@@ -563,6 +665,7 @@ class LibraryActivity : Activity() {
 
     private companion object {
         const val REQUEST_LIBRARY_FOLDER = 2101
+        const val REQUEST_OPEN_CHAPTER = 2102
         const val TAB_FINISHED = 0
         const val TAB_PROCESSING = 1
         const val STATE_SELECTED_TAB = "library_selected_tab"

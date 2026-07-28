@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
@@ -46,8 +47,10 @@ import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.DurablePipelineProgress
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.app.library.cachedMangaLibraryProjects
 import rs.masumi.app.library.cachedMangaLibraryRootName
+import rs.masumi.app.library.LibraryHomeSnapshotStore
 import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.app.library.MangaLibraryProject
 import rs.masumi.app.library.MangaLibraryStore
@@ -209,9 +212,12 @@ class MainActivity : Activity() {
     private lateinit var ocrPreviewPane: PreviewPane
     private lateinit var cleanupPreviewPane: PreviewPane
     private lateinit var typesettingPreviewPane: PreviewPane
-    private val previewExecutor = Executors.newSingleThreadExecutor { task ->
-        Thread(task, PREVIEW_THREAD_NAME)
-    }
+    private val previewExecutor = Executors.newSingleThreadExecutor(
+        PipelineThreading.factory(PREVIEW_THREAD_NAME),
+    )
+    private val libraryExecutor = Executors.newSingleThreadExecutor(
+        PipelineThreading.factory(LIBRARY_THREAD_NAME),
+    )
     private var pendingAnalysisProjectId: String? = null
     private var pendingOcrProjectId: String? = null
     private var pendingTranslationProjectId: String? = null
@@ -388,6 +394,10 @@ class MainActivity : Activity() {
         PipelineColdStartGuard.reconcile(pipelineQueueStore)
         requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
             ?.takeIf(SAFE_PROJECT_ID::matches)
+        val directImportTreeUri = intent.getStringExtra(EXTRA_IMPORT_TREE_URI)
+            ?.let(Uri::parse)
+            ?.takeIf(DocumentsContract::isTreeUri)
+        intent.removeExtra(EXTRA_IMPORT_TREE_URI)
         automaticPipelineRequested = getPreferences(MODE_PRIVATE)
             .getBoolean(PREF_AUTOMATIC_PIPELINE, false)
         val initialPage = if (intent.getBooleanExtra(EXTRA_SHOW_DETAILS, false)) {
@@ -437,9 +447,7 @@ class MainActivity : Activity() {
         cancelExportButton.setOnClickListener { cancelExport() }
         readProjectButton.setOnClickListener { openCurrentProjectReader() }
         syncWorkspaceState()
-        if (intent.getBooleanExtra(EXTRA_IMPORT_CHAPTER, false)) {
-            contentPager.post { openChapterFolder() }
-        }
+        directImportTreeUri?.let(::importChapter)
     }
 
     override fun onStart() {
@@ -500,6 +508,7 @@ class MainActivity : Activity() {
         contentPager.onSwipe = null
         translationSettingsPane.close()
         previewExecutor.shutdownNow()
+        libraryExecutor.shutdownNow()
         detectionPreviewPane.clear()
         ocrPreviewPane.clear()
         cleanupPreviewPane.clear()
@@ -652,7 +661,7 @@ class MainActivity : Activity() {
     private fun openCurrentProjectReader() {
         val projectId = currentProject?.manifest?.projectId ?: return
         val rootUri = libraryPreferences.rootUri() ?: return
-        Thread({
+        libraryExecutor.execute {
             val project = runCatching {
                 MangaLibraryStore(contentResolver, rootUri).project(projectId)
             }.getOrNull()
@@ -661,7 +670,7 @@ class MainActivity : Activity() {
                     startActivity(MangaReaderActivity.intent(this, rootUri, project))
                 }
             }
-        }, LIBRARY_THREAD_NAME).start()
+        }
     }
 
     private fun autoSaveCompletedProjectIfNeeded() {
@@ -676,7 +685,7 @@ class MainActivity : Activity() {
         }
         val rootUri = libraryPreferences.rootUri() ?: return
         autoSaveCheckInFlight = true
-        Thread({
+        libraryExecutor.execute {
             val outputPageCount = runCatching {
                 MangaLibraryStore(contentResolver, rootUri)
                     .project(project.manifest.projectId)
@@ -694,7 +703,7 @@ class MainActivity : Activity() {
                     saveCurrentProjectToLibrary()
                 }
             }
-        }, LIBRARY_THREAD_NAME).start()
+        }
     }
 
     private fun refreshLibraryHistory() {
@@ -710,10 +719,13 @@ class MainActivity : Activity() {
         cachedMangaLibraryProjects(rootUri)?.let { cached ->
             renderLibraryHistory(rootUri, cachedMangaLibraryRootName(rootUri), cached)
         }
-        Thread({
+        libraryExecutor.execute {
             val result = runCatching {
                 val store = MangaLibraryStore(contentResolver, rootUri)
-                store.rootDisplayName() to store.refreshProjects()
+                val name = store.rootDisplayName()
+                val projects = store.refreshProjects()
+                LibraryHomeSnapshotStore(this).save(rootUri, name, projects)
+                name to projects
             }
             runOnUiThread {
                 if (generation != libraryRefreshGeneration) return@runOnUiThread
@@ -722,7 +734,7 @@ class MainActivity : Activity() {
                     onFailure = { renderLibraryHistory(rootUri, null, emptyList(), unavailable = true) },
                 )
             }
-        }, LIBRARY_THREAD_NAME).start()
+        }
     }
 
     private fun renderLibraryHistory(
@@ -920,7 +932,7 @@ class MainActivity : Activity() {
         autoSaveStartedProjectId = project.manifest.projectId
         exportButton.isEnabled = false
         exportStatus.setText(R.string.export_status_starting)
-        Thread({
+        libraryExecutor.execute {
             val destination = runCatching {
                 val store = MangaLibraryStore(contentResolver, rootUri)
                 if (store.project(project.manifest.projectId) == null) {
@@ -954,7 +966,7 @@ class MainActivity : Activity() {
                     },
                 )
             }
-        }, LIBRARY_THREAD_NAME).start()
+        }
     }
 
     private fun retainReadWritePermission(treeUri: Uri, resultFlags: Int) {
@@ -988,7 +1000,7 @@ class MainActivity : Activity() {
         setImportRunning(true)
         statusText.setText(R.string.import_status_running)
 
-        Thread({
+        PipelineThreading.thread(IMPORT_THREAD_NAME, Runnable {
             val result = runCatching {
                 val libraryRoot = requireNotNull(libraryPreferences.rootUri()) { "library root was not selected" }
                 val library = MangaLibraryStore(contentResolver, libraryRoot)
@@ -1016,6 +1028,7 @@ class MainActivity : Activity() {
                 result.fold(
                     onSuccess = { imported ->
                         val outcome = imported.outcome
+                        requestedProjectId = outcome.manifest.projectId
                         statusText.text = if (imported.storedInLibrary) {
                             getString(
                                 R.string.import_status_success,
@@ -1046,7 +1059,7 @@ class MainActivity : Activity() {
                 refreshLibraryHistory()
                 onPipelineStateChanged()
             }
-        }, IMPORT_THREAD_NAME).start()
+        }).start()
     }
 
     private fun requestAnalysisStart() {
@@ -1293,6 +1306,10 @@ class MainActivity : Activity() {
     }
 
     private fun refreshDurableState(progressOverride: DetectionProgress? = null) {
+        // Direct imports arrive from the library picker. Keep the empty
+        // workspace visible while copying instead of briefly selecting and
+        // rendering the previously opened manga.
+        if (importRunning && requestedProjectId == null && currentProject == null) return
         val priorProjectId = currentProject?.manifest?.projectId
         currentProject = requestedProjectId
             ?.let { projectId -> runCatching { catalog.openProject(projectId) }.getOrNull() }
@@ -2406,7 +2423,7 @@ class MainActivity : Activity() {
         const val PREF_NOTIFICATION_REQUESTED = "notification_permission_requested"
         const val PREF_AUTOMATIC_PIPELINE = "automatic_pipeline_requested"
         private const val EXTRA_PROJECT_ID = "project_id"
-        private const val EXTRA_IMPORT_CHAPTER = "import_chapter"
+        private const val EXTRA_IMPORT_TREE_URI = "import_tree_uri"
         private const val EXTRA_SHOW_DETAILS = "show_details"
         private const val EXTRA_AUTO_CONTINUE = "auto_continue"
         private val SAFE_PROJECT_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -2419,9 +2436,12 @@ class MainActivity : Activity() {
                 .putExtra(EXTRA_AUTO_CONTINUE, !showDetails)
         }
 
-        fun importIntent(context: Context): Intent =
-            Intent(context, MainActivity::class.java)
-                .putExtra(EXTRA_IMPORT_CHAPTER, true)
+        fun importIntent(context: Context, treeUri: Uri): Intent {
+            require(treeUri.scheme == "content" && DocumentsContract.isTreeUri(treeUri))
+            return Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .putExtra(EXTRA_IMPORT_TREE_URI, treeUri.toString())
+        }
     }
 
     private data class ChapterImportResult(

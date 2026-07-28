@@ -13,6 +13,7 @@ import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.detection.DetectionJobStatus
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -30,9 +31,7 @@ class DetectionForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newSingleThreadExecutor { task ->
-            Thread(task, WORKER_THREAD_NAME)
-        }
+        executor = Executors.newSingleThreadExecutor(PipelineThreading.factory(WORKER_THREAD_NAME))
         notificationManager = getSystemService(NotificationManager::class.java)
         taskWakeLock = ForegroundTaskWakeLock(this, "detection")
         createNotificationChannel()

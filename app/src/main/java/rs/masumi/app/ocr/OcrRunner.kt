@@ -45,6 +45,7 @@ import rs.masumi.core.ocr.OcrRegionState
 import rs.masumi.core.ocr.OcrReport
 import rs.masumi.core.ocr.OcrRunArtifact
 import rs.masumi.core.ocr.OcrRunEntry
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.ocr.isSuccessful
 import rs.masumi.core.ocr.isTerminal
 
@@ -448,8 +449,9 @@ class OcrRunner(
         val results = java.util.concurrent.ConcurrentHashMap<String, OcrRegionArtifact>()
         val failure = AtomicReference<Throwable?>()
         val workers = engines.mapIndexed { index, engine ->
-            Thread(
-                {
+            PipelineThreading.thread(
+                "$OCR_WORKER_THREAD_PREFIX$index",
+                Runnable {
                     while (failure.get() == null) {
                         val candidate = queue.poll() ?: break
                         try {
@@ -504,7 +506,6 @@ class OcrRunner(
                         }
                     }
                 },
-                "$OCR_WORKER_THREAD_PREFIX$index",
             ).apply { start() }
         }
         workers.forEach(Thread::join)

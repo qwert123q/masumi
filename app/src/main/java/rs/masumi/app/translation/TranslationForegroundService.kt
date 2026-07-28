@@ -17,6 +17,7 @@ import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
 import rs.masumi.app.pipeline.PipelineDeviceCapacity
+import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.translation.TranslationJobStatus
 import rs.masumi.core.translation.WorkspaceGlossaryStore
 
@@ -29,9 +30,10 @@ class TranslationForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newFixedThreadPool(MAXIMUM_PARALLEL_TRANSLATIONS) { task ->
-            Thread(task, "$WORKER_THREAD_NAME-${THREAD_SEQUENCE.incrementAndGet()}")
-        }
+        executor = Executors.newFixedThreadPool(
+            MAXIMUM_PARALLEL_TRANSLATIONS,
+            PipelineThreading.factory(WORKER_THREAD_NAME, numbered = true),
+        )
         notificationManager = getSystemService(NotificationManager::class.java)
         taskWakeLock = ForegroundTaskWakeLock(this, "translation")
         createNotificationChannel()
@@ -273,7 +275,6 @@ class TranslationForegroundService : Service() {
         private const val WORKER_THREAD_NAME = "masumi-translation"
         private const val MAXIMUM_PARALLEL_TRANSLATIONS = 2
         private val ACTIVE_PROJECTS = ConcurrentHashMap.newKeySet<String>()
-        private val THREAD_SEQUENCE = java.util.concurrent.atomic.AtomicInteger()
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     }
 

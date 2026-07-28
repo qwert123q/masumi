@@ -156,9 +156,9 @@ class PipelineSchedulerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        scheduler = Executors.newSingleThreadScheduledExecutor { task ->
-            Thread(task, WORKER_THREAD_NAME)
-        }
+        scheduler = Executors.newSingleThreadScheduledExecutor(
+            PipelineThreading.factory(WORKER_THREAD_NAME),
+        )
         notificationManager = getSystemService(NotificationManager::class.java)
         queueStore = PipelineQueueStore(this)
         stateReader = ProjectPipelineStateReader(filesDir.toPath().resolve("workspace"))
@@ -388,7 +388,10 @@ class PipelineSchedulerService : Service() {
             stateCache.remove(projectId)
             processDeaths.clear(projectId)
             when {
-                failure -> queueStore.pause(projectId, errorCode ?: "STAGE_FAILED")
+                // A stage cancellation is the expected acknowledgement of a
+                // user pause. Do not overwrite USER_PAUSED with STAGE_FAILED.
+                failure && queueStore.isActive(projectId) ->
+                    queueStore.pause(projectId, errorCode ?: "STAGE_FAILED")
                 success && stage == PipelineStage.EXPORT -> queueStore.remove(projectId)
             }
         }

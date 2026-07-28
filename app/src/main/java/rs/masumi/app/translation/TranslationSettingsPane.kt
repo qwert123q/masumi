@@ -16,6 +16,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.R
+import rs.masumi.app.pipeline.PipelineThreading
 
 class TranslationSettingsPane(
     private val activity: Activity,
@@ -38,9 +39,9 @@ class TranslationSettingsPane(
     private val fetchProgress = activity.findViewById<ProgressBar>(R.id.translationModelsProgress)
     private val fetchStatus = activity.findViewById<TextView>(R.id.translationModelsStatus)
     private val saveButton = activity.findViewById<Button>(R.id.saveTranslationSettingsButton)
-    private val executor = Executors.newSingleThreadExecutor { task ->
-        Thread(task, MODEL_FETCH_THREAD_NAME)
-    }
+    private val executor = Executors.newSingleThreadExecutor(
+        PipelineThreading.factory(MODEL_FETCH_THREAD_NAME),
+    )
     private val activeCall = AtomicReference<TranslationModelCatalogCall?>()
     private val endpointOptions = TranslationProviderCatalog.commonEndpoints + TranslationEndpointPreset(
         activity.getString(R.string.translation_custom_endpoint),
