@@ -55,9 +55,10 @@ class OcrForegroundService : Service() {
         val backendHealth = OcrBackendHealthStore(
             workspace.resolve("runtime/ocr-vulkan-unavailable"),
         )
-        // Keep two logical CPUs free for input, rendering, and library I/O.
-        // Xiaomi 14 previously ran two four-thread engines and saturated all
-        // eight CPUs, making even a simple swipe visibly freeze.
+        // Use the available CPU capacity for OCR. PipelineThreading assigns
+        // background priority to the service and recognition workers, so
+        // touch input and rendering preempt inference instead of leaving CPU
+        // cores permanently idle.
         val capacity = PipelineDeviceCapacity.ocrPlan(this)
         engineCache = OcrEngineSessionCache(
             OcrEngineFactory { model, projector ->

@@ -234,55 +234,85 @@ class MainActivity : Activity() {
     private val detectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(DetectionStatusBroadcast::parse) ?: return
-            refreshDurableState(progress)
+            if (isCurrentProject(progress.projectId)) {
+                if (progress.status.isActive()) {
+                    renderProgress(progress)
+                } else {
+                    refreshDurableState(progress)
+                }
+            }
             if (progress.status == DetectionJobStatus.CANCELLED || progress.status == DetectionJobStatus.FAILED) {
                 automaticPipelineRequested = false
             }
-            onPipelineStateChanged()
+            if (!progress.status.isActive()) onPipelineStateChanged()
         }
     }
 
     private val ocrReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(OcrStatusBroadcast::parse) ?: return
-            refreshOcrDurableState(progress)
+            if (isCurrentProject(progress.projectId)) {
+                if (progress.status.isActive()) {
+                    renderOcrProgress(progress)
+                } else {
+                    refreshOcrDurableState(progress)
+                }
+            }
             if (progress.status == OcrJobStatus.CANCELLED || progress.status == OcrJobStatus.FAILED) {
                 automaticPipelineRequested = false
             }
-            onPipelineStateChanged()
+            if (!progress.status.isActive()) onPipelineStateChanged()
         }
     }
 
     private val translationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TranslationStatusBroadcast::parse) ?: return
-            refreshTranslationDurableState(progress)
+            if (isCurrentProject(progress.projectId)) {
+                if (progress.status.isActive()) {
+                    renderTranslationProgress(progress)
+                } else {
+                    refreshTranslationDurableState(progress)
+                }
+            }
             if (progress.status == TranslationJobStatus.CANCELLED || progress.status == TranslationJobStatus.FAILED) {
                 automaticPipelineRequested = false
             }
-            onPipelineStateChanged()
+            if (!progress.status.isActive()) onPipelineStateChanged()
         }
     }
 
     private val cleanupReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(CleanupStatusBroadcast::parse) ?: return
-            refreshCleanupDurableState(progress)
+            if (isCurrentProject(progress.projectId)) {
+                if (progress.status.isActive()) {
+                    renderCleanupProgress(progress)
+                } else {
+                    refreshCleanupDurableState(progress)
+                }
+            }
             if (progress.status == CleanupJobStatus.CANCELLED || progress.status == CleanupJobStatus.FAILED) {
                 automaticPipelineRequested = false
             }
-            onPipelineStateChanged()
+            if (!progress.status.isActive()) onPipelineStateChanged()
         }
     }
 
     private val typesettingReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(TypesettingStatusBroadcast::parse) ?: return
-            refreshTypesettingDurableState(progress)
+            if (isCurrentProject(progress.projectId)) {
+                if (progress.status.isActive()) {
+                    renderTypesettingProgress(progress)
+                } else {
+                    refreshTypesettingDurableState(progress)
+                }
+            }
             if (progress.status == TypesettingJobStatus.CANCELLED || progress.status == TypesettingJobStatus.FAILED) {
                 automaticPipelineRequested = false
             }
-            onPipelineStateChanged()
+            if (!progress.status.isActive()) onPipelineStateChanged()
         }
     }
 
@@ -290,7 +320,13 @@ class MainActivity : Activity() {
     private val exportReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val progress = intent?.let(ExportStatusBroadcast::parse) ?: return
-            refreshExportDurableState(progress)
+            if (isCurrentProject(progress.projectId)) {
+                if (progress.status.isActive()) {
+                    renderExportProgress(progress)
+                } else {
+                    refreshExportDurableState(progress)
+                }
+            }
             when (progress.status) {
                 ExportJobStatus.SUCCEEDED -> refreshLibraryHistory()
                 ExportJobStatus.CANCELLED,
@@ -300,9 +336,12 @@ class MainActivity : Activity() {
                 ExportJobStatus.RUNNING,
                 -> Unit
             }
-            onPipelineStateChanged()
+            if (!progress.status.isActive()) onPipelineStateChanged()
         }
     }
+
+    private fun isCurrentProject(projectId: String): Boolean =
+        currentProject?.manifest?.projectId == projectId
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -1557,7 +1596,7 @@ class MainActivity : Activity() {
     private fun renderProgress(progress: DetectionProgress, interrupted: Boolean = false) {
         val completed = progress.committedPageCount + progress.preservedPageCount
         val active = !interrupted && progress.status.isActive()
-        setAnalysisActive(active)
+        if (analysisActive != active) setAnalysisActive(active)
         detectionProgress.visibility = View.VISIBLE
         detectionProgress.isIndeterminate = false
         detectionProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -1595,7 +1634,7 @@ class MainActivity : Activity() {
 
     private fun renderOcrProgress(progress: OcrProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
-        setOcrActive(active)
+        if (ocrActive != active) setOcrActive(active)
         ocrProgress.visibility = View.VISIBLE
         ocrProgress.isIndeterminate = !interrupted && progress.status == OcrJobStatus.LOADING_MODEL
         ocrProgress.max = progress.totalRegionCount.coerceAtLeast(1)
@@ -1632,7 +1671,7 @@ class MainActivity : Activity() {
 
     private fun renderTranslationProgress(progress: TranslationProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
-        setTranslationActive(active)
+        if (translationActive != active) setTranslationActive(active)
         translationProgress.visibility = View.VISIBLE
         translationProgress.isIndeterminate = false
         translationProgress.max = progress.totalWindowCount.coerceAtLeast(1)
@@ -1683,7 +1722,7 @@ class MainActivity : Activity() {
 
     private fun renderCleanupProgress(progress: CleanupProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
-        setCleanupActive(active)
+        if (cleanupActive != active) setCleanupActive(active)
         cleanupProgress.visibility = View.VISIBLE
         cleanupProgress.isIndeterminate = false
         cleanupProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -1792,7 +1831,7 @@ class MainActivity : Activity() {
 
     private fun renderTypesettingProgress(progress: TypesettingProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
-        setTypesettingActive(active)
+        if (typesettingActive != active) setTypesettingActive(active)
         typesettingProgress.visibility = View.VISIBLE
         typesettingProgress.isIndeterminate = false
         typesettingProgress.max = progress.totalPageCount.coerceAtLeast(1)
@@ -1828,7 +1867,7 @@ class MainActivity : Activity() {
 
     private fun renderExportProgress(progress: ExportProgress, interrupted: Boolean = false) {
         val active = !interrupted && progress.status.isActive()
-        setExportActive(active)
+        if (exportActive != active) setExportActive(active)
         exportProgress.visibility = View.VISIBLE
         exportProgress.isIndeterminate = false
         exportProgress.max = progress.totalPageCount.coerceAtLeast(1)

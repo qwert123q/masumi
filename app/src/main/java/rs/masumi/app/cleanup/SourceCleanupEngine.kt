@@ -112,8 +112,7 @@ class SourceCleanupEngine(
     }
 
     private fun cleanupParallelism(): Int =
-        (Runtime.getRuntime().availableProcessors() - RESERVED_INTERACTIVE_PROCESSORS)
-            .coerceIn(1, MAXIMUM_CLEANUP_WORKERS)
+        Runtime.getRuntime().availableProcessors().coerceIn(1, MAXIMUM_CLEANUP_WORKERS)
 
     private fun groupByRoiOverlap(
         targets: List<CleanupTarget>,
@@ -1020,8 +1019,7 @@ class SourceCleanupEngine(
         const val BOUNDARY_COLOR_SCORE_WEIGHT = 4
         const val SINGLE_BOUNDARY_SCORE = 10_000
         const val CLEANUP_WORKER_THREAD_NAME = "masumi-cleanup-worker"
-        const val MAXIMUM_CLEANUP_WORKERS = 4
-        const val RESERVED_INTERACTIVE_PROCESSORS = 2
+        const val MAXIMUM_CLEANUP_WORKERS = 6
         const val DISTANCE_INFINITY = Int.MAX_VALUE / 4
         const val CHAMFER_ORTHOGONAL = 3
         const val CHAMFER_DIAGONAL = 4
