@@ -23,15 +23,19 @@ class TranslationInputBuilderTest {
             candidate = candidate("dialogue", 1, OcrSemanticStatus.REQUIRED_TEXT),
             attempts = listOf(OcrFixtures.attempt(normalizedText = "台詞")),
         )
+        val punctuationNoise = base.regions.single().copy(
+            candidate = candidate("punctuation", 2, OcrSemanticStatus.REQUIRED_TEXT),
+            attempts = listOf(OcrFixtures.attempt(normalizedText = "``''")),
+        )
         val protected = OcrRegionArtifact(
-            candidate = candidate("uncertain", 2, OcrSemanticStatus.UNRESOLVED_FREE_TEXT),
+            candidate = candidate("uncertain", 3, OcrSemanticStatus.UNRESOLVED_FREE_TEXT),
             attempts = listOf(OcrFixtures.attempt(normalizedText = "候補")),
             selectedAttemptIndex = 0,
             quality = null,
             state = OcrRegionState.NEEDS_FALLBACK,
         )
         val empty = protected.copy(
-            candidate = candidate("empty", 3, OcrSemanticStatus.UNRESOLVED_FREE_TEXT),
+            candidate = candidate("empty", 4, OcrSemanticStatus.UNRESOLVED_FREE_TEXT),
             attempts = emptyList(),
             selectedAttemptIndex = null,
             state = OcrRegionState.NO_TEXT_CONFIRMED,
@@ -39,7 +43,7 @@ class TranslationInputBuilderTest {
 
         val input = TranslationInputBuilder().build(
             pageOrder = 4,
-            page = base.copy(regions = listOf(empty, protected, dialogue, free)),
+            page = base.copy(regions = listOf(empty, punctuationNoise, protected, dialogue, free)),
         )
 
         assertEquals(listOf("free", "dialogue"), input.items.map { it.ocrRegionId })

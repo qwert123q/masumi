@@ -791,11 +791,11 @@ class TranslationRunner(
         outcomes: Map<String, ValidatedTranslationItem>,
         artifacts: List<TranslationWindowArtifact>,
     ) {
-        val remainingIds = outcomes.values
-            .filter {
-                it.state == TranslationResultState.PRESERVED_SOURCE &&
-                    it.preserveReason in NON_PUBLISHABLE_REASONS
-            }
+        val remaining = outcomes.values.filter {
+            it.state == TranslationResultState.PRESERVED_SOURCE &&
+                it.preserveReason in NON_PUBLISHABLE_REASONS
+        }
+        val remainingIds = remaining
             .mapTo(mutableSetOf(), ValidatedTranslationItem::translationRegionId)
         if (remainingIds.isEmpty()) return
         val providerError = artifacts.firstNotNullOfOrNull { artifact ->
@@ -803,7 +803,16 @@ class TranslationRunner(
                 artifact.items.any { item -> item.translationRegionId in remainingIds }
             }
         }
-        throw TerminalProviderFailure(providerError ?: TranslationError("INCOMPLETE_TRANSLATION_RESPONSE"))
+        val responseError = when {
+            remaining.any { it.preserveReason == TranslationPreserveReason.BLANK_TRANSLATION } ->
+                "BLANK_TRANSLATION_RESPONSE"
+            remaining.any {
+                it.preserveReason == TranslationPreserveReason.DUPLICATE_RESPONSE ||
+                    it.preserveReason == TranslationPreserveReason.INVALID_ROLE
+            } -> TranslationProviderErrorCode.MALFORMED_RESPONSE.name
+            else -> "INCOMPLETE_TRANSLATION_RESPONSE"
+        }
+        throw TerminalProviderFailure(providerError ?: TranslationError(responseError))
     }
 
     private class TerminalProviderFailure(val error: TranslationError) : RuntimeException(error.code)

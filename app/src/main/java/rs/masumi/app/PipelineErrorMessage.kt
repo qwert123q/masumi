@@ -19,7 +19,9 @@ internal fun classifyPipelineError(errorCode: String?): PipelineErrorAdvice {
     if (code.isEmpty()) return PipelineErrorAdvice.UNKNOWN
     return when {
         code.contains("MODEL") || code.contains("TOKENIZE") -> PipelineErrorAdvice.MODEL
-        code.contains("INCOMPLETE_TRANSLATION_RESPONSE") || code.contains("MALFORMED_RESPONSE") ->
+        code.contains("INCOMPLETE_TRANSLATION_RESPONSE") ||
+            code.contains("BLANK_TRANSLATION_RESPONSE") ||
+            code.contains("MALFORMED_RESPONSE") ->
             PipelineErrorAdvice.RESPONSE
         code.contains("HTTP_CLIENT") || code.contains("UNAUTHORIZED") ||
             code.contains("FORBIDDEN") || code.contains("API_KEY") ||
@@ -57,6 +59,9 @@ internal fun Context.describePipelineError(errorCode: String?): String {
 internal fun Context.describePipelineErrorBrief(errorCode: String?): String {
     val code = errorCode?.takeIf(String::isNotBlank)
         ?: return getString(R.string.pipeline_error_brief_unknown)
+    if (code.contains("BLANK_TRANSLATION_RESPONSE")) {
+        return getString(R.string.pipeline_error_brief_blank_response)
+    }
     val message = when (classifyPipelineError(code)) {
         PipelineErrorAdvice.MODEL -> R.string.pipeline_error_brief_model
         PipelineErrorAdvice.RESPONSE -> R.string.pipeline_error_brief_response

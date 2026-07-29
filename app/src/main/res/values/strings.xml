@@ -158,6 +158,7 @@
     <string name="pipeline_error_without_code">处理未完成，请重试</string>
     <string name="pipeline_error_brief_model">模型文件不可用</string>
     <string name="pipeline_error_brief_response">模型返回内容不完整</string>
+    <string name="pipeline_error_brief_blank_response">模型返回了空翻译</string>
     <string name="pipeline_error_brief_network">网络或翻译服务连接失败</string>
     <string name="pipeline_error_brief_credentials">API Key、模型或服务地址不可用</string>
     <string name="pipeline_error_brief_storage">项目文件读写失败</string>

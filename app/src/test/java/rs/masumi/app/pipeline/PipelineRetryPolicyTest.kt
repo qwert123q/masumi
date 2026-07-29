@@ -15,6 +15,12 @@ class PipelineRetryPolicyTest {
                 "INCOMPLETE_TRANSLATION_RESPONSE",
             ),
         )
+        assertTrue(
+            PipelineRetryPolicy.isRetryable(
+                PipelineStage.TRANSLATION,
+                "BLANK_TRANSLATION_RESPONSE",
+            ),
+        )
     }
 
     @Test

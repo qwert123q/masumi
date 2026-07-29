@@ -19,6 +19,10 @@ class PipelineErrorMessageTest {
             PipelineErrorAdvice.RESPONSE,
             classifyPipelineError("INCOMPLETE_TRANSLATION_RESPONSE"),
         )
+        assertEquals(
+            PipelineErrorAdvice.RESPONSE,
+            classifyPipelineError("BLANK_TRANSLATION_RESPONSE"),
+        )
         assertEquals(PipelineErrorAdvice.NETWORK, classifyPipelineError("TIMEOUT"))
         assertEquals(PipelineErrorAdvice.STORAGE, classifyPipelineError("PAGE_ARTIFACT_WRITE_FAILED"))
         assertEquals(PipelineErrorAdvice.SOURCE, classifyPipelineError("SOURCE_HASH_MISMATCH"))

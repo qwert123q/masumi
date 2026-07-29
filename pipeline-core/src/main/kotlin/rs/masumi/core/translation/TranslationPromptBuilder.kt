@@ -37,6 +37,7 @@ class TranslationPromptBuilder(
         append(". Translate Japanese manga text into Simplified Chinese. Return only one JSON object matching schema ")
         append(prompt.responseSchemaRevision)
         append(" with items [{id,role,translation}] and glossaryUpdates. glossaryUpdates must be a JSON object mapping Japanese source strings to Simplified Chinese translations; use {} when there are no updates. Return every id from the items array exactly once, never return context ids, and add no ids. ")
+        append("Before returning, verify that the response items count equals the request items count and that every requested id is present exactly once. ")
         append("Allowed roles: DIALOGUE, NARRATION, SOUND_EFFECT, OTHER_TEXT. DIALOGUE hints must remain DIALOGUE; CLASSIFY_FREE_TEXT must be classified. ")
         append("Use concise, idiomatic Chinese that preserves meaning and fits the original manga region; do not expand, explain, or repeat information. Dialogue translation=")
         append(policy.translateDialogue)
@@ -48,7 +49,8 @@ class TranslationPromptBuilder(
         append(policy.translateOtherText)
         append(". Japanese OCR can cut off a name, honorific, or final syllable immediately before an ellipsis. Use repeated names, glossary entries, and nearby chapter context to restore an obvious truncation; never emit a visibly incomplete Chinese word such as 小…… when context establishes 小姐. ")
         append("Use Chinese typography: write ellipses as …… with no spaces, never as ..., 。。。 or separated dots. Keep names and forms of address consistent within the chapter. ")
-        append("When a role is not translated by policy, set translation to null. Never invent source text or commentary.")
+        append("For every role enabled by policy, translation must be a non-empty JSON string. If a punctuation- or symbol-only item is ever provided, copy its source exactly instead of returning null or an empty string. ")
+        append("Only when a role is disabled by policy may translation be null. Never invent source text or commentary.")
     }
 
     private fun buildGlossarySystemPrompt(prompt: TranslationPromptRef): String = buildString {

@@ -22,6 +22,7 @@ internal object PipelineRetryPolicy {
         "HTTP_TRANSIENT",
         "MALFORMED_RESPONSE",
         "INCOMPLETE_TRANSLATION_RESPONSE",
+        "BLANK_TRANSLATION_RESPONSE",
     )
     private const val INITIAL_DELAY_MILLIS = 30_000L
     private const val MAXIMUM_DELAY_MILLIS = 5L * 60L * 1_000L

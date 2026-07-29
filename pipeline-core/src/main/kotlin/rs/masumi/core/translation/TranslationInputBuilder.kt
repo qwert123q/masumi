@@ -34,6 +34,7 @@ class TranslationInputBuilder(
         val selected = region.attempts.getOrNull(selectedIndex)
             ?: throw IllegalArgumentException("selected OCR attempt is out of range")
         require(selected.normalizedText.isNotBlank()) { "recognized OCR region requires non-blank text" }
+        if (!TranslationSourceText.isTranslationCandidate(selected.normalizedText)) return null
         return TranslationInputItem(
             translationRegionId = TranslationIdentity.regionId(
                 ocrPageArtifactKey = page.pageArtifactKey,
