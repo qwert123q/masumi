@@ -24,10 +24,10 @@ class PipelineRetryPolicyTest {
     }
 
     @Test
-    fun `backoff grows and caps at thirty minutes`() {
+    fun `backoff grows and caps at five minutes`() {
         assertEquals(30_000L, PipelineRetryPolicy.delayMillis(1))
         assertEquals(60_000L, PipelineRetryPolicy.delayMillis(2))
-        assertEquals(8L * 60L * 1_000L, PipelineRetryPolicy.delayMillis(5))
-        assertEquals(30L * 60L * 1_000L, PipelineRetryPolicy.delayMillis(100))
+        assertEquals(5L * 60L * 1_000L, PipelineRetryPolicy.delayMillis(5))
+        assertEquals(5L * 60L * 1_000L, PipelineRetryPolicy.delayMillis(100))
     }
 }

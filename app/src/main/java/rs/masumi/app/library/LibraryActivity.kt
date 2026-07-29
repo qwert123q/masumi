@@ -20,6 +20,7 @@ import rs.masumi.app.AutomaticPipelinePlanner
 import rs.masumi.app.HorizontalSwipeViewFlipper
 import rs.masumi.app.MainActivity
 import rs.masumi.app.R
+import rs.masumi.app.describePipelineErrorBrief
 import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.DetectionForegroundService
 import rs.masumi.app.cleanup.CleanupForegroundService
@@ -216,8 +217,9 @@ class LibraryActivity : Activity() {
     private fun renderCachedLibrary() {
         val rootUri = libraryPreferences.rootUri() ?: return
         val snapshot = snapshotStore.load(rootUri) ?: return
-        val queueStatuses = pipelineQueueStore.entries().associate { it.projectId to it.status }
+        val queueEntries = pipelineQueueStore.entries().associateBy { it.projectId }
         val summaries = snapshot.projects.map { project ->
+            val queueEntry = queueEntries[project.metadata.projectId]
             LibraryProjectSummary(
                 project = project,
                 completedStages = if (project.outputPageCount > 0) {
@@ -227,7 +229,8 @@ class LibraryActivity : Activity() {
                 },
                 cover = null,
                 readingProgress = readingProgressStore.load(project.metadata.projectId),
-                queueStatus = queueStatuses[project.metadata.projectId],
+                queueStatus = queueEntry?.status,
+                queueErrorCode = queueEntry?.errorCode,
             )
         }
         renderLibrary(rootUri, snapshot.rootDisplayName, summaries, unavailable = false)
@@ -246,9 +249,15 @@ class LibraryActivity : Activity() {
                 val projects = store.refreshProjects()
                 val name = store.rootDisplayName()
                 snapshotStore.save(rootUri, name, projects)
-                val queueStatuses = pipelineQueueStore.entries().associate { it.projectId to it.status }
+                val queueEntries = pipelineQueueStore.entries().associateBy { it.projectId }
                 val summaries = projects.map { project ->
-                    buildSummary(store, project, queueStatuses[project.metadata.projectId])
+                    val queueEntry = queueEntries[project.metadata.projectId]
+                    buildSummary(
+                        store = store,
+                        project = project,
+                        queueStatus = queueEntry?.status,
+                        queueErrorCode = queueEntry?.errorCode,
+                    )
                 }
                 Triple(name, rootUri, summaries)
             }
@@ -269,6 +278,7 @@ class LibraryActivity : Activity() {
         store: MangaLibraryStore,
         project: MangaLibraryProject,
         queueStatus: PipelineQueueStatus?,
+        queueErrorCode: String?,
     ): LibraryProjectSummary {
         val projectId = project.metadata.projectId
         val privateProject = runCatching { catalog.openProject(projectId) }.getOrNull()
@@ -324,6 +334,7 @@ class LibraryActivity : Activity() {
             cover = cover,
             readingProgress = readingProgressStore.load(projectId),
             queueStatus = queueStatus,
+            queueErrorCode = queueErrorCode,
         )
     }
 
@@ -601,8 +612,20 @@ class LibraryActivity : Activity() {
             )
         summary.project.outputPageCount > 0 ->
             getString(R.string.library_project_status_ready, summary.project.outputPageCount)
+        summary.queueStatus == PipelineQueueStatus.ACTIVE && summary.queueErrorCode != null ->
+            getString(
+                R.string.pipeline_status_retrying,
+                describePipelineErrorBrief(summary.queueErrorCode),
+            )
         summary.queueStatus == PipelineQueueStatus.ACTIVE ->
             getString(R.string.library_project_status_queued)
+        summary.queueStatus == PipelineQueueStatus.PAUSED &&
+            summary.queueErrorCode != null &&
+            summary.queueErrorCode != "USER_PAUSED" ->
+            getString(
+                R.string.pipeline_status_failed,
+                describePipelineErrorBrief(summary.queueErrorCode),
+            )
         summary.queueStatus == PipelineQueueStatus.PAUSED ->
             getString(R.string.library_project_status_paused)
         summary.completedStages >= AutomaticPipelinePlanner.STAGE_COUNT ->
@@ -659,6 +682,7 @@ class LibraryActivity : Activity() {
         val cover: Bitmap?,
         val readingProgress: MangaReadingProgress?,
         val queueStatus: PipelineQueueStatus?,
+        val queueErrorCode: String?,
     )
 
     private companion object {

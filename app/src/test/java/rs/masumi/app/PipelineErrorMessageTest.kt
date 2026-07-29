@@ -15,6 +15,10 @@ class PipelineErrorMessageTest {
     @Test
     fun commonServiceAndProjectFailuresGetActionableCategories() {
         assertEquals(PipelineErrorAdvice.CREDENTIALS, classifyPipelineError("HTTP_CLIENT"))
+        assertEquals(
+            PipelineErrorAdvice.RESPONSE,
+            classifyPipelineError("INCOMPLETE_TRANSLATION_RESPONSE"),
+        )
         assertEquals(PipelineErrorAdvice.NETWORK, classifyPipelineError("TIMEOUT"))
         assertEquals(PipelineErrorAdvice.STORAGE, classifyPipelineError("PAGE_ARTIFACT_WRITE_FAILED"))
         assertEquals(PipelineErrorAdvice.SOURCE, classifyPipelineError("SOURCE_HASH_MISMATCH"))

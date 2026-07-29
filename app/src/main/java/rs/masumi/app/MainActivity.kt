@@ -44,6 +44,7 @@ import rs.masumi.app.exporting.ExportProgress
 import rs.masumi.app.exporting.ExportResumePolicy
 import rs.masumi.app.exporting.ExportStatusBroadcast
 import rs.masumi.app.pipeline.DurablePipelineProgress
+import rs.masumi.app.pipeline.PipelineQueueStatus
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.app.pipeline.PipelineThreading
@@ -647,6 +648,10 @@ class MainActivity : Activity() {
         val completed = AutomaticPipelinePlanner.completedStages(snapshot)
         val total = AutomaticPipelinePlanner.STAGE_COUNT
         val hasProject = currentProject != null
+        val queueEntry = currentProject?.manifest?.projectId?.let { projectId ->
+            pipelineQueueStore.entries().firstOrNull { it.projectId == projectId }
+        }
+        val queueError = queueEntry?.errorCode?.takeUnless { it == "USER_PAUSED" }
         val hasSettings = translationSettingsStore.loadProviderSettings() != null
         val exportReady = typesettingRunComplete()
         val active = hasActiveWork()
@@ -658,6 +663,10 @@ class MainActivity : Activity() {
             !hasSettings -> getString(R.string.process_waiting_settings)
             exportReady && exportSucceededForCurrentRun -> getString(R.string.process_saved)
             exportReady -> getString(R.string.process_ready_export)
+            queueEntry?.status == PipelineQueueStatus.ACTIVE && queueError != null ->
+                getString(R.string.pipeline_status_retrying, describePipelineErrorBrief(queueError))
+            queueEntry?.status == PipelineQueueStatus.PAUSED && queueError != null ->
+                getString(R.string.pipeline_status_failed, describePipelineErrorBrief(queueError))
             active || automaticPipelineRequested -> getString(R.string.process_background)
             completed == 0 -> getString(R.string.process_idle)
             else -> getString(R.string.process_paused, completed, total)
