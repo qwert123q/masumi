@@ -6,13 +6,20 @@ import android.content.ClipData
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Point
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
+import android.transition.ChangeBounds
+import android.transition.TransitionManager
 import android.view.DragEvent
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -49,6 +56,7 @@ import java.nio.file.Path
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.roundToInt
 
 class LibraryActivity : Activity() {
     private lateinit var locationText: TextView
@@ -81,6 +89,7 @@ class LibraryActivity : Activity() {
     private var renderedSignature = emptyList<String>()
     private var initialTabResolved = false
     private var finishedOrderChangedDuringDrag = false
+    private var activeDragShadowBitmap: Bitmap? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -147,6 +156,8 @@ class LibraryActivity : Activity() {
         refreshGeneration.incrementAndGet()
         executor.shutdownNow()
         maintenanceExecutor.shutdownNow()
+        activeDragShadowBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
+        activeDragShadowBitmap = null
         recycleCovers()
         super.onDestroy()
     }
@@ -231,7 +242,9 @@ class LibraryActivity : Activity() {
             val queueEntry = queueEntries[project.metadata.projectId]
             LibraryProjectSummary(
                 project = project,
-                completedStages = if (project.outputPageCount > 0) {
+                completedStages = if (
+                    isFinishedLibraryProject(project.outputPageCount, queueEntry?.status)
+                ) {
                     AutomaticPipelinePlanner.STAGE_COUNT
                 } else {
                     0
@@ -291,7 +304,7 @@ class LibraryActivity : Activity() {
     ): LibraryProjectSummary {
         val projectId = project.metadata.projectId
         val privateProject = runCatching { catalog.openProject(projectId) }.getOrNull()
-        val completedStages = if (project.outputPageCount > 0) {
+        val completedStages = if (isFinishedLibraryProject(project.outputPageCount, queueStatus)) {
             AutomaticPipelinePlanner.STAGE_COUNT
         } else {
             val detection = privateProject?.let { catalog.latestPublishedRun(projectId) }
@@ -371,7 +384,9 @@ class LibraryActivity : Activity() {
             unavailable -> getString(R.string.library_home_storage_repair)
             else -> getString(R.string.library_home_storage_setup)
         }
-        val (unorderedFinished, processing) = projects.partition { it.project.outputPageCount > 0 }
+        val (unorderedFinished, processing) = projects.partition {
+            isFinishedLibraryProject(it.project.outputPageCount, it.queueStatus)
+        }
         val finished = if (rootUri == null) {
             unorderedFinished
         } else {
@@ -465,18 +480,22 @@ class LibraryActivity : Activity() {
         val primary = item.findViewById<Button>(R.id.libraryProjectReadButton)
         val secondary = item.findViewById<Button>(R.id.libraryProjectOpenButton)
         bindProjectDragHandle(item, rootUri, summary)
+        val canReadCurrentResult = rootUri != null && isFinishedLibraryProject(
+            project.outputPageCount,
+            summary.queueStatus,
+        )
         item.isClickable = true
         item.isFocusable = true
         // Reader-first: tapping a finished manga card starts reading it, the
         // way every manga shelf behaves; details stay one button away.
         item.setOnClickListener {
-            if (project.outputPageCount > 0 && rootUri != null) {
-                startActivity(MangaReaderActivity.intent(this, rootUri, project))
+            if (canReadCurrentResult) {
+                startActivity(MangaReaderActivity.intent(this, requireNotNull(rootUri), project))
             } else {
                 startActivity(MainActivity.projectIntent(this, project.metadata.projectId))
             }
         }
-        if (project.outputPageCount > 0 && rootUri != null) {
+        if (canReadCurrentResult) {
             primary.setText(
                 if ((summary.readingProgress?.pageIndex ?: 0) > 0) {
                     R.string.library_continue_reading
@@ -485,13 +504,15 @@ class LibraryActivity : Activity() {
                 },
             )
             primary.setOnClickListener {
-                startActivity(MangaReaderActivity.intent(this, rootUri, project))
+                startActivity(MangaReaderActivity.intent(this, requireNotNull(rootUri), project))
             }
         } else {
             primary.setText(
                 when {
                     summary.queueStatus == PipelineQueueStatus.ACTIVE ->
                         R.string.library_processing_queued
+                    summary.queueStatus == PipelineQueueStatus.PAUSED ->
+                        R.string.library_continue_processing
                     summary.completedStages >= AutomaticPipelinePlanner.STAGE_COUNT ->
                         R.string.library_finish_saving
                     summary.completedStages > 0 ->
@@ -516,25 +537,47 @@ class LibraryActivity : Activity() {
         summary: LibraryProjectSummary,
     ) {
         val handle = item.findViewById<ImageView>(R.id.libraryProjectDragHandle)
-        val canReorder = rootUri != null && summary.project.outputPageCount > 0
+        val canReorder = rootUri != null && isFinishedLibraryProject(
+            summary.project.outputPageCount,
+            summary.queueStatus,
+        )
         handle.visibility = if (canReorder) View.VISIBLE else View.GONE
         handle.setOnTouchListener(null)
         if (!canReorder) return
         handle.setOnTouchListener { _, event ->
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                activeDragShadowBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
+                val shadowBitmap = Bitmap.createBitmap(
+                    item.width,
+                    item.height,
+                    Bitmap.Config.ARGB_8888,
+                ).also { item.draw(Canvas(it)) }
+                activeDragShadowBitmap = shadowBitmap
+                val handleLocation = IntArray(2)
+                val itemLocation = IntArray(2)
+                handle.getLocationOnScreen(handleLocation)
+                item.getLocationOnScreen(itemLocation)
+                val touchX = handleLocation[0] - itemLocation[0] + event.x
+                val touchY = handleLocation[1] - itemLocation[1] + event.y
                 val dragData = ClipData.newPlainText(
                     getString(R.string.library_reorder_drag_handle),
                     summary.project.metadata.projectId,
                 )
                 val started = item.startDragAndDrop(
                     dragData,
-                    View.DragShadowBuilder(item),
+                    ProjectDragShadowBuilder(item, shadowBitmap, touchX, touchY),
                     item,
                     0,
                 )
                 if (started) {
-                    item.alpha = DRAGGED_ITEM_ALPHA
+                    item.animate().cancel()
+                    item.alpha = DRAGGED_ITEM_PLACEHOLDER_ALPHA
+                    item.scaleX = DRAGGED_ITEM_SCALE
+                    item.scaleY = DRAGGED_ITEM_SCALE
                     item.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                } else {
+                    shadowBitmap.recycle()
+                    activeDragShadowBitmap = null
                 }
             }
             true
@@ -558,7 +601,17 @@ class LibraryActivity : Activity() {
                 }
                 DragEvent.ACTION_DROP -> dragged?.parent === finishedContainer
                 DragEvent.ACTION_DRAG_ENDED -> {
-                    dragged?.alpha = 1f
+                    TransitionManager.endTransitions(finishedContainer)
+                    dragged?.animate()?.cancel()
+                    dragged?.animate()
+                        ?.alpha(1f)
+                        ?.scaleX(1f)
+                        ?.scaleY(1f)
+                        ?.setDuration(DRAG_SETTLE_DURATION_MS)
+                        ?.setInterpolator(DecelerateInterpolator())
+                        ?.start()
+                    activeDragShadowBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
+                    activeDragShadowBitmap = null
                     if (finishedOrderChangedDuringDrag) persistFinishedProjectOrder()
                     finishedOrderChangedDuringDrag = false
                     true
@@ -577,6 +630,14 @@ class LibraryActivity : Activity() {
             if (child !== dragged && pointerY > child.top + child.height / 2f) insertionIndex += 1
         }
         if (insertionIndex == currentIndex) return
+        TransitionManager.endTransitions(finishedContainer)
+        TransitionManager.beginDelayedTransition(
+            finishedContainer,
+            ChangeBounds().apply {
+                duration = DRAG_REORDER_DURATION_MS
+                interpolator = DecelerateInterpolator()
+            },
+        )
         finishedContainer.removeView(dragged)
         finishedContainer.addView(dragged, insertionIndex.coerceIn(0, finishedContainer.childCount))
         finishedOrderChangedDuringDrag = true
@@ -739,14 +800,6 @@ class LibraryActivity : Activity() {
             ExportForegroundService.isTaskActive()
 
     private fun statusText(summary: LibraryProjectSummary): String = when {
-        summary.project.outputPageCount > 0 && summary.readingProgress != null ->
-            getString(
-                R.string.library_project_status_reading,
-                summary.project.outputPageCount,
-                summary.readingProgress.pageIndex + 1,
-            )
-        summary.project.outputPageCount > 0 ->
-            getString(R.string.library_project_status_ready, summary.project.outputPageCount)
         summary.queueStatus == PipelineQueueStatus.ACTIVE && summary.queueErrorCode != null ->
             getString(
                 R.string.pipeline_status_retrying,
@@ -763,6 +816,14 @@ class LibraryActivity : Activity() {
             )
         summary.queueStatus == PipelineQueueStatus.PAUSED ->
             getString(R.string.library_project_status_paused)
+        summary.project.outputPageCount > 0 && summary.readingProgress != null ->
+            getString(
+                R.string.library_project_status_reading,
+                summary.project.outputPageCount,
+                summary.readingProgress.pageIndex + 1,
+            )
+        summary.project.outputPageCount > 0 ->
+            getString(R.string.library_project_status_ready, summary.project.outputPageCount)
         summary.completedStages >= AutomaticPipelinePlanner.STAGE_COUNT ->
             getString(R.string.library_project_status_auto_saving)
         else ->
@@ -826,8 +887,53 @@ class LibraryActivity : Activity() {
         const val TAB_FINISHED = 0
         const val TAB_PROCESSING = 1
         const val STATE_SELECTED_TAB = "library_selected_tab"
-        const val DRAGGED_ITEM_ALPHA = 0.32f
+        const val DRAGGED_ITEM_PLACEHOLDER_ALPHA = 0.08f
+        const val DRAGGED_ITEM_SCALE = 0.985f
+        const val DRAG_SHADOW_SCALE = 0.985f
+        const val DRAG_SHADOW_ALPHA = 238
+        const val DRAG_REORDER_DURATION_MS = 190L
+        const val DRAG_SETTLE_DURATION_MS = 160L
         const val DRAG_SCROLL_EDGE_DP = 64
         const val DRAG_SCROLL_STEP_DP = 18
+    }
+
+    private class ProjectDragShadowBuilder(
+        view: View,
+        private val snapshot: Bitmap,
+        touchX: Float,
+        touchY: Float,
+    ) : View.DragShadowBuilder(view) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+            alpha = DRAG_SHADOW_ALPHA
+        }
+        private val destination = RectF()
+        private val anchoredTouchX = touchX
+        private val anchoredTouchY = touchY
+
+        override fun onProvideShadowMetrics(shadowSize: Point, shadowTouchPoint: Point) {
+            shadowSize.set(snapshot.width, snapshot.height)
+            val horizontalInset = snapshot.width * (1f - DRAG_SHADOW_SCALE) / 2f
+            val verticalInset = snapshot.height * (1f - DRAG_SHADOW_SCALE) / 2f
+            shadowTouchPoint.set(
+                (horizontalInset + anchoredTouchX * DRAG_SHADOW_SCALE)
+                    .roundToInt()
+                    .coerceIn(0, snapshot.width),
+                (verticalInset + anchoredTouchY * DRAG_SHADOW_SCALE)
+                    .roundToInt()
+                    .coerceIn(0, snapshot.height),
+            )
+        }
+
+        override fun onDrawShadow(canvas: Canvas) {
+            val horizontalInset = snapshot.width * (1f - DRAG_SHADOW_SCALE) / 2f
+            val verticalInset = snapshot.height * (1f - DRAG_SHADOW_SCALE) / 2f
+            destination.set(
+                horizontalInset,
+                verticalInset,
+                snapshot.width - horizontalInset,
+                snapshot.height - verticalInset,
+            )
+            canvas.drawBitmap(snapshot, null, destination, paint)
+        }
     }
 }
