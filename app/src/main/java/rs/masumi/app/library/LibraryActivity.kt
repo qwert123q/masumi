@@ -2,18 +2,23 @@ package rs.masumi.app.library
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.view.DragEvent
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import rs.masumi.app.AutomaticPipelinePlanner
@@ -61,6 +66,7 @@ class LibraryActivity : Activity() {
     private lateinit var readingProgressStore: MangaReadingProgressStore
     private lateinit var pipelineQueueStore: PipelineQueueStore
     private lateinit var snapshotStore: LibraryHomeSnapshotStore
+    private lateinit var projectOrderStore: MangaLibraryOrderStore
     private val executor = Executors.newSingleThreadExecutor(
         PipelineThreading.factory("masumi-library-home"),
     )
@@ -74,6 +80,7 @@ class LibraryActivity : Activity() {
     private val renderedProjectItems = mutableMapOf<String, View>()
     private var renderedSignature = emptyList<String>()
     private var initialTabResolved = false
+    private var finishedOrderChangedDuringDrag = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +100,8 @@ class LibraryActivity : Activity() {
         readingProgressStore = MangaReadingProgressStore(this)
         pipelineQueueStore = PipelineQueueStore(this)
         snapshotStore = LibraryHomeSnapshotStore(this)
+        projectOrderStore = MangaLibraryOrderStore(this)
+        configureFinishedProjectDragging()
 
         findViewById<Button>(R.id.libraryHomeImport).setOnClickListener { importChapter() }
         chooseLibraryButton.setOnClickListener { openLibraryFolder(false) }
@@ -362,7 +371,16 @@ class LibraryActivity : Activity() {
             unavailable -> getString(R.string.library_home_storage_repair)
             else -> getString(R.string.library_home_storage_setup)
         }
-        val (finished, processing) = projects.partition { it.project.outputPageCount > 0 }
+        val (unorderedFinished, processing) = projects.partition { it.project.outputPageCount > 0 }
+        val finished = if (rootUri == null) {
+            unorderedFinished
+        } else {
+            val byId = unorderedFinished.associateBy { it.project.metadata.projectId }
+            projectOrderStore.orderedProjectIds(
+                rootUri,
+                unorderedFinished.map { it.project.metadata.projectId },
+            ).mapNotNull(byId::get)
+        }
         finishedTabButton.text = getString(R.string.library_tab_finished_count, finished.size)
         processingTabButton.text = getString(R.string.library_tab_processing_count, processing.size)
         finishedEmptyText.visibility = if (finished.isEmpty() && !unavailable) View.VISIBLE else View.GONE
@@ -421,6 +439,7 @@ class LibraryActivity : Activity() {
         summary: LibraryProjectSummary,
     ) {
         val project = summary.project
+        item.tag = project.metadata.projectId
         item.findViewById<TextView>(R.id.libraryProjectTitle).text = project.metadata.title
         val initial = item.findViewById<TextView>(R.id.libraryProjectInitial).apply {
             text = project.metadata.title.trim().firstOrNull()?.toString().orEmpty()
@@ -445,6 +464,7 @@ class LibraryActivity : Activity() {
         }
         val primary = item.findViewById<Button>(R.id.libraryProjectReadButton)
         val secondary = item.findViewById<Button>(R.id.libraryProjectOpenButton)
+        bindProjectDragHandle(item, rootUri, summary)
         item.isClickable = true
         item.isFocusable = true
         // Reader-first: tapping a finished manga card starts reading it, the
@@ -489,6 +509,121 @@ class LibraryActivity : Activity() {
             showProjectManagement(rootUri, summary)
         }
     }
+
+    private fun bindProjectDragHandle(
+        item: View,
+        rootUri: Uri?,
+        summary: LibraryProjectSummary,
+    ) {
+        val handle = item.findViewById<ImageView>(R.id.libraryProjectDragHandle)
+        val canReorder = rootUri != null && summary.project.outputPageCount > 0
+        handle.visibility = if (canReorder) View.VISIBLE else View.GONE
+        handle.setOnTouchListener(null)
+        if (!canReorder) return
+        handle.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                val dragData = ClipData.newPlainText(
+                    getString(R.string.library_reorder_drag_handle),
+                    summary.project.metadata.projectId,
+                )
+                val started = item.startDragAndDrop(
+                    dragData,
+                    View.DragShadowBuilder(item),
+                    item,
+                    0,
+                )
+                if (started) {
+                    item.alpha = DRAGGED_ITEM_ALPHA
+                    item.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                }
+            }
+            true
+        }
+    }
+
+    private fun configureFinishedProjectDragging() {
+        finishedContainer.setOnDragListener { _, event ->
+            val dragged = event.localState as? View
+            when (event.action) {
+                DragEvent.ACTION_DRAG_STARTED -> {
+                    val accepts = dragged?.parent === finishedContainer
+                    if (accepts) finishedOrderChangedDuringDrag = false
+                    accepts
+                }
+                DragEvent.ACTION_DRAG_LOCATION -> {
+                    if (dragged?.parent !== finishedContainer) return@setOnDragListener false
+                    moveFinishedProjectToPointer(dragged, event.y)
+                    autoScrollFinishedProjects(event.y)
+                    true
+                }
+                DragEvent.ACTION_DROP -> dragged?.parent === finishedContainer
+                DragEvent.ACTION_DRAG_ENDED -> {
+                    dragged?.alpha = 1f
+                    if (finishedOrderChangedDuringDrag) persistFinishedProjectOrder()
+                    finishedOrderChangedDuringDrag = false
+                    true
+                }
+                else -> dragged?.parent === finishedContainer
+            }
+        }
+    }
+
+    private fun moveFinishedProjectToPointer(dragged: View, pointerY: Float) {
+        val currentIndex = finishedContainer.indexOfChild(dragged)
+        if (currentIndex < 0) return
+        var insertionIndex = 0
+        repeat(finishedContainer.childCount) { index ->
+            val child = finishedContainer.getChildAt(index)
+            if (child !== dragged && pointerY > child.top + child.height / 2f) insertionIndex += 1
+        }
+        if (insertionIndex == currentIndex) return
+        finishedContainer.removeView(dragged)
+        finishedContainer.addView(dragged, insertionIndex.coerceIn(0, finishedContainer.childCount))
+        finishedOrderChangedDuringDrag = true
+        dragged.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    }
+
+    private fun autoScrollFinishedProjects(pointerY: Float) {
+        val scrollView = finishedContainer.findAncestorScrollView() ?: return
+        val containerLocation = IntArray(2)
+        val scrollLocation = IntArray(2)
+        finishedContainer.getLocationOnScreen(containerLocation)
+        scrollView.getLocationOnScreen(scrollLocation)
+        val pointerOnScreen = containerLocation[1] + pointerY
+        val edge = dp(DRAG_SCROLL_EDGE_DP)
+        val step = dp(DRAG_SCROLL_STEP_DP)
+        when {
+            pointerOnScreen < scrollLocation[1] + edge -> scrollView.scrollBy(0, -step)
+            pointerOnScreen > scrollLocation[1] + scrollView.height - edge -> scrollView.scrollBy(0, step)
+        }
+    }
+
+    private fun persistFinishedProjectOrder() {
+        val rootUri = libraryPreferences.rootUri() ?: return
+        val projectIds = buildList {
+            repeat(finishedContainer.childCount) { index ->
+                (finishedContainer.getChildAt(index).tag as? String)?.let(::add)
+            }
+        }
+        projectOrderStore.save(rootUri, projectIds)
+        renderedSignature = buildList {
+            projectIds.forEach { add("finished:$it") }
+            repeat(processingContainer.childCount) { index ->
+                (processingContainer.getChildAt(index).tag as? String)?.let { add("processing:$it") }
+            }
+        }
+    }
+
+    private fun View.findAncestorScrollView(): ScrollView? {
+        var current = parent
+        while (current is View) {
+            if (current is ScrollView) return current
+            current = current.parent
+        }
+        return null
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun showProjectManagement(rootUri: Uri?, summary: LibraryProjectSummary) {
         if (rootUri == null) return
@@ -691,5 +826,8 @@ class LibraryActivity : Activity() {
         const val TAB_FINISHED = 0
         const val TAB_PROCESSING = 1
         const val STATE_SELECTED_TAB = "library_selected_tab"
+        const val DRAGGED_ITEM_ALPHA = 0.32f
+        const val DRAG_SCROLL_EDGE_DP = 64
+        const val DRAG_SCROLL_STEP_DP = 18
     }
 }

@@ -12,6 +12,7 @@
     <string name="library_home_empty_finished">还没有成品漫画。导入一个原稿文件夹，Masumi 完成整章处理后就能在这里阅读。</string>
     <string name="library_home_empty_processing">没有正在处理的漫画。</string>
     <string name="library_project_cover">漫画封面</string>
+    <string name="library_reorder_drag_handle">拖动调整漫画顺序</string>
     <string name="library_project_details">项目详情</string>
     <string name="library_home_choose_folder">设置</string>
     <string name="library_home_change_folder">更换</string>

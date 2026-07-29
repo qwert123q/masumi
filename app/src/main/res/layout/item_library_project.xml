@@ -91,4 +91,16 @@
                 android:text="@string/library_manage" />
         </LinearLayout>
     </LinearLayout>
+
+    <ImageView
+        android:id="@+id/libraryProjectDragHandle"
+        android:layout_width="40dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center_vertical"
+        android:layout_marginStart="6dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/library_reorder_drag_handle"
+        android:padding="9dp"
+        android:src="@drawable/ic_drag_handle_dots"
+        android:visibility="gone" />
 </LinearLayout>
