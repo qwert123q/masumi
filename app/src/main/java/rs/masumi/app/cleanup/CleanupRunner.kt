@@ -400,7 +400,7 @@ class CleanupRunner(
     }
 
     private fun OcrRegionArtifact.cleanupStrategy(): CleanupStrategy =
-        if (candidate.sourceClass == DetectorClass.TEXT_IN_BUBBLE || candidate.associatedBubbleBox != null) {
+        if (candidate.sourceClass == DetectorClass.TEXT_IN_BUBBLE) {
             CleanupStrategy.FLAT_LOCAL_FILL
         } else {
             CleanupStrategy.LOCAL_BOUNDARY_INPAINT

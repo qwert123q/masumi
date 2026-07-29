@@ -259,7 +259,20 @@ class SourceCleanupEngine(
                         useBoundaryInpaint = true
                     } else {
                         relaxedGlyphSelection = ink.relaxedSelection
-                        dilated = dilate(ink.mask, roi.width, roi.height, freeTextDilationRadius(core, policy))
+                        val outlineAwareMask = displayTextOutlineMask(
+                            pixels,
+                            width,
+                            core,
+                            roi,
+                            background,
+                            ink.mask,
+                        )
+                        dilated = dilate(
+                            outlineAwareMask,
+                            roi.width,
+                            roi.height,
+                            freeTextDilationRadius(core, policy),
+                        )
                         useBoundaryInpaint = true
                     }
                 }
@@ -276,7 +289,20 @@ class SourceCleanupEngine(
                     cancellation,
                 )
                 relaxedGlyphSelection = ink.relaxedSelection
-                dilated = dilate(ink.mask, roi.width, roi.height, freeTextDilationRadius(core, policy))
+                val outlineAwareMask = displayTextOutlineMask(
+                    pixels,
+                    width,
+                    core,
+                    roi,
+                    background,
+                    ink.mask,
+                )
+                dilated = dilate(
+                    outlineAwareMask,
+                    roi.width,
+                    roi.height,
+                    freeTextDilationRadius(core, policy),
+                )
                 useBoundaryInpaint = true
             }
         }
@@ -380,6 +406,27 @@ class SourceCleanupEngine(
         (min(core.width, core.height) * FREE_TEXT_DILATION_FRACTION)
             .roundToInt()
             .coerceIn(MINIMUM_FREE_TEXT_DILATION, MAXIMUM_FREE_TEXT_DILATION),
+    )
+
+    private fun displayTextOutlineMask(
+        pixels: IntArray,
+        stride: Int,
+        core: IntBox,
+        roi: IntBox,
+        background: Int,
+        inkMask: BooleanArray,
+    ): BooleanArray = DisplayTextOutlineMask.expand(
+        seed = inkMask,
+        pixels = pixels,
+        pageStride = stride,
+        roiLeft = roi.left,
+        roiTop = roi.top,
+        roiWidth = roi.width,
+        roiHeight = roi.height,
+        background = background,
+        maximumRadius = (min(core.width, core.height) * DISPLAY_TEXT_OUTLINE_FRACTION)
+            .roundToInt()
+            .coerceIn(MINIMUM_DISPLAY_TEXT_OUTLINE_RADIUS, MAXIMUM_DISPLAY_TEXT_OUTLINE_RADIUS),
     )
 
     private class InkMaskResult(val mask: BooleanArray, val relaxedSelection: Boolean)
@@ -1078,6 +1125,9 @@ class SourceCleanupEngine(
         const val MAXIMUM_SATELLITE_AREA_DENOMINATOR = 2
         const val MINIMUM_SATELLITE_THICK_FRACTION = 0.15
         const val MAXIMUM_SATELLITE_ASPECT_RATIO = 8.0
+        const val DISPLAY_TEXT_OUTLINE_FRACTION = 0.06
+        const val MINIMUM_DISPLAY_TEXT_OUTLINE_RADIUS = 2
+        const val MAXIMUM_DISPLAY_TEXT_OUTLINE_RADIUS = 20
         const val FREE_TEXT_DILATION_FRACTION = 0.025
         const val MINIMUM_FREE_TEXT_DILATION = 3
         const val MAXIMUM_FREE_TEXT_DILATION = 12

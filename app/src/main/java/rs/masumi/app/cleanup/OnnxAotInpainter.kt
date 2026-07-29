@@ -16,10 +16,10 @@ import kotlin.math.roundToInt
  * normalized to [-1, 1] plus a binary hole mask and synthesizes texture for
  * the hole, which classical interpolation cannot do over screentone or art.
  *
- * Each request crops the ROI with extra surrounding context, scales the crop
- * to at most [MAX_SIDE] pixels, pads to the model's multiple-of-8 geometry,
- * runs the network, and writes the synthesized colors back to the originally
- * masked page pixels only.
+ * Long masks are first split at low-ink rows or columns so page-height display
+ * text stays near source resolution. Each tile is cropped with surrounding
+ * context, scaled to at most [MAX_SIDE] pixels, padded to the model's
+ * multiple-of-8 geometry, and synthesized back into masked page pixels only.
  */
 class OnnxAotInpainter(
     modelBytes: ByteArray,
@@ -48,8 +48,64 @@ class OnnxAotInpainter(
         if (roiWidth <= 0 || roiHeight <= 0 || roiMask.size != roiWidth * roiHeight) return false
         if (roiMask.none { it }) return true
 
-        val context = (max(roiWidth, roiHeight) * CONTEXT_FRACTION).roundToInt()
-            .coerceAtLeast(MINIMUM_CONTEXT_PIXELS)
+        val tiles = InpaintTilePlanner.plan(
+            width = roiWidth,
+            height = roiHeight,
+            mask = roiMask,
+            maximumSpan = MAXIMUM_MASK_TILE_SPAN,
+            minimumSpan = MINIMUM_MASK_TILE_SPAN,
+            cutSearchRadius = TILE_CUT_SEARCH_RADIUS,
+        )
+        val maskedPageIndexes = IntArray(roiMask.count { it })
+        val originalColors = IntArray(maskedPageIndexes.size)
+        var maskedIndex = 0
+        roiMask.indices.forEach { local ->
+            if (!roiMask[local]) return@forEach
+            val pageIndex =
+                (roiTop + local / roiWidth) * pageWidth + roiLeft + local % roiWidth
+            maskedPageIndexes[maskedIndex] = pageIndex
+            originalColors[maskedIndex] = pixels[pageIndex]
+            maskedIndex += 1
+        }
+        return try {
+            val succeeded = tiles.all { tile ->
+                val tileMask = BooleanArray(tile.width * tile.height)
+                for (y in tile.top until tile.bottom) for (x in tile.left until tile.right) {
+                    tileMask[(y - tile.top) * tile.width + x - tile.left] = roiMask[y * roiWidth + x]
+                }
+                inpaintSingle(
+                    pixels = pixels,
+                    pageWidth = pageWidth,
+                    pageHeight = pageHeight,
+                    roiLeft = roiLeft + tile.left,
+                    roiTop = roiTop + tile.top,
+                    roiRight = roiLeft + tile.right,
+                    roiBottom = roiTop + tile.bottom,
+                    roiMask = tileMask,
+                )
+            }
+            if (!succeeded) maskedPageIndexes.indices.forEach { pixels[maskedPageIndexes[it]] = originalColors[it] }
+            succeeded
+        } catch (failure: Throwable) {
+            maskedPageIndexes.indices.forEach { pixels[maskedPageIndexes[it]] = originalColors[it] }
+            throw failure
+        }
+    }
+
+    private fun inpaintSingle(
+        pixels: IntArray,
+        pageWidth: Int,
+        pageHeight: Int,
+        roiLeft: Int,
+        roiTop: Int,
+        roiRight: Int,
+        roiBottom: Int,
+        roiMask: BooleanArray,
+    ): Boolean {
+        val roiWidth = roiRight - roiLeft
+        val roiHeight = roiBottom - roiTop
+        val context = (min(roiWidth, roiHeight) * CONTEXT_FRACTION).roundToInt()
+            .coerceIn(MINIMUM_CONTEXT_PIXELS, MAXIMUM_CONTEXT_PIXELS)
         val cropLeft = (roiLeft - context).coerceAtLeast(0)
         val cropTop = (roiTop - context).coerceAtLeast(0)
         val cropRight = (roiRight + context).coerceAtMost(pageWidth)
@@ -201,9 +257,13 @@ class OnnxAotInpainter(
         const val REVISION = "aot-inpainting-mit-v1"
         private const val MAX_SIDE = 512
         private const val PAD_MULTIPLE = 8
-        private const val CONTEXT_FRACTION = 0.6
+        private const val CONTEXT_FRACTION = 0.75
         private const val MINIMUM_CONTEXT_PIXELS = 32
+        private const val MAXIMUM_CONTEXT_PIXELS = 128
         private const val MINIMUM_CROP_SIDE = 16
+        private const val MAXIMUM_MASK_TILE_SPAN = 384
+        private const val MINIMUM_MASK_TILE_SPAN = 128
+        private const val TILE_CUT_SEARCH_RADIUS = 64
         private const val MAX_INTRA_OP_THREADS = 6
     }
 }
