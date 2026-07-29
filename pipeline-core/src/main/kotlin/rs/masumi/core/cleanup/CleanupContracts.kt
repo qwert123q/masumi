@@ -7,7 +7,7 @@ const val CLEANUP_SCHEMA_VERSION = 1
 
 @Serializable
 data class CleanupPolicy(
-    val revision: String = "tiled-aot-outline-aware-display-text-v20",
+    val revision: String = "complete-outline-display-text-v21",
     val boxPaddingFraction: Double = 0.08,
     val minimumPaddingPixels: Int = 2,
     val colorDistanceThreshold: Int = 20,

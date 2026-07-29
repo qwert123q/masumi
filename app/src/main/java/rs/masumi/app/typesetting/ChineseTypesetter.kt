@@ -94,12 +94,28 @@ class ChineseTypesetter {
             policy.minimumFontSizePixels.toFloat(),
             shortSide * policy.minimumFontSizePageFraction.toFloat(),
         )
-        val maximumSize = max(minimumSize, (shortSide * policy.maximumFontSizePageFraction).toFloat())
+        val pageMaximumSize = max(
+            minimumSize,
+            (shortSide * policy.maximumFontSizePageFraction).toFloat(),
+        )
+        val requestedWeight = if (target.style == TypesettingStyle.FREE_TEXT) {
+            max(policy.fontWeight, FREE_TEXT_MINIMUM_FONT_WEIGHT)
+        } else {
+            policy.fontWeight
+        }
         val typeface = Typeface.create(
             policy.fontFamily,
-            if (policy.fontWeight >= 600) Typeface.BOLD else Typeface.NORMAL,
+            if (requestedWeight >= 600) Typeface.BOLD else Typeface.NORMAL,
         )
         val selection = layoutBoxes.firstNotNullOfOrNull { layoutBox ->
+            val maximumSize = if (target.style == TypesettingStyle.FREE_TEXT) {
+                max(
+                    pageMaximumSize,
+                    min(targetBox.width, targetBox.height) * FREE_TEXT_MAXIMUM_BOX_FRACTION,
+                )
+            } else {
+                pageMaximumSize
+            }
             val direction = layoutBox.direction(policy)
             val plan = when (direction) {
                 TypesettingDirection.HORIZONTAL_LTR -> fitHorizontal(
@@ -453,6 +469,8 @@ class ChineseTypesetter {
 
     private companion object {
         const val BINARY_SEARCH_STEPS = 12
+        const val FREE_TEXT_MINIMUM_FONT_WEIGHT = 600
+        const val FREE_TEXT_MAXIMUM_BOX_FRACTION = 0.52f
         val VERTICAL_CLOSING_PUNCTUATION = setOf("︑", "︒", "︐", "︓", "︔", "︕", "︖", "︶", "︼", "﹂", "﹄")
     }
 }

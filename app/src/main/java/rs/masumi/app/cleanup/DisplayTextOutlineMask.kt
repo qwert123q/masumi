@@ -9,9 +9,9 @@ import kotlin.math.min
  * stroke as background, replacing the black glyph with a conspicuous white
  * silhouette on full-color artwork.
  *
- * Growth is both color-gated and distance-bounded. A naturally white local
- * background is left alone, while a neutral bright stroke on colored artwork
- * is followed only when it is connected to the selected ink.
+ * Growth is both color-gated and distance-bounded. A neutral bright stroke is
+ * followed only when it is connected to the selected ink; even on a naturally
+ * white area the bounded radius prevents the mask from flooding the page.
  */
 internal object DisplayTextOutlineMask {
     fun expand(
@@ -22,11 +22,10 @@ internal object DisplayTextOutlineMask {
         roiTop: Int,
         roiWidth: Int,
         roiHeight: Int,
-        background: Int,
         maximumRadius: Int,
     ): BooleanArray {
         require(seed.size == roiWidth * roiHeight)
-        if (maximumRadius <= 0 || seed.none { it } || background.isBrightNeutral()) return seed
+        if (maximumRadius <= 0 || seed.none { it }) return seed
 
         val expanded = seed.copyOf()
         val distance = IntArray(seed.size) { UNVISITED }

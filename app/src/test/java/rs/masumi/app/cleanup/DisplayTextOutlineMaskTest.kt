@@ -1,7 +1,6 @@
 package rs.masumi.app.cleanup
 
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -30,7 +29,6 @@ class DisplayTextOutlineMaskTest {
             roiTop = 0,
             roiWidth = width,
             roiHeight = height,
-            background = blue,
             maximumRadius = 2,
         )
 
@@ -40,10 +38,10 @@ class DisplayTextOutlineMaskTest {
     }
 
     @Test
-    fun `white page background is not mistaken for a display-text outline`() {
-        val width = 7
+    fun `growth on white artwork stays inside the configured radius`() {
+        val width = 9
         val pixels = IntArray(width * width) { rgb(250, 250, 250) }
-        val seed = BooleanArray(width * width).also { it[3 * width + 3] = true }
+        val seed = BooleanArray(width * width).also { it[4 * width + 4] = true }
 
         val expanded = DisplayTextOutlineMask.expand(
             seed = seed,
@@ -53,11 +51,11 @@ class DisplayTextOutlineMaskTest {
             roiTop = 0,
             roiWidth = width,
             roiHeight = width,
-            background = rgb(250, 250, 250),
-            maximumRadius = 3,
+            maximumRadius = 2,
         )
 
-        assertSame(seed, expanded)
+        assertTrue(expanded[4 * width + 2])
+        assertFalse(expanded[4 * width + 1])
     }
 
     @Test
@@ -76,7 +74,6 @@ class DisplayTextOutlineMaskTest {
             roiTop = 0,
             roiWidth = width,
             roiHeight = width,
-            background = rgb(25, 80, 160),
             maximumRadius = 3,
         )
 

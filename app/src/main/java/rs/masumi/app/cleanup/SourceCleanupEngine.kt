@@ -264,7 +264,6 @@ class SourceCleanupEngine(
                             width,
                             core,
                             roi,
-                            background,
                             ink.mask,
                         )
                         dilated = dilate(
@@ -294,7 +293,6 @@ class SourceCleanupEngine(
                     width,
                     core,
                     roi,
-                    background,
                     ink.mask,
                 )
                 dilated = dilate(
@@ -413,7 +411,6 @@ class SourceCleanupEngine(
         stride: Int,
         core: IntBox,
         roi: IntBox,
-        background: Int,
         inkMask: BooleanArray,
     ): BooleanArray = DisplayTextOutlineMask.expand(
         seed = inkMask,
@@ -423,7 +420,6 @@ class SourceCleanupEngine(
         roiTop = roi.top,
         roiWidth = roi.width,
         roiHeight = roi.height,
-        background = background,
         maximumRadius = (min(core.width, core.height) * DISPLAY_TEXT_OUTLINE_FRACTION)
             .roundToInt()
             .coerceIn(MINIMUM_DISPLAY_TEXT_OUTLINE_RADIUS, MAXIMUM_DISPLAY_TEXT_OUTLINE_RADIUS),

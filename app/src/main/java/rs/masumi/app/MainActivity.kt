@@ -94,6 +94,7 @@ import rs.masumi.core.translation.isSuccessful
 import rs.masumi.app.detection.PublishedTypesettingRun
 import rs.masumi.core.typesetting.TypesettingJobStatus
 import rs.masumi.core.typesetting.TypesettingPageState
+import rs.masumi.core.typesetting.TypesettingPolicy
 import rs.masumi.core.typesetting.TypesettingRegionState
 import rs.masumi.core.typesetting.TypesettingRunEntry
 import java.nio.file.Files
@@ -1540,6 +1541,7 @@ class MainActivity : Activity() {
         currentTypesettingRun = catalog.latestPublishedTypesettingRun(
             project.manifest.projectId,
             cleanupRun.artifact.runArtifactKey,
+            TypesettingPolicy(),
         )
         if (currentTypesettingRun?.artifact?.runArtifactKey != priorRunKey) currentTypesettingPreviewIndex = 0
         val durableProgress = progressOverride
