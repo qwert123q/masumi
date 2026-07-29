@@ -28,7 +28,7 @@ class TranslationProviderSettings(
     val connectTimeoutMillis: Long = 15_000L,
     val readTimeoutMillis: Long = 90_000L,
     val writeTimeoutMillis: Long = 30_000L,
-    val maximumAttempts: Int = 2,
+    val maximumAttempts: Int = 4,
     val retryDelayMillis: Long = 1_000L,
     val temperature: Double = 0.2,
     val maximumOutputTokens: Int = 4_096,

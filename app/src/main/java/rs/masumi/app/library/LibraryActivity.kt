@@ -26,7 +26,6 @@ import rs.masumi.app.cleanup.CleanupForegroundService
 import rs.masumi.app.exporting.ExportForegroundService
 import rs.masumi.app.ocr.OcrForegroundService
 import rs.masumi.app.pipeline.PipelineQueueStatus
-import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
 import rs.masumi.app.pipeline.PipelineThreading
@@ -93,7 +92,6 @@ class LibraryActivity : Activity() {
         readingProgressStore = MangaReadingProgressStore(this)
         pipelineQueueStore = PipelineQueueStore(this)
         snapshotStore = LibraryHomeSnapshotStore(this)
-        PipelineColdStartGuard.reconcile(pipelineQueueStore)
 
         findViewById<Button>(R.id.libraryHomeImport).setOnClickListener { importChapter() }
         chooseLibraryButton.setOnClickListener { openLibraryFolder(false) }

@@ -43,7 +43,6 @@ import rs.masumi.app.exporting.ExportForegroundService
 import rs.masumi.app.exporting.ExportProgress
 import rs.masumi.app.exporting.ExportResumePolicy
 import rs.masumi.app.exporting.ExportStatusBroadcast
-import rs.masumi.app.pipeline.PipelineColdStartGuard
 import rs.masumi.app.pipeline.DurablePipelineProgress
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
@@ -430,7 +429,6 @@ class MainActivity : Activity() {
         )
         libraryPreferences = MangaLibraryPreferences(this)
         pipelineQueueStore = PipelineQueueStore(this)
-        PipelineColdStartGuard.reconcile(pipelineQueueStore)
         requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
             ?.takeIf(SAFE_PROJECT_ID::matches)
         val directImportTreeUri = intent.getStringExtra(EXTRA_IMPORT_TREE_URI)

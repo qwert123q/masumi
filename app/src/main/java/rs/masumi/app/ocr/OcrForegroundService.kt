@@ -104,22 +104,12 @@ class OcrForegroundService : Service() {
             }
             else -> return START_NOT_STICKY
         }
-        // Never redeliver: if the user removes the app from recents (or the
-        // system kills the process), pipeline work must stay stopped until it
-        // is explicitly resumed; durable checkpoints preserve the progress.
+        // The sticky scheduler owns recovery after a process death. This
+        // stage keeps running when only the UI task leaves recents.
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        cancellation.set(true)
-        runner?.cancel()
-        idleGeneration.incrementAndGet()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-        super.onTaskRemoved(rootIntent)
-    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         cancellation.set(true)

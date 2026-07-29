@@ -50,7 +50,6 @@ class PipelineSchedulerService : Service() {
     private lateinit var stateReader: ProjectPipelineStateReader
     private val running = ConcurrentHashMap<String, TrackedTask>()
     private val stateCache = ConcurrentHashMap<String, ProjectPipelineState>()
-    private val processDeaths = PipelineProcessDeathTracker()
 
     private val stageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -180,38 +179,13 @@ class PipelineSchedulerService : Service() {
             else -> return START_NOT_STICKY
         }
         scheduler.execute(::safeTick)
-        // Never restart on our own after a process death: removing the app
-        // from recents must leave the whole pipeline stopped until the user
-        // reopens the app; the persisted queue and stage checkpoints keep the
-        // progress for that resume.
-        return START_NOT_STICKY
+        // The queue is explicitly user-controlled. A process restart or an
+        // empty redelivery must continue every ACTIVE entry; only ACTION_PAUSE
+        // is allowed to turn one into a paused entry.
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        // The user closed the app: pause every queued project so nothing
-        // auto-continues, and stop any stage service that is still running.
-        scheduler.execute {
-            runCatching {
-                queueStore.entries()
-                    .filter { it.status == PipelineQueueStatus.ACTIVE }
-                    .forEach { queueStore.pause(it.projectId, PipelineColdStartGuard.APP_CLOSED_ERROR_CODE) }
-            }
-            running.clear()
-            stateCache.clear()
-            runCatching { startService(DetectionForegroundService.cancelIntent(this)) }
-            runCatching { startService(OcrForegroundService.cancelIntent(this)) }
-            runCatching { startService(TranslationForegroundService.cancelIntent(this, null)) }
-            runCatching { startService(CleanupForegroundService.cancelIntent(this)) }
-            runCatching { startService(TypesettingForegroundService.cancelIntent(this)) }
-            runCatching { startService(QualityForegroundService.cancelIntent(this)) }
-            runCatching { startService(ExportForegroundService.cancelIntent(this)) }
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-        }
-        super.onTaskRemoved(rootIntent)
-    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -252,7 +226,7 @@ class PipelineSchedulerService : Service() {
             entry to state
         }
 
-        val newlyPaused = reconcileRunning(
+        val newlyDelayed = reconcileRunning(
             states.associate { it.first.projectId to it.second },
             now,
         )
@@ -265,8 +239,9 @@ class PipelineSchedulerService : Service() {
                 nextStage = state.nextStage,
                 waitingForSettings = state.nextStage == PipelineStage.TRANSLATION && !hasSettings,
                 blocked = entry.status == PipelineQueueStatus.PAUSED ||
+                    entry.retryNotBeforeEpochMillis > now ||
                     state.blocked ||
-                    entry.projectId in newlyPaused,
+                    entry.projectId in newlyDelayed,
             )
         }
         val launches = PipelineSchedulePlanner.plan(
@@ -298,9 +273,6 @@ class PipelineSchedulerService : Service() {
         if (activeEntries == 0 && running.isEmpty()) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
-        } else if (running.isEmpty() && projects.none { !it.blocked && !it.waitingForSettings && it.nextStage != null }) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
         }
     }
 
@@ -308,7 +280,7 @@ class PipelineSchedulerService : Service() {
         states: Map<String, ProjectPipelineState>,
         now: Long,
     ): Set<String> {
-        val newlyPaused = mutableSetOf<String>()
+        val newlyDelayed = mutableSetOf<String>()
         val ocrProcessAlive = isOcrProcessAlive()
         running.entries.removeIf { (projectId, tracked) ->
             val state = states[projectId]
@@ -317,22 +289,21 @@ class PipelineSchedulerService : Service() {
                 state.blocked ||
                 state.nextStage != tracked.stage
             if (stageChanged) {
-                processDeaths.clear(projectId)
                 return@removeIf true
             }
             val processDied = tracked.stage == PipelineStage.OCR &&
                 tracked.confirmed &&
                 now - tracked.lastProgressAtEpochMillis > PROCESS_DEATH_GRACE_MILLIS &&
                 !ocrProcessAlive
-            if (processDied && processDeaths.record(projectId)) {
-                queueStore.pause(projectId, "OCR_PROCESS_DIED")
-                newlyPaused += projectId
+            if (processDied) {
+                queueStore.scheduleRetry(projectId, "OCR_PROCESS_DIED", now)
+                newlyDelayed += projectId
             }
             processDied ||
                 (!tracked.confirmed && now - tracked.lastProgressAtEpochMillis > LAUNCH_CONFIRM_TIMEOUT_MILLIS) ||
                 (tracked.confirmed && now - tracked.lastProgressAtEpochMillis > STALL_RECOVERY_TIMEOUT_MILLIS)
         }
-        return newlyPaused
+        return newlyDelayed
     }
 
     private fun isOcrProcessAlive(): Boolean =
@@ -363,7 +334,7 @@ class PipelineSchedulerService : Service() {
         }
         true
     }.getOrElse {
-        queueStore.pause(launch.projectId, "STAGE_START_FAILED")
+        queueStore.scheduleRetry(launch.projectId, "STAGE_START_FAILED")
         false
     }
 
@@ -386,13 +357,17 @@ class PipelineSchedulerService : Service() {
         } else {
             running.remove(projectId)
             stateCache.remove(projectId)
-            processDeaths.clear(projectId)
             when {
                 // A stage cancellation is the expected acknowledgement of a
                 // user pause. Do not overwrite USER_PAUSED with STAGE_FAILED.
+                failure &&
+                    queueStore.isActive(projectId) &&
+                    PipelineRetryPolicy.isRetryable(stage, errorCode) ->
+                    queueStore.scheduleRetry(projectId, errorCode ?: "STAGE_FAILED")
                 failure && queueStore.isActive(projectId) ->
                     queueStore.pause(projectId, errorCode ?: "STAGE_FAILED")
                 success && stage == PipelineStage.EXPORT -> queueStore.remove(projectId)
+                success -> queueStore.clearRetry(projectId)
             }
         }
         scheduler.execute(::safeTick)

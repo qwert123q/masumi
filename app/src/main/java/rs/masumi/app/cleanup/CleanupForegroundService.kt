@@ -70,20 +70,12 @@ class CleanupForegroundService : Service() {
             }
             else -> return START_NOT_STICKY
         }
-        // Never redeliver: removing the app from recents must leave pipeline
-        // work stopped; durable checkpoints preserve the progress for resume.
+        // The sticky scheduler owns recovery after a process death. This
+        // stage keeps running when only the UI task leaves recents.
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        cancellation.set(true)
-        runner?.cancel()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-        super.onTaskRemoved(rootIntent)
-    }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         cancellation.set(true)
