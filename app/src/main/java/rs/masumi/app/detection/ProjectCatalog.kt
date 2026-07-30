@@ -16,6 +16,7 @@ import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
 import rs.masumi.core.cleanup.CleanupArtifactStore
+import rs.masumi.core.cleanup.CleanupMaskModelRef
 import rs.masumi.core.cleanup.CleanupReport
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.cleanup.CleanupRunArtifact
@@ -230,6 +231,7 @@ class ProjectCatalog(
         projectId: String,
         translationRunArtifactKey: String? = null,
         policy: CleanupPolicy? = null,
+        maskModel: CleanupMaskModelRef? = null,
     ): PublishedCleanupRun? {
         val project = openProject(projectId) ?: return null
         val artifactRoot = project.directory.resolve("artifacts/cleanup")
@@ -246,6 +248,9 @@ class ProjectCatalog(
                     artifact.dependencies.translationRunArtifactKey != translationRunArtifactKey
                 ) return@mapNotNull null
                 if (policy != null && artifact.dependencies.policy != policy) return@mapNotNull null
+                if (maskModel != null && artifact.dependencies.maskModel != maskModel) {
+                    return@mapNotNull null
+                }
                 PublishedCleanupRun(directory, artifact, report)
             }
             .maxWithOrNull(

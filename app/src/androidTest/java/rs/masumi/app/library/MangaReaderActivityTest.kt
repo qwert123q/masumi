@@ -6,6 +6,8 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.widget.ImageView
+import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -77,6 +79,12 @@ class MangaReaderActivityTest {
             }
             assertTrue("reader did not render the first page", loaded)
             scenario.onActivity { activity ->
+                assertTrue(
+                    activity.findViewById<Button>(R.id.readerJumpButton).text.toString() == "跳页",
+                )
+                assertTrue(
+                    activity.findViewById<EditText>(R.id.readerJumpInput).hint.toString() == "页码",
+                )
                 assertTrue(
                     activity.findViewById<ContinuousReaderView>(R.id.readerContinuous).visibility ==
                         android.view.View.VISIBLE ||

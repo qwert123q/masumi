@@ -16,6 +16,7 @@ import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.detection.DetectionArtifactStore
 import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.exporting.ExportArtifactStore
@@ -208,7 +209,8 @@ internal object DurablePipelineProgress {
         val job = CleanupArtifactStore(project.directory).readJob(progress.jobId) ?: return false
         return job.runArtifactKey == progress.runArtifactKey &&
             job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
-            job.dependencies.policy == CleanupPolicy()
+            job.dependencies.policy == CleanupPolicy() &&
+            job.dependencies.maskModel == PinnedComicTextSegmenter.descriptor.toModelRef()
     }
 
     fun cleanup(
@@ -222,6 +224,7 @@ internal object DurablePipelineProgress {
             job.projectId == project.manifest.projectId &&
             job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
             job.dependencies.policy == CleanupPolicy() &&
+            job.dependencies.maskModel == PinnedComicTextSegmenter.descriptor.toModelRef() &&
             (
                 job.status == CleanupJobStatus.QUEUED ||
                     job.status == CleanupJobStatus.RUNNING ||

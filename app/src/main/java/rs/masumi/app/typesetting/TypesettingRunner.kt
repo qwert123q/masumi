@@ -23,6 +23,7 @@ import rs.masumi.core.detection.PixelBox
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.importer.UuidIdSource
 import rs.masumi.core.model.PageRecord
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.ocr.OcrPageState
 import rs.masumi.core.translation.TranslationArtifactStore
 import rs.masumi.core.translation.TranslationResultState
@@ -93,7 +94,11 @@ class TypesettingRunner(
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
         val cleanupRun = requireNotNull(
-            catalog.latestPublishedCleanupRun(projectId, policy = rs.masumi.core.cleanup.CleanupPolicy()),
+            catalog.latestPublishedCleanupRun(
+                projectId = projectId,
+                policy = rs.masumi.core.cleanup.CleanupPolicy(),
+                maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
+            ),
         ) { "completed cleanup run was not found" }
         val reuseRun = reuseRunArtifactKey?.let { runKey ->
             requireNotNull(catalog.publishedTypesettingRun(projectId, runKey)) {

@@ -59,6 +59,7 @@ import rs.masumi.app.library.mangaSourceFingerprint
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.cleanup.CleanupRegionState
 import rs.masumi.core.cleanup.CleanupRunEntry
 import rs.masumi.app.ocr.OcrForegroundService
@@ -227,6 +228,7 @@ class MainActivity : Activity() {
     private var pendingChapterSelectionAfterLibrary = false
     private var pendingExportAfterLibrary = false
     private var libraryRefreshGeneration = 0
+    private var durableRefreshGeneration = 0
     private var requestedProjectId: String? = null
     private var autoSaveCheckInFlight = false
     private var exportSucceededForCurrentRun = false
@@ -239,7 +241,7 @@ class MainActivity : Activity() {
                 if (progress.status.isActive()) {
                     renderProgress(progress)
                 } else {
-                    refreshDurableState(progress)
+                    requestDurableStateRefresh(PipelineProgressOverrides(detection = progress))
                 }
             }
             if (progress.status == DetectionJobStatus.CANCELLED || progress.status == DetectionJobStatus.FAILED) {
@@ -256,7 +258,7 @@ class MainActivity : Activity() {
                 if (progress.status.isActive()) {
                     renderOcrProgress(progress)
                 } else {
-                    refreshOcrDurableState(progress)
+                    requestDurableStateRefresh(PipelineProgressOverrides(ocr = progress))
                 }
             }
             if (progress.status == OcrJobStatus.CANCELLED || progress.status == OcrJobStatus.FAILED) {
@@ -273,7 +275,7 @@ class MainActivity : Activity() {
                 if (progress.status.isActive()) {
                     renderTranslationProgress(progress)
                 } else {
-                    refreshTranslationDurableState(progress)
+                    requestDurableStateRefresh(PipelineProgressOverrides(translation = progress))
                 }
             }
             if (progress.status == TranslationJobStatus.CANCELLED || progress.status == TranslationJobStatus.FAILED) {
@@ -290,7 +292,7 @@ class MainActivity : Activity() {
                 if (progress.status.isActive()) {
                     renderCleanupProgress(progress)
                 } else {
-                    refreshCleanupDurableState(progress)
+                    requestDurableStateRefresh(PipelineProgressOverrides(cleanup = progress))
                 }
             }
             if (progress.status == CleanupJobStatus.CANCELLED || progress.status == CleanupJobStatus.FAILED) {
@@ -307,7 +309,7 @@ class MainActivity : Activity() {
                 if (progress.status.isActive()) {
                     renderTypesettingProgress(progress)
                 } else {
-                    refreshTypesettingDurableState(progress)
+                    requestDurableStateRefresh(PipelineProgressOverrides(typesetting = progress))
                 }
             }
             if (progress.status == TypesettingJobStatus.CANCELLED || progress.status == TypesettingJobStatus.FAILED) {
@@ -325,11 +327,13 @@ class MainActivity : Activity() {
                 if (progress.status.isActive()) {
                     renderExportProgress(progress)
                 } else {
-                    refreshExportDurableState(progress)
+                    requestDurableStateRefresh(PipelineProgressOverrides(export = progress))
                 }
             }
             when (progress.status) {
-                ExportJobStatus.SUCCEEDED -> refreshLibraryHistory()
+                ExportJobStatus.SUCCEEDED -> {
+                    refreshLibraryHistory()
+                }
                 ExportJobStatus.CANCELLED,
                 ExportJobStatus.FAILED,
                 -> autoSaveStartedProjectId = null
@@ -501,15 +505,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        refreshDurableState()
-        if (
-            intent.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) &&
-            currentProject != null &&
-            !typesettingRunComplete() &&
-            translationSettingsStore.loadProviderSettings() != null
-        ) {
-            enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
-        }
+        requestDurableStateRefresh()
         refreshLibraryHistory()
         onPipelineStateChanged()
     }
@@ -1102,7 +1098,7 @@ class MainActivity : Activity() {
                     enqueueAutomaticPipeline(requireNotNull(result.getOrNull()).outcome.manifest.projectId)
                 }
                 setImportRunning(false)
-                refreshDurableState()
+                requestDurableStateRefresh()
                 refreshLibraryHistory()
                 onPipelineStateChanged()
             }
@@ -1190,7 +1186,7 @@ class MainActivity : Activity() {
     }
 
     private fun onTranslationSettingsSaved() {
-        refreshTranslationDurableState()
+        requestDurableStateRefresh()
         if (currentProject != null && !typesettingRunComplete()) {
             enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
             onPipelineStateChanged()
@@ -1352,127 +1348,265 @@ class MainActivity : Activity() {
         return false
     }
 
-    private fun refreshDurableState(progressOverride: DetectionProgress? = null) {
+    /**
+     * Loading a project means deserializing up to seven durable stage files.
+     * Keep that work off the main thread so opening project details can paint
+     * its first frame immediately.
+     */
+    private fun requestDurableStateRefresh(
+        overrides: PipelineProgressOverrides = PipelineProgressOverrides(),
+    ) {
         // Direct imports arrive from the library picker. Keep the empty
         // workspace visible while copying instead of briefly selecting and
         // rendering the previously opened manga.
         if (importRunning && requestedProjectId == null && currentProject == null) return
-        val priorProjectId = currentProject?.manifest?.projectId
-        currentProject = requestedProjectId
+        val generation = ++durableRefreshGeneration
+        val requested = requestedProjectId
+        libraryExecutor.execute {
+            val result = runCatching { loadDurableState(requested, overrides) }
+            runOnUiThread {
+                if (
+                    generation != durableRefreshGeneration ||
+                    isFinishing ||
+                    isDestroyed
+                ) {
+                    return@runOnUiThread
+                }
+                result.getOrNull()?.let { applyDurableState(it, overrides) }
+            }
+        }
+    }
+
+    private fun loadDurableState(
+        requested: String?,
+        overrides: PipelineProgressOverrides,
+    ): DurableStateSnapshot {
+        val project = requested
             ?.let { projectId -> runCatching { catalog.openProject(projectId) }.getOrNull() }
             ?: catalog.latestProject()
-        val project = currentProject
+            ?: return DurableStateSnapshot()
+        val projectId = project.manifest.projectId
+        val detectionRun = catalog.latestPublishedRun(projectId)
+        val detectionProgress = overrides.detection
+            ?.takeIf { it.projectId == projectId }
+            ?: DurablePipelineProgress.detection(project, detectionRun)
+
+        val ocrRun = detectionRun?.let { detection ->
+            catalog.latestPublishedOcrRun(projectId)
+                ?.takeIf {
+                    it.artifact.detectionRunArtifactKey == detection.artifact.runArtifactKey
+                }
+        }
+        val ocrProgress = if (detectionRun == null) {
+            null
+        } else {
+            overrides.ocr
+                ?.takeIf { progress ->
+                    progress.projectId == projectId &&
+                        DurablePipelineProgress.ocrMatchesDetection(
+                            project,
+                            progress,
+                            detectionRun.artifact.runArtifactKey,
+                        )
+                }
+                ?: DurablePipelineProgress.ocr(
+                    project,
+                    detectionRun.artifact.runArtifactKey,
+                    ocrRun,
+                )
+        }
+
+        val translationRun = ocrRun?.let { ocr ->
+            catalog.latestPublishedTranslationRun(projectId)
+                ?.takeIf {
+                    it.artifact.dependencies.ocrRunArtifactKey == ocr.artifact.runArtifactKey &&
+                        it.artifact.dependencies.policy == TranslationPolicy() &&
+                        it.artifact.dependencies.prompt == TranslationPromptRef() &&
+                        it.artifact.dependencies.batching == TranslationBatchingConfig()
+                }
+        }
+        val translationProgress = if (ocrRun == null) {
+            null
+        } else {
+            overrides.translation
+                ?.takeIf { progress ->
+                    progress.projectId == projectId &&
+                        DurablePipelineProgress.translationMatchesOcr(
+                            project,
+                            progress,
+                            ocrRun.artifact.runArtifactKey,
+                        )
+                }
+                ?: DurablePipelineProgress.translation(
+                    project,
+                    ocrRun.artifact.runArtifactKey,
+                    translationRun,
+                )
+        }
+
+        val cleanupRun = translationRun?.let { translation ->
+            catalog.latestPublishedCleanupRun(
+                projectId,
+                translation.artifact.runArtifactKey,
+                CleanupPolicy(),
+                PinnedComicTextSegmenter.descriptor.toModelRef(),
+            )
+        }
+        val cleanupProgress = if (translationRun == null) {
+            null
+        } else {
+            overrides.cleanup
+                ?.takeIf { progress ->
+                    progress.projectId == projectId &&
+                        DurablePipelineProgress.cleanupMatchesTranslation(
+                            project,
+                            progress,
+                            translationRun.artifact.runArtifactKey,
+                        )
+                }
+                ?: DurablePipelineProgress.cleanup(
+                    project,
+                    translationRun.artifact.runArtifactKey,
+                    cleanupRun,
+                )
+        }
+
+        val typesettingRun = cleanupRun?.let { cleanup ->
+            catalog.latestPublishedTypesettingRun(
+                projectId,
+                cleanup.artifact.runArtifactKey,
+                TypesettingPolicy(),
+            )
+        }
+        val typesettingProgress = if (cleanupRun == null) {
+            null
+        } else {
+            overrides.typesetting
+                ?.takeIf { progress ->
+                    progress.projectId == projectId &&
+                        DurablePipelineProgress.typesettingMatchesCleanup(
+                            project,
+                            progress,
+                            cleanupRun.artifact.runArtifactKey,
+                        )
+                }
+                ?: DurablePipelineProgress.typesetting(
+                    project,
+                    cleanupRun.artifact.runArtifactKey,
+                    typesettingRun,
+                )
+        }
+        val exportProgress = typesettingRun?.let {
+            DurablePipelineProgress.export(
+                project,
+                it.artifact.runArtifactKey,
+                overrides.export,
+            )
+        }
+        return DurableStateSnapshot(
+            project = project,
+            detectionRun = detectionRun,
+            detectionProgress = detectionProgress,
+            ocrRun = ocrRun,
+            ocrProgress = ocrProgress,
+            translationRun = translationRun,
+            translationProgress = translationProgress,
+            cleanupRun = cleanupRun,
+            cleanupProgress = cleanupProgress,
+            typesettingRun = typesettingRun,
+            typesettingProgress = typesettingProgress,
+            exportProgress = exportProgress,
+        )
+    }
+
+    private fun applyDurableState(
+        snapshot: DurableStateSnapshot,
+        overrides: PipelineProgressOverrides,
+    ) {
+        val priorProjectId = currentProject?.manifest?.projectId
+        val priorDetectionRun = currentRun?.artifact?.runArtifactKey
+        val priorOcrRun = currentOcrRun?.artifact?.runArtifactKey
+        val priorCleanupRun = currentCleanupRun?.artifact?.runArtifactKey
+        val priorTypesettingRun = currentTypesettingRun?.artifact?.runArtifactKey
+
+        currentProject = snapshot.project
+        currentRun = snapshot.detectionRun
+        currentOcrRun = snapshot.ocrRun
+        currentTranslationRun = snapshot.translationRun
+        currentCleanupRun = snapshot.cleanupRun
+        currentTypesettingRun = snapshot.typesettingRun
+        val project = snapshot.project
         if (project == null) {
-            currentRun = null
             currentPreviewIndex = 0
             setAnalysisActive(false)
             detectionProgress.visibility = View.GONE
             detectionStatus.setText(R.string.detection_status_no_project)
             clearPreview()
             resetOcrState()
+            onPipelineStateChanged()
             return
         }
 
-        if (priorProjectId != project.manifest.projectId) currentPreviewIndex = 0
-        currentRun = catalog.latestPublishedRun(project.manifest.projectId)
-        val durableProgress = progressOverride
-            ?.takeIf { it.projectId == project.manifest.projectId }
-            ?: DurablePipelineProgress.detection(project, currentRun)
-        if (durableProgress != null) {
+        val projectChanged = priorProjectId != project.manifest.projectId
+        if (projectChanged || priorDetectionRun != snapshot.detectionRun?.artifact?.runArtifactKey) {
+            currentPreviewIndex = 0
+        }
+        if (projectChanged || priorOcrRun != snapshot.ocrRun?.artifact?.runArtifactKey) {
+            currentOcrPreviewIndex = 0
+        }
+        if (projectChanged || priorCleanupRun != snapshot.cleanupRun?.artifact?.runArtifactKey) {
+            currentCleanupPreviewIndex = 0
+        }
+        if (projectChanged || priorTypesettingRun != snapshot.typesettingRun?.artifact?.runArtifactKey) {
+            currentTypesettingPreviewIndex = 0
+        }
+
+        snapshot.detectionProgress?.let { progress ->
             renderProgress(
-                durableProgress,
-                interrupted = progressOverride == null &&
+                progress,
+                interrupted = overrides.detection == null &&
                     !DetectionForegroundService.isTaskActive() &&
-                    DetectionResumePolicy.shouldResume(durableProgress.status, false),
+                    DetectionResumePolicy.shouldResume(progress.status, false),
             )
-        } else {
+        } ?: run {
             setAnalysisActive(false)
             detectionProgress.visibility = View.GONE
             detectionStatus.setText(R.string.detection_status_ready)
         }
         showPreview(currentPreviewIndex)
-        refreshOcrDurableState()
-    }
 
-    private fun refreshOcrDurableState(progressOverride: OcrProgress? = null) {
-        val project = currentProject
-        val detectionRun = currentRun
-        if (project == null || detectionRun == null) {
+        if (snapshot.detectionRun == null) {
             resetOcrState()
+            finishApplyingDurableState(project)
             return
         }
-
-        val priorRunKey = currentOcrRun?.artifact?.runArtifactKey
-        currentOcrRun = catalog.latestPublishedOcrRun(project.manifest.projectId)
-            ?.takeIf { it.artifact.detectionRunArtifactKey == detectionRun.artifact.runArtifactKey }
-        if (currentOcrRun?.artifact?.runArtifactKey != priorRunKey) currentOcrPreviewIndex = 0
-
-        val durableProgress = progressOverride
-            ?.takeIf { progress ->
-                progress.projectId == project.manifest.projectId &&
-                    DurablePipelineProgress.ocrMatchesDetection(
-                        project,
-                        progress,
-                        detectionRun.artifact.runArtifactKey,
-                    )
-            }
-            ?: DurablePipelineProgress.ocr(
-                project,
-                detectionRun.artifact.runArtifactKey,
-                currentOcrRun,
-            )
-        if (durableProgress != null) {
+        snapshot.ocrProgress?.let { progress ->
             renderOcrProgress(
-                durableProgress,
-                interrupted = progressOverride == null &&
+                progress,
+                interrupted = overrides.ocr == null &&
                     !OcrForegroundService.isTaskActive() &&
-                    OcrResumePolicy.shouldResume(durableProgress.status, false),
+                    OcrResumePolicy.shouldResume(progress.status, false),
             )
-        } else {
+        } ?: run {
             setOcrActive(false)
             ocrProgress.visibility = View.GONE
             ocrStatus.setText(R.string.ocr_status_ready)
         }
         showOcrPreview(currentOcrPreviewIndex)
-        refreshTranslationDurableState()
-    }
 
-    private fun refreshTranslationDurableState(progressOverride: TranslationProgress? = null) {
-        val project = currentProject
-        val ocrRun = currentOcrRun
-        if (project == null || ocrRun == null) {
+        if (snapshot.ocrRun == null) {
             resetTranslationState()
+            finishApplyingDurableState(project)
             return
         }
-        currentTranslationRun = catalog.latestPublishedTranslationRun(project.manifest.projectId)
-            ?.takeIf {
-                it.artifact.dependencies.ocrRunArtifactKey == ocrRun.artifact.runArtifactKey &&
-                    it.artifact.dependencies.policy == TranslationPolicy() &&
-                    it.artifact.dependencies.prompt == TranslationPromptRef() &&
-                    it.artifact.dependencies.batching == TranslationBatchingConfig()
-            }
-        val durableProgress = progressOverride
-            ?.takeIf { progress ->
-                progress.projectId == project.manifest.projectId &&
-                    DurablePipelineProgress.translationMatchesOcr(
-                        project,
-                        progress,
-                        ocrRun.artifact.runArtifactKey,
-                    )
-            }
-            ?: DurablePipelineProgress.translation(
-                project,
-                ocrRun.artifact.runArtifactKey,
-                currentTranslationRun,
-            )
-        if (durableProgress != null) {
+        snapshot.translationProgress?.let { progress ->
             renderTranslationProgress(
-                durableProgress,
-                interrupted = progressOverride == null &&
+                progress,
+                interrupted = overrides.translation == null &&
                     !TranslationForegroundService.isTaskActive(project.manifest.projectId) &&
-                    TranslationResumePolicy.shouldResume(durableProgress.status, false),
+                    TranslationResumePolicy.shouldResume(progress.status, false),
             )
-        } else {
+        } ?: run {
             setTranslationActive(false)
             translationProgress.visibility = View.GONE
             translationStatus.setText(
@@ -1483,124 +1617,102 @@ class MainActivity : Activity() {
                 },
             )
         }
-        refreshCleanupDurableState()
-    }
 
-    private fun refreshCleanupDurableState(progressOverride: CleanupProgress? = null) {
-        val project = currentProject
-        val translationRun = currentTranslationRun
-        if (project == null || translationRun == null) {
+        if (snapshot.translationRun == null) {
             resetCleanupState()
+            finishApplyingDurableState(project)
             return
         }
-        val priorRunKey = currentCleanupRun?.artifact?.runArtifactKey
-        currentCleanupRun = catalog.latestPublishedCleanupRun(
-            project.manifest.projectId,
-            translationRun.artifact.runArtifactKey,
-            CleanupPolicy(),
-        )
-        if (currentCleanupRun?.artifact?.runArtifactKey != priorRunKey) currentCleanupPreviewIndex = 0
-        val durableProgress = progressOverride
-            ?.takeIf { progress ->
-                progress.projectId == project.manifest.projectId &&
-                    DurablePipelineProgress.cleanupMatchesTranslation(
-                        project,
-                        progress,
-                        translationRun.artifact.runArtifactKey,
-                    )
-            }
-            ?: DurablePipelineProgress.cleanup(
-                project,
-                translationRun.artifact.runArtifactKey,
-                currentCleanupRun,
-            )
-        if (durableProgress != null) {
+        snapshot.cleanupProgress?.let { progress ->
             renderCleanupProgress(
-                durableProgress,
-                interrupted = progressOverride == null &&
+                progress,
+                interrupted = overrides.cleanup == null &&
                     !CleanupForegroundService.isTaskActive() &&
-                    CleanupResumePolicy.shouldResume(durableProgress.status, false),
+                    CleanupResumePolicy.shouldResume(progress.status, false),
             )
-        } else {
+        } ?: run {
             setCleanupActive(false)
             cleanupProgress.visibility = View.GONE
             cleanupStatus.setText(R.string.cleanup_status_ready)
         }
         showCleanupPreview(currentCleanupPreviewIndex)
-        refreshTypesettingDurableState()
-    }
 
-    private fun refreshTypesettingDurableState(progressOverride: TypesettingProgress? = null) {
-        val project = currentProject
-        val cleanupRun = currentCleanupRun
-        if (project == null || cleanupRun == null) {
+        if (snapshot.cleanupRun == null) {
             resetTypesettingState()
+            finishApplyingDurableState(project)
             return
         }
-        val priorRunKey = currentTypesettingRun?.artifact?.runArtifactKey
-        currentTypesettingRun = catalog.latestPublishedTypesettingRun(
-            project.manifest.projectId,
-            cleanupRun.artifact.runArtifactKey,
-            TypesettingPolicy(),
-        )
-        if (currentTypesettingRun?.artifact?.runArtifactKey != priorRunKey) currentTypesettingPreviewIndex = 0
-        val durableProgress = progressOverride
-            ?.takeIf { progress ->
-                progress.projectId == project.manifest.projectId &&
-                    DurablePipelineProgress.typesettingMatchesCleanup(
-                        project,
-                        progress,
-                        cleanupRun.artifact.runArtifactKey,
-                    )
-            }
-            ?: DurablePipelineProgress.typesetting(
-                project,
-                cleanupRun.artifact.runArtifactKey,
-                currentTypesettingRun,
-            )
-        if (durableProgress != null) {
+        snapshot.typesettingProgress?.let { progress ->
             renderTypesettingProgress(
-                durableProgress,
-                interrupted = progressOverride == null &&
+                progress,
+                interrupted = overrides.typesetting == null &&
                     !TypesettingForegroundService.isTaskActive() &&
-                    TypesettingResumePolicy.shouldResume(durableProgress.status, false),
+                    TypesettingResumePolicy.shouldResume(progress.status, false),
             )
-        } else {
+        } ?: run {
             setTypesettingActive(false)
             typesettingProgress.visibility = View.GONE
             typesettingStatus.setText(R.string.typesetting_status_ready)
         }
         showTypesettingPreview(currentTypesettingPreviewIndex)
-        refreshExportDurableState()
-    }
 
-
-    private fun refreshExportDurableState(progressOverride: ExportProgress? = null) {
-        val project = currentProject
-        val typesettingRun = currentTypesettingRun
-        if (project == null || typesettingRun == null) {
+        if (snapshot.typesettingRun == null) {
             resetExportState()
+            finishApplyingDurableState(project)
             return
         }
-        val durableProgress = DurablePipelineProgress.export(
-            project,
-            typesettingRun.artifact.runArtifactKey,
-            progressOverride,
-        )
-        exportSucceededForCurrentRun = durableProgress?.status == ExportJobStatus.SUCCEEDED
-        if (durableProgress != null) {
+        exportSucceededForCurrentRun =
+            snapshot.exportProgress?.status == ExportJobStatus.SUCCEEDED
+        snapshot.exportProgress?.let { progress ->
             renderExportProgress(
-                durableProgress,
-                interrupted = progressOverride == null &&
+                progress,
+                interrupted = overrides.export == null &&
                     !ExportForegroundService.isTaskActive() &&
-                    ExportResumePolicy.shouldResume(durableProgress.status, false),
+                    ExportResumePolicy.shouldResume(progress.status, false),
             )
-        } else {
+        } ?: run {
             setExportActive(false)
             exportProgress.visibility = View.GONE
             exportStatus.setText(R.string.export_status_ready)
         }
+        finishApplyingDurableState(project)
     }
+
+    private fun finishApplyingDurableState(project: ProjectRef) {
+        if (
+            intent.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) &&
+            !typesettingRunComplete() &&
+            translationSettingsStore.loadProviderSettings() != null
+        ) {
+            intent.removeExtra(EXTRA_AUTO_CONTINUE)
+            enqueueAutomaticPipeline(project.manifest.projectId)
+        }
+        onPipelineStateChanged()
+    }
+
+    private data class PipelineProgressOverrides(
+        val detection: DetectionProgress? = null,
+        val ocr: OcrProgress? = null,
+        val translation: TranslationProgress? = null,
+        val cleanup: CleanupProgress? = null,
+        val typesetting: TypesettingProgress? = null,
+        val export: ExportProgress? = null,
+    )
+
+    private data class DurableStateSnapshot(
+        val project: ProjectRef? = null,
+        val detectionRun: PublishedDetectionRun? = null,
+        val detectionProgress: DetectionProgress? = null,
+        val ocrRun: PublishedOcrRun? = null,
+        val ocrProgress: OcrProgress? = null,
+        val translationRun: PublishedTranslationRun? = null,
+        val translationProgress: TranslationProgress? = null,
+        val cleanupRun: PublishedCleanupRun? = null,
+        val cleanupProgress: CleanupProgress? = null,
+        val typesettingRun: PublishedTypesettingRun? = null,
+        val typesettingProgress: TypesettingProgress? = null,
+        val exportProgress: ExportProgress? = null,
+    )
 
     private fun renderProgress(progress: DetectionProgress, interrupted: Boolean = false) {
         val completed = progress.committedPageCount + progress.preservedPageCount

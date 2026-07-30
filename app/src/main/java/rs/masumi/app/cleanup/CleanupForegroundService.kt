@@ -19,6 +19,7 @@ import rs.masumi.app.describePipelineError
 import rs.masumi.app.pipeline.PipelineResourceLease
 import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.cleanup.CleanupJobStatus
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 
 class CleanupForegroundService : Service() {
     private lateinit var executor: ExecutorService
@@ -27,9 +28,8 @@ class CleanupForegroundService : Service() {
     private val cancellation = AtomicBoolean(false)
 
     @Volatile private var runner: CleanupRunner? = null
-    private val inpainterLock = Any()
-    private var inpainter: OnnxAotInpainter? = null
-    private var inpainterFailed = false
+    private val textSegmenterLock = Any()
+    private var textSegmenter: OnnxComicTextSegmenter? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -88,28 +88,25 @@ class CleanupForegroundService : Service() {
         cancellation.set(true)
         runner?.cancel()
         executor.shutdownNow()
-        synchronized(inpainterLock) {
-            inpainter?.close()
-            inpainter = null
-            inpainterFailed = false
+        synchronized(textSegmenterLock) {
+            textSegmenter?.close()
+            textSegmenter = null
         }
         taskWakeLock.release()
         super.onDestroy()
     }
 
-    /**
-     * The AOT inpainting model ships in the APK assets; load it once per
-     * service lifetime. A load failure downgrades cleanup to the classical
-     * interpolation inpainter instead of failing the stage.
-     */
-    private fun obtainInpainter(): NeuralInpainter? = synchronized(inpainterLock) {
-        inpainter?.let { return it }
-        if (inpainterFailed) return null
-        runCatching {
-            OnnxAotInpainter(assets.open(OnnxAotInpainter.ASSET_PATH).use { it.readBytes() })
-        }.onFailure { inpainterFailed = true }
-            .getOrNull()
-            ?.also { inpainter = it }
+    private fun obtainTextSegmenter(
+        workspace: java.nio.file.Path,
+        projectId: String,
+    ): OnnxComicTextSegmenter = synchronized(textSegmenterLock) {
+        textSegmenter?.let { return it }
+        val modelFile = BundledTextSegmenterModelProvider(
+            assets = assets,
+            workspaceRoot = workspace,
+            signatureValidator = OnnxTextSegmenterSignatureValidator(),
+        ).acquire("cleanup-mask-${projectId.take(MAXIMUM_MODEL_INSTALL_PROJECT_ID_LENGTH)}")
+        return OnnxComicTextSegmenter(modelFile).also { textSegmenter = it }
     }
 
     private fun startCleanup(projectId: String): Boolean {
@@ -120,7 +117,13 @@ class CleanupForegroundService : Service() {
             try {
                 val workspace = filesDir.toPath().resolve("workspace")
                 PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
-                    val active = CleanupRunner(workspace, engine = SourceCleanupEngine(obtainInpainter()))
+                    val active = CleanupRunner(
+                        workspaceRoot = workspace,
+                        engine = SourceCleanupEngine(
+                            textMaskProvider = obtainTextSegmenter(workspace, projectId),
+                        ),
+                        maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
+                    )
                     runner = active
                     active.run(projectId, cancellation::get, ::publishProgress)
                 }
@@ -221,6 +224,7 @@ class CleanupForegroundService : Service() {
         private const val CONTENT_REQUEST_CODE = 3_031
         private const val CANCEL_REQUEST_CODE = 3_032
         private const val WORKER_THREAD_NAME = "masumi-cleanup"
+        private const val MAXIMUM_MODEL_INSTALL_PROJECT_ID_LENGTH = 110
         private val ACTIVE_PROJECT = AtomicReference<String?>()
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     }

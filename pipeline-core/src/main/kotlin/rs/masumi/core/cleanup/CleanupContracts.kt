@@ -3,17 +3,36 @@ package rs.masumi.core.cleanup
 import kotlinx.serialization.Serializable
 import rs.masumi.core.detection.PixelBox
 
-const val CLEANUP_SCHEMA_VERSION = 1
+const val CLEANUP_SCHEMA_VERSION = 2
+
+@Serializable
+data class CleanupMaskModelRef(
+    val modelId: String,
+    val repository: String,
+    val revision: String,
+    val fileName: String,
+    val sha256: String,
+    val byteLength: Long,
+    val license: String,
+    val opset: Int,
+    val runtimeRevision: String,
+)
 
 @Serializable
 data class CleanupPolicy(
-    val revision: String = "complete-outline-display-text-v21",
+    val revision: String = "comic-text-segmentation-fast-512-v26",
     val boxPaddingFraction: Double = 0.08,
     val minimumPaddingPixels: Int = 2,
     val colorDistanceThreshold: Int = 20,
     val dilationRadiusPixels: Int = 2,
     val minimumMaskCoverage: Double = 0.004,
     val maximumMaskCoverage: Double = 0.95,
+    val segmentationThreshold: Double = 60.0 / 255.0,
+    val segmentationAuditThreshold: Double = 30.0 / 255.0,
+    val residualColorDistanceThreshold: Int = 8,
+    val maximumResidualRatio: Double = 0.001,
+    val maximumResidualPixelCount: Int = 8,
+    val residualRetryDilationPixels: Int = 2,
 ) {
     init {
         require(boxPaddingFraction in 0.0..0.5)
@@ -23,6 +42,12 @@ data class CleanupPolicy(
         require(minimumMaskCoverage in 0.0..1.0)
         require(maximumMaskCoverage in 0.0..1.0)
         require(minimumMaskCoverage < maximumMaskCoverage)
+        require(segmentationThreshold in 0.0..1.0)
+        require(segmentationAuditThreshold in 0.0..segmentationThreshold)
+        require(residualColorDistanceThreshold in 0..441)
+        require(maximumResidualRatio in 0.0..1.0)
+        require(maximumResidualPixelCount >= 0)
+        require(residualRetryDilationPixels in 0..16)
     }
 }
 
@@ -31,6 +56,7 @@ data class CleanupDependencies(
     val schemaVersion: Int = CLEANUP_SCHEMA_VERSION,
     val translationRunArtifactKey: String,
     val policy: CleanupPolicy = CleanupPolicy(),
+    val maskModel: CleanupMaskModelRef? = null,
 )
 
 @Serializable
@@ -46,6 +72,15 @@ enum class CleanupPreserveReason {
     MASK_EMPTY,
     MASK_UNSAFE,
     ENGINE_FAILED,
+    RESIDUAL_TEXT,
+}
+
+@Serializable
+enum class CleanupMaskSource {
+    FLAT_COLOR,
+    HEURISTIC_GLYPH,
+    COMIC_TEXT_SEGMENTATION,
+    COMIC_TEXT_SEGMENTATION_RETRY,
 }
 
 @Serializable
@@ -59,6 +94,10 @@ data class CleanupRegionArtifact(
     val roiPixelCount: Int = 0,
     val maskPixelCount: Int = 0,
     val changedPixelCount: Int = 0,
+    val maskSource: CleanupMaskSource? = null,
+    val auditPixelCount: Int = 0,
+    val residualPixelCount: Int = 0,
+    val cleanupAttemptCount: Int = 0,
 )
 
 @Serializable

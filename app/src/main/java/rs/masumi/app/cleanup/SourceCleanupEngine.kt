@@ -12,6 +12,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.cleanup.CleanupMaskSource
 import rs.masumi.core.cleanup.CleanupPreserveReason
 import rs.masumi.core.cleanup.CleanupRegionArtifact
 import rs.masumi.core.cleanup.CleanupRegionState
@@ -34,6 +35,7 @@ data class CleanedPage(
 
 class SourceCleanupEngine(
     private val neuralInpainter: NeuralInpainter? = null,
+    private val textMaskProvider: TextMaskProvider? = null,
 ) {
     fun clean(
         source: Bitmap,
@@ -47,9 +49,28 @@ class SourceCleanupEngine(
             ?: throw IllegalStateException("source bitmap could not be copied")
         if (recycleSourceAfterCopy) source.recycle()
         try {
+            // Covers and illustration-only pages frequently have no cleanup
+            // targets. Avoid the fixed segmentation and pixel-copy cost.
+            if (targets.isEmpty()) return CleanedPage(output, emptyList())
             val pixels = IntArray(Math.multiplyExact(output.width, output.height))
             output.getPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
-            val artifacts = cleanTargets(pixels, output.width, output.height, targets, policy, cancellation)
+            val textProbability = textMaskProvider?.predict(
+                pixels,
+                output.width,
+                output.height,
+                cancellation,
+            )?.also {
+                require(it.pageWidth == output.width && it.pageHeight == output.height)
+            }
+            val artifacts = cleanTargets(
+                pixels,
+                output.width,
+                output.height,
+                targets,
+                policy,
+                textProbability,
+                cancellation,
+            )
             output.setPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
             return CleanedPage(output, artifacts)
         } catch (failure: Throwable) {
@@ -70,6 +91,7 @@ class SourceCleanupEngine(
         height: Int,
         targets: List<CleanupTarget>,
         policy: CleanupPolicy,
+        textProbability: TextProbabilityMask?,
         cancellation: () -> Boolean,
     ): List<CleanupRegionArtifact> {
         val artifacts = arrayOfNulls<CleanupRegionArtifact>(targets.size)
@@ -78,7 +100,15 @@ class SourceCleanupEngine(
         if (parallelism <= 1) {
             targets.forEachIndexed { index, target ->
                 if (cancellation()) throw CleanupCancellationSignal()
-                artifacts[index] = cleanTarget(pixels, width, height, target, policy, cancellation)
+                artifacts[index] = cleanTarget(
+                    pixels,
+                    width,
+                    height,
+                    target,
+                    policy,
+                    textProbability,
+                    cancellation,
+                )
             }
         } else {
             val executor = Executors.newFixedThreadPool(
@@ -91,8 +121,15 @@ class SourceCleanupEngine(
                         Callable {
                             group.forEach { index ->
                                 if (cancellation()) throw CleanupCancellationSignal()
-                                artifacts[index] =
-                                    cleanTarget(pixels, width, height, targets[index], policy, cancellation)
+                                artifacts[index] = cleanTarget(
+                                    pixels,
+                                    width,
+                                    height,
+                                    targets[index],
+                                    policy,
+                                    textProbability,
+                                    cancellation,
+                                )
                             }
                         },
                     )
@@ -163,6 +200,7 @@ class SourceCleanupEngine(
         height: Int,
         target: CleanupTarget,
         policy: CleanupPolicy,
+        textProbability: TextProbabilityMask?,
         cancellation: () -> Boolean,
     ): CleanupRegionArtifact {
         val core = target.box.toIntBox(width, height)
@@ -177,6 +215,7 @@ class SourceCleanupEngine(
         val background: Int
         val dilated: BooleanArray
         val useBoundaryInpaint: Boolean
+        var maskSource: CleanupMaskSource
         var relaxedGlyphSelection = false
         when (target.strategy) {
             CleanupStrategy.FLAT_LOCAL_FILL -> {
@@ -207,7 +246,64 @@ class SourceCleanupEngine(
                 val flatCoverage = flatMask.count { it }.toDouble() / corePixelCount
                 val dilatedFlat = dilate(flatMask, roi.width, roi.height, policy.dilationRadiusPixels)
                 val dilatedFlatCoreCoverage = coreCoverage(dilatedFlat, core, roi)
-                if (
+                val segmented = textProbability?.let { probability ->
+                    SegmentationMaskRefiner.eraseMask(
+                        probability = probability,
+                        core = core.toMaskBounds(),
+                        roi = roi.toMaskBounds(),
+                        threshold = policy.segmentationThreshold,
+                        dilationRadius = freeTextDilationRadius(core, policy),
+                        cancellation = cancellation,
+                    )
+                }?.takeIf { it.any() }
+                if (segmented != null) {
+                    background = estimateUnmaskedInteriorMedian(
+                        pixels = pixels,
+                        stride = width,
+                        core = core,
+                        roi = roi,
+                        mask = segmented,
+                        fallback = perimeter,
+                    )
+                    val interiorFlatMask = colorDifferenceMask(
+                        pixels = pixels,
+                        stride = width,
+                        core = core,
+                        roi = roi,
+                        background = background,
+                        threshold = policy.colorDistanceThreshold,
+                        cancellation = cancellation,
+                    )
+                    val interiorFlatCoverage =
+                        interiorFlatMask.count { it }.toDouble() / corePixelCount
+                    val interiorDilatedCoreCoverage = coreCoverage(
+                        dilate(
+                            interiorFlatMask,
+                            roi.width,
+                            roi.height,
+                            policy.dilationRadiusPixels,
+                        ),
+                        core,
+                        roi,
+                    )
+                    dilated = segmented
+                    // Segmentation gives us a reliable exclusion mask, so
+                    // estimate and classify the background inside the text
+                    // box. Long narration boxes often touch their white
+                    // border; the padded ROI perimeter then lies on artwork
+                    // and incorrectly sent a uniform white box through AOT.
+                    useBoundaryInpaint =
+                        interiorFlatCoverage >= SOLID_REGION_COVERAGE ||
+                            flatBackgroundIsTextured(
+                                pixels,
+                                width,
+                                core,
+                                roi,
+                                interiorFlatMask,
+                            ) ||
+                            interiorDilatedCoreCoverage > MAXIMUM_FLAT_COLOR_MASK_COVERAGE
+                    maskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION
+                } else if (
                     flatCoverage < SOLID_REGION_COVERAGE &&
                     !flatBackgroundIsTextured(pixels, width, core, roi, flatMask) &&
                     dilatedFlatCoreCoverage <= MAXIMUM_FLAT_COLOR_MASK_COVERAGE
@@ -215,6 +311,7 @@ class SourceCleanupEngine(
                     background = perimeter
                     dilated = dilatedFlat
                     useBoundaryInpaint = false
+                    maskSource = CleanupMaskSource.FLAT_COLOR
                 } else {
                     // Colored, gradient, or halftone interiors make the flat
                     // color-difference mask meaningless (on full-color pages it
@@ -257,6 +354,7 @@ class SourceCleanupEngine(
                         // coverage cap stays in force.
                         dilated = dilatedFlat
                         useBoundaryInpaint = true
+                        maskSource = CleanupMaskSource.FLAT_COLOR
                     } else {
                         relaxedGlyphSelection = ink.relaxedSelection
                         val outlineAwareMask = displayTextOutlineMask(
@@ -273,34 +371,51 @@ class SourceCleanupEngine(
                             freeTextDilationRadius(core, policy),
                         )
                         useBoundaryInpaint = true
+                        maskSource = CleanupMaskSource.HEURISTIC_GLYPH
                     }
                 }
             }
             CleanupStrategy.LOCAL_BOUNDARY_INPAINT -> {
                 background = estimatePerimeterMedian(pixels, width, roi)
-                val ink = freeTextInkMask(
-                    pixels,
-                    width,
-                    core,
-                    roi,
-                    background,
-                    target.expectedGlyphCount,
-                    cancellation,
-                )
-                relaxedGlyphSelection = ink.relaxedSelection
-                val outlineAwareMask = displayTextOutlineMask(
-                    pixels,
-                    width,
-                    core,
-                    roi,
-                    ink.mask,
-                )
-                dilated = dilate(
-                    outlineAwareMask,
-                    roi.width,
-                    roi.height,
-                    freeTextDilationRadius(core, policy),
-                )
+                val segmented = textProbability?.let { probability ->
+                    SegmentationMaskRefiner.eraseMask(
+                        probability = probability,
+                        core = core.toMaskBounds(),
+                        roi = roi.toMaskBounds(),
+                        threshold = policy.segmentationThreshold,
+                        dilationRadius = freeTextDilationRadius(core, policy),
+                        cancellation = cancellation,
+                    )
+                }?.takeIf { it.any() }
+                if (segmented != null) {
+                    dilated = segmented
+                    maskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION
+                } else {
+                    val ink = freeTextInkMask(
+                        pixels,
+                        width,
+                        core,
+                        roi,
+                        background,
+                        target.expectedGlyphCount,
+                        cancellation,
+                    )
+                    relaxedGlyphSelection = ink.relaxedSelection
+                    val outlineAwareMask = displayTextOutlineMask(
+                        pixels,
+                        width,
+                        core,
+                        roi,
+                        ink.mask,
+                    )
+                    dilated = dilate(
+                        outlineAwareMask,
+                        roi.width,
+                        roi.height,
+                        freeTextDilationRadius(core, policy),
+                    )
+                    maskSource = CleanupMaskSource.HEURISTIC_GLYPH
+                }
                 useBoundaryInpaint = true
             }
         }
@@ -329,43 +444,146 @@ class SourceCleanupEngine(
         if (coverageForLimit > maximumCoverage) {
             return target.preserved(CleanupPreserveReason.MASK_UNSAFE, roiPixelCount, maskCount)
         }
-        val maskedLocals = IntArray(maskCount)
-        val before = IntArray(maskCount)
-        var maskedIndex = 0
-        for (local in dilated.indices) {
-            if (!dilated[local]) continue
+        val beforeRoi = IntArray(roiPixelCount)
+        for (local in beforeRoi.indices) {
             val x = roi.left + local % roi.width
             val y = roi.top + local / roi.width
-            maskedLocals[maskedIndex] = local
-            before[maskedIndex] = pixels[y * width + x]
-            maskedIndex += 1
+            beforeRoi[local] = pixels[y * width + x]
         }
-        if (useBoundaryInpaint) {
-            val inpainter = neuralInpainter
-            val neuralApplied = inpainter != null && runCatching {
-                inpainter.inpaint(
-                    pixels = pixels,
-                    pageWidth = width,
-                    pageHeight = height,
-                    roiLeft = roi.left,
-                    roiTop = roi.top,
-                    roiRight = roi.right,
-                    roiBottom = roi.bottom,
-                    roiMask = dilated,
+        fun restoreRoi() {
+            for (local in beforeRoi.indices) {
+                val x = roi.left + local % roi.width
+                val y = roi.top + local / roi.width
+                pixels[y * width + x] = beforeRoi[local]
+            }
+        }
+        fun applyMask(mask: BooleanArray) {
+            if (useBoundaryInpaint) {
+                val inpainter = neuralInpainter
+                val neuralApplied = inpainter != null && runCatching {
+                    inpainter.inpaint(
+                        pixels = pixels,
+                        pageWidth = width,
+                        pageHeight = height,
+                        roiLeft = roi.left,
+                        roiTop = roi.top,
+                        roiRight = roi.right,
+                        roiBottom = roi.bottom,
+                        roiMask = mask,
+                    )
+                }.getOrDefault(false)
+                if (!neuralApplied) inpaintBidirectional(pixels, width, roi, mask, cancellation)
+            } else {
+                fillFlat(pixels, width, roi, mask, background)
+            }
+        }
+        fun changedPixelCount(mask: BooleanArray): Int {
+            var changed = 0
+            mask.indices.forEach { local ->
+                if (!mask[local]) return@forEach
+                val x = roi.left + local % roi.width
+                val y = roi.top + local / roi.width
+                if (pixels[y * width + x] != beforeRoi[local]) changed += 1
+            }
+            return changed
+        }
+        fun retryMaskIsSafe(mask: BooleanArray): Boolean {
+            val retryMaskCount = mask.count { it }
+            val retryCoverageForLimit = if (useBoundaryInpaint && relaxedGlyphSelection) {
+                retryMaskCount.toDouble() / roiPixelCount
+            } else {
+                coreCoverage(mask, core, roi)
+            }
+            return retryCoverageForLimit <= maximumCoverage
+        }
+
+        var finalMask = dilated
+        var finalMaskSource = maskSource
+        var cleanupAttemptCount = 1
+        var audit = ResidualTextAudit(auditPixelCount = 0, residualPixelCount = 0)
+        applyMask(finalMask)
+
+        if (
+            textProbability != null &&
+            maskSource == CleanupMaskSource.COMIC_TEXT_SEGMENTATION
+        ) {
+            val auditMask = SegmentationMaskRefiner.auditMask(
+                probability = textProbability,
+                beforeRoi = beforeRoi,
+                core = core.toMaskBounds(),
+                roi = roi.toMaskBounds(),
+                background = background,
+                threshold = policy.segmentationAuditThreshold,
+                minimumBackgroundDistance = policy.colorDistanceThreshold,
+                cancellation = cancellation,
+            )
+            audit = SegmentationMaskRefiner.auditResidual(
+                beforeRoi = beforeRoi,
+                currentPixels = pixels,
+                pageStride = width,
+                roi = roi.toMaskBounds(),
+                auditMask = auditMask,
+                maximumUnchangedDistance = policy.residualColorDistanceThreshold,
+            )
+            if (!audit.isAcceptable(policy)) {
+                restoreRoi()
+                val retryMask = SegmentationMaskRefiner.retryMask(
+                    eraseMask = finalMask,
+                    auditMask = auditMask,
+                    width = roi.width,
+                    height = roi.height,
+                    dilationRadius = freeTextDilationRadius(core, policy) +
+                        policy.residualRetryDilationPixels,
                 )
-            }.getOrDefault(false)
-            if (!neuralApplied) inpaintBidirectional(pixels, width, roi, dilated, cancellation)
-        } else {
-            fillFlat(pixels, width, roi, dilated, background)
+                if (!retryMaskIsSafe(retryMask)) {
+                    return target.preserved(
+                        reason = CleanupPreserveReason.RESIDUAL_TEXT,
+                        roiPixelCount = roiPixelCount,
+                        maskPixelCount = retryMask.count { it },
+                        maskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION_RETRY,
+                        audit = audit,
+                        cleanupAttemptCount = cleanupAttemptCount,
+                    )
+                }
+                finalMask = retryMask
+                finalMaskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION_RETRY
+                cleanupAttemptCount += 1
+                applyMask(finalMask)
+                audit = SegmentationMaskRefiner.auditResidual(
+                    beforeRoi = beforeRoi,
+                    currentPixels = pixels,
+                    pageStride = width,
+                    roi = roi.toMaskBounds(),
+                    auditMask = auditMask,
+                    maximumUnchangedDistance = policy.residualColorDistanceThreshold,
+                )
+                if (!audit.isAcceptable(policy)) {
+                    restoreRoi()
+                    return target.preserved(
+                        reason = CleanupPreserveReason.RESIDUAL_TEXT,
+                        roiPixelCount = roiPixelCount,
+                        maskPixelCount = finalMask.count { it },
+                        maskSource = finalMaskSource,
+                        audit = audit,
+                        cleanupAttemptCount = cleanupAttemptCount,
+                    )
+                }
+            }
         }
-        var changed = 0
-        for (index in maskedLocals.indices) {
-            val local = maskedLocals[index]
-            val x = roi.left + local % roi.width
-            val y = roi.top + local / roi.width
-            if (pixels[y * width + x] != before[index]) changed += 1
+
+        val finalMaskCount = finalMask.count { it }
+        val changed = changedPixelCount(finalMask)
+        if (changed == 0) {
+            restoreRoi()
+            return target.preserved(
+                reason = CleanupPreserveReason.ENGINE_FAILED,
+                roiPixelCount = roiPixelCount,
+                maskPixelCount = finalMaskCount,
+                maskSource = finalMaskSource,
+                audit = audit,
+                cleanupAttemptCount = cleanupAttemptCount,
+            )
         }
-        if (changed == 0) return target.preserved(CleanupPreserveReason.ENGINE_FAILED, roiPixelCount, maskCount)
         return CleanupRegionArtifact(
             translationRegionId = target.translationRegionId,
             ocrRegionId = target.ocrRegionId,
@@ -373,8 +591,12 @@ class SourceCleanupEngine(
             strategy = target.strategy,
             state = CleanupRegionState.CLEANED,
             roiPixelCount = roiPixelCount,
-            maskPixelCount = maskCount,
+            maskPixelCount = finalMaskCount,
             changedPixelCount = changed,
+            maskSource = finalMaskSource,
+            auditPixelCount = audit.auditPixelCount,
+            residualPixelCount = audit.residualPixelCount,
+            cleanupAttemptCount = cleanupAttemptCount,
         )
     }
 
@@ -398,6 +620,10 @@ class SourceCleanupEngine(
         }
         return mask
     }
+
+    private fun ResidualTextAudit.isAcceptable(policy: CleanupPolicy): Boolean =
+        residualPixelCount <= policy.maximumResidualPixelCount ||
+            residualRatio <= policy.maximumResidualRatio
 
     private fun freeTextDilationRadius(core: IntBox, policy: CleanupPolicy): Int = max(
         policy.dilationRadiusPixels,
@@ -442,33 +668,32 @@ class SourceCleanupEngine(
         mask: BooleanArray,
     ): Boolean {
         var count = 0
-        for (y in core.top until core.bottom) for (x in core.left until core.right) {
-            if (!mask[(y - roi.top) * roi.width + (x - roi.left)]) count += 1
-        }
-        if (count == 0) return true
-        val reds = IntArray(count)
-        val greens = IntArray(count)
-        val blues = IntArray(count)
-        var index = 0
+        val redHistogram = IntArray(COLOR_COMPONENT_COUNT)
+        val greenHistogram = IntArray(COLOR_COMPONENT_COUNT)
+        val blueHistogram = IntArray(COLOR_COMPONENT_COUNT)
         for (y in core.top until core.bottom) for (x in core.left until core.right) {
             if (mask[(y - roi.top) * roi.width + (x - roi.left)]) continue
             val color = pixels[y * stride + x]
-            reds[index] = Color.red(color)
-            greens[index] = Color.green(color)
-            blues[index] = Color.blue(color)
-            index += 1
+            redHistogram[Color.red(color)] += 1
+            greenHistogram[Color.green(color)] += 1
+            blueHistogram[Color.blue(color)] += 1
+            count += 1
         }
-        fun deviation(values: IntArray): Double {
-            values.sort()
-            val median = values[values.size / 2].toDouble()
+        if (count == 0) return true
+        fun deviation(histogram: IntArray): Double {
+            val median = histogramMedian(histogram, count).toDouble()
             var sumSquares = 0.0
-            values.forEach { value ->
+            histogram.forEachIndexed { value, occurrences ->
                 val difference = value - median
-                sumSquares += difference * difference
+                sumSquares += difference * difference * occurrences
             }
-            return sqrt(sumSquares / values.size)
+            return sqrt(sumSquares / count)
         }
-        val deviations = listOf(deviation(reds), deviation(greens), deviation(blues))
+        val deviations = listOf(
+            deviation(redHistogram),
+            deviation(greenHistogram),
+            deviation(blueHistogram),
+        )
         val mean = deviations.average()
         val channelSpread = sqrt(deviations.sumOf { (it - mean) * (it - mean) } / deviations.size)
         val threshold = if (channelSpread > FLAT_CHANNEL_SPREAD_SWITCH) {
@@ -994,6 +1219,46 @@ class SourceCleanupEngine(
         return Color.argb(median(Color::alpha), median(Color::red), median(Color::green), median(Color::blue))
     }
 
+    private fun estimateUnmaskedInteriorMedian(
+        pixels: IntArray,
+        stride: Int,
+        core: IntBox,
+        roi: IntBox,
+        mask: BooleanArray,
+        fallback: Int,
+    ): Int {
+        var count = 0
+        val redHistogram = IntArray(COLOR_COMPONENT_COUNT)
+        val greenHistogram = IntArray(COLOR_COMPONENT_COUNT)
+        val blueHistogram = IntArray(COLOR_COMPONENT_COUNT)
+        for (y in core.top until core.bottom) for (x in core.left until core.right) {
+            if (mask[(y - roi.top) * roi.width + x - roi.left]) continue
+            val color = pixels[y * stride + x]
+            redHistogram[Color.red(color)] += 1
+            greenHistogram[Color.green(color)] += 1
+            blueHistogram[Color.blue(color)] += 1
+            count += 1
+        }
+        if (count == 0) return fallback
+        return Color.rgb(
+            histogramMedian(redHistogram, count),
+            histogramMedian(greenHistogram, count),
+            histogramMedian(blueHistogram, count),
+        )
+    }
+
+    private fun histogramMedian(histogram: IntArray, sampleCount: Int): Int {
+        require(histogram.size == COLOR_COMPONENT_COUNT)
+        require(sampleCount > 0)
+        val target = sampleCount / 2
+        var cumulative = 0
+        histogram.forEachIndexed { value, occurrences ->
+            cumulative += occurrences
+            if (cumulative > target) return value
+        }
+        error("histogram sample count did not match its bins")
+    }
+
     private fun colorDistance(first: Int, second: Int): Int {
         val red = Color.red(first) - Color.red(second)
         val green = Color.green(first) - Color.green(second)
@@ -1014,6 +1279,9 @@ class SourceCleanupEngine(
         reason: CleanupPreserveReason,
         roiPixelCount: Int = 0,
         maskPixelCount: Int = 0,
+        maskSource: CleanupMaskSource? = null,
+        audit: ResidualTextAudit = ResidualTextAudit(0, 0),
+        cleanupAttemptCount: Int = 0,
     ) = CleanupRegionArtifact(
         translationRegionId = translationRegionId,
         ocrRegionId = ocrRegionId,
@@ -1023,6 +1291,10 @@ class SourceCleanupEngine(
         preserveReason = reason,
         roiPixelCount = roiPixelCount,
         maskPixelCount = maskPixelCount,
+        maskSource = maskSource,
+        auditPixelCount = audit.auditPixelCount,
+        residualPixelCount = audit.residualPixelCount,
+        cleanupAttemptCount = cleanupAttemptCount,
     )
 
     private data class IntBox(val left: Int, val top: Int, val right: Int, val bottom: Int) {
@@ -1037,6 +1309,8 @@ class SourceCleanupEngine(
 
         fun intersects(other: IntBox): Boolean =
             left < other.right && other.left < right && top < other.bottom && other.top < bottom
+
+        fun toMaskBounds() = MaskBounds(left, top, right, bottom)
     }
 
     private data class InkComponent(
@@ -1063,6 +1337,7 @@ class SourceCleanupEngine(
         const val SINGLE_BOUNDARY_SCORE = 10_000
         const val CLEANUP_WORKER_THREAD_NAME = "masumi-cleanup-worker"
         const val MAXIMUM_CLEANUP_WORKERS = 6
+        const val COLOR_COMPONENT_COUNT = 256
         const val DISTANCE_INFINITY = Int.MAX_VALUE / 4
         const val CHAMFER_ORTHOGONAL = 3
         const val CHAMFER_DIAGONAL = 4

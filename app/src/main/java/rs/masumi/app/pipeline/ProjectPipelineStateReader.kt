@@ -3,6 +3,7 @@ package rs.masumi.app.pipeline
 import java.nio.file.Path
 import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.exporting.ExportArtifactStore
 import rs.masumi.core.exporting.ExportJobStatus
 import rs.masumi.core.translation.TranslationBatchingConfig
@@ -41,6 +42,7 @@ internal class ProjectPipelineStateReader(workspaceRoot: Path) {
             projectId = projectId,
             translationRunArtifactKey = translation.artifact.runArtifactKey,
             policy = CleanupPolicy(),
+            maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
         ) ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.CLEANUP)
         val typesetting = catalog.latestPublishedTypesettingRun(
             projectId = projectId,

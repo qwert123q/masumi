@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
 
 class CleanupArtifactStoreTest {
     private lateinit var project: java.nio.file.Path
@@ -77,5 +78,24 @@ class CleanupArtifactStoreTest {
         assertEquals(run, assertNotNull(store.readPublishedRun(job.runArtifactKey)))
         assertEquals(report, assertNotNull(store.readPublishedReport(job.runArtifactKey)))
         assertEquals(artifact, assertNotNull(store.readPublishedPage(job.runArtifactKey, run.entries.single())))
+    }
+
+    @Test
+    fun `cleaned page rejects a visually significant absolute residual count`() {
+        val png = byteArrayOf(1, 2, 3, 4)
+        var job = CleanupJobReducer.start(CleanupFixtures.job(), 2L)
+        job = CleanupJobReducer.startPage(job, 0, 3L)
+        store.prepareRun(job)
+        val artifact = CleanupFixtures.artifact(png).let { page ->
+            page.copy(
+                regions = page.regions.map { region ->
+                    region.copy(auditPixelCount = 1_000, residualPixelCount = 9)
+                },
+            )
+        }
+
+        assertFailsWith<IllegalArgumentException> {
+            store.commitPage(job, artifact, png, "webp")
+        }
     }
 }

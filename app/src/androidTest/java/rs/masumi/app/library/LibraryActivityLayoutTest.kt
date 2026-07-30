@@ -8,8 +8,10 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import rs.masumi.app.HorizontalSwipeViewFlipper
@@ -53,10 +55,20 @@ class LibraryActivityLayoutTest {
         // Each column owns its list and empty placeholder so one side never
         // leaks into the other while swiping.
         listOf(
-            R.id.libraryHomeFinishedList to R.id.libraryHomeFinishedEmpty,
-            R.id.libraryHomeProcessingList to R.id.libraryHomeProcessingEmpty,
-        ).forEachIndexed { index, (listId, emptyId) ->
+            Triple(
+                R.id.libraryHomeFinishedList,
+                R.id.libraryHomeFinishedEmpty,
+                R.id.libraryHomeFinishedRefresh,
+            ),
+            Triple(
+                R.id.libraryHomeProcessingList,
+                R.id.libraryHomeProcessingEmpty,
+                R.id.libraryHomeProcessingRefresh,
+            ),
+        ).forEachIndexed { index, (listId, emptyId, refreshId) ->
             val pane = pager.getChildAt(index)
+            assertEquals(refreshId, pane.id)
+            assertTrue(pane is SwipeRefreshLayout)
             assertNotNull(pane.findViewById<View>(listId))
             assertNotNull(pane.findViewById<View>(emptyId))
         }

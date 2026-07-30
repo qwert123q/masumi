@@ -35,11 +35,18 @@ class ContinuousReaderView @JvmOverloads constructor(
 
     private val scroller = OverScroller(context)
     private var scrollOffset = 0f
-    private val placeholderPaint = Paint().apply { color = Color.rgb(24, 26, 30) }
+    // Most comic pages are light; a white loading sheet avoids a full-screen
+    // black flash when the user outruns decoding during a fast fling.
+    private val placeholderPaint = Paint().apply { color = Color.WHITE }
     private val dividerPaint = Paint().apply { color = Color.BLACK }
     private val bitmapPaint = Paint(
         Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG,
     )
+    private val loadingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(154, 158, 166)
+        textAlign = Paint.Align.CENTER
+        textSize = 16f * resources.displayMetrics.scaledDensity
+    }
     private val sourceRect = Rect()
     private val targetRect = RectF()
     private var lastReportedPage = -1
@@ -93,10 +100,21 @@ class ContinuousReaderView @JvmOverloads constructor(
     )
 
     fun bind(pageAspects: List<Float>, bitmapProvider: (Int) -> Bitmap?) {
-        aspects = pageAspects
+        aspects = pageAspects.toList()
         pageBitmap = bitmapProvider
         scrollOffset = scrollOffset.coerceIn(0f, maximumScroll())
         lastReportedPage = -1
+        invalidate()
+    }
+
+    fun updatePageAspect(index: Int, aspect: Float) {
+        if (index !in aspects.indices || !aspect.isFinite() || aspect <= 0f) return
+        val oldAspect = aspects[index]
+        if (oldAspect == aspect) return
+        val anchor = pageAt(scrollOffset)
+        val offsetInsideAnchor = scrollOffset - pageTop(anchor)
+        aspects = aspects.toMutableList().also { it[index] = aspect }
+        scrollOffset = (pageTop(anchor) + offsetInsideAnchor).coerceIn(0f, maximumScroll())
         invalidate()
     }
 
@@ -132,10 +150,11 @@ class ContinuousReaderView @JvmOverloads constructor(
         val viewportBottom = scrollOffset + height
         var top = 0f
         var firstVisible = -1
-        aspects.forEachIndexed { index, aspect ->
+        for (index in aspects.indices) {
+            val aspect = aspects[index]
             val pageHeight = width * aspect
             val bottom = top + pageHeight
-            if (bottom >= viewportTop && top <= viewportBottom) {
+            if (bottom > viewportTop && top < viewportBottom) {
                 if (firstVisible < 0) firstVisible = index
                 val bitmap = pageBitmap(index)
                 targetRect.set(0f, top - viewportTop, width.toFloat(), bottom - viewportTop)
@@ -144,12 +163,18 @@ class ContinuousReaderView @JvmOverloads constructor(
                     canvas.drawBitmap(bitmap, sourceRect, targetRect, bitmapPaint)
                 } else {
                     canvas.drawRect(targetRect, placeholderPaint)
+                    canvas.drawText(
+                        resources.getString(rs.masumi.app.R.string.reader_page_loading, index + 1),
+                        targetRect.centerX(),
+                        targetRect.centerY(),
+                        loadingPaint,
+                    )
                     onNeedPage?.invoke(index)
                 }
                 canvas.drawRect(0f, targetRect.bottom, width.toFloat(), targetRect.bottom + 2f, dividerPaint)
             }
             top = bottom
-            if (top > viewportBottom && firstVisible >= 0) return@forEachIndexed
+            if (top > viewportBottom && firstVisible >= 0) break
         }
         if (firstVisible >= 0) {
             onNeedPage?.invoke(firstVisible)

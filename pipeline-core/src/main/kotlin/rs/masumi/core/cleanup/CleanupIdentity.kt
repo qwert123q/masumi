@@ -44,7 +44,25 @@ object CleanupIdentity {
         "dilationRadiusPixels" to value.policy.dilationRadiusPixels.toString(),
         "minimumMaskCoverage" to value.policy.minimumMaskCoverage.toString(),
         "maximumMaskCoverage" to value.policy.maximumMaskCoverage.toString(),
-    )
+        "segmentationThreshold" to value.policy.segmentationThreshold.toString(),
+        "segmentationAuditThreshold" to value.policy.segmentationAuditThreshold.toString(),
+        "residualColorDistanceThreshold" to value.policy.residualColorDistanceThreshold.toString(),
+        "maximumResidualRatio" to value.policy.maximumResidualRatio.toString(),
+        "maximumResidualPixelCount" to value.policy.maximumResidualPixelCount.toString(),
+        "residualRetryDilationPixels" to value.policy.residualRetryDilationPixels.toString(),
+    ) + value.maskModel?.let { model ->
+        listOf(
+            "maskModelId" to model.modelId,
+            "maskModelRepository" to model.repository,
+            "maskModelRevision" to model.revision,
+            "maskModelFileName" to model.fileName,
+            "maskModelSha256" to model.sha256,
+            "maskModelByteLength" to model.byteLength.toString(),
+            "maskModelLicense" to model.license,
+            "maskModelOpset" to model.opset.toString(),
+            "maskModelRuntimeRevision" to model.runtimeRevision,
+        )
+    }.orEmpty()
 
     private fun hash(fields: List<Pair<String, String>>): String {
         val digest = MessageDigest.getInstance("SHA-256")

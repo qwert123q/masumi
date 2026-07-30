@@ -52,10 +52,38 @@
             android:id="@+id/readerStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
+            android:layout_marginStart="8dp"
             android:text="@string/reader_loading"
             android:textColor="@color/masumi_reader_chrome_text"
             android:textSize="14sp" />
+
+        <EditText
+            android:id="@+id/readerJumpInput"
+            android:layout_width="56dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:gravity="center"
+            android:hint="@string/reader_jump_hint"
+            android:imeOptions="actionGo"
+            android:inputType="number"
+            android:maxLength="5"
+            android:maxLines="1"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:selectAllOnFocus="true"
+            android:singleLine="true"
+            android:textColor="@color/masumi_reader_chrome_text"
+            android:textColorHint="@color/masumi_reader_chrome_text"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/readerJumpButton"
+            style="@style/Widget.Masumi.Button.Secondary"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:minWidth="56dp"
+            android:text="@string/reader_jump" />
     </LinearLayout>
 
     <LinearLayout

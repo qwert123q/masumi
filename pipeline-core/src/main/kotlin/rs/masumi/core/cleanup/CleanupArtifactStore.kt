@@ -176,8 +176,23 @@ class CleanupArtifactStore(
             requireSha256(region.ocrRegionId)
             region.translationRegionId?.let(::requireSha256)
             require(region.roiPixelCount >= 0 && region.maskPixelCount >= 0 && region.changedPixelCount >= 0)
+            require(region.auditPixelCount >= 0 && region.residualPixelCount in 0..region.auditPixelCount)
+            require(region.cleanupAttemptCount in 0..2)
             when (region.state) {
-                CleanupRegionState.CLEANED -> require(region.strategy != null && region.preserveReason == null)
+                CleanupRegionState.CLEANED -> {
+                    require(region.strategy != null && region.preserveReason == null)
+                    require(region.maskSource != null)
+                    require(region.cleanupAttemptCount >= 1)
+                    require(
+                        region.residualPixelCount <=
+                            dependencies.policy.maximumResidualPixelCount ||
+                            (
+                                region.auditPixelCount > 0 &&
+                                    region.residualPixelCount.toDouble() / region.auditPixelCount <=
+                                    dependencies.policy.maximumResidualRatio
+                                ),
+                    )
+                }
                 CleanupRegionState.PRESERVED_SOURCE -> require(region.preserveReason != null)
             }
         }

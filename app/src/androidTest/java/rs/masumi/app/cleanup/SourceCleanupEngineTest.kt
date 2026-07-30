@@ -235,6 +235,37 @@ class SourceCleanupEngineTest {
         }
     }
 
+    @Test
+    fun pageWithoutTargetsSkipsTextSegmentation() {
+        var inferenceCount = 0
+        val segmenter = TextMaskProvider { _, width, height, _ ->
+            inferenceCount += 1
+            TextProbabilityMask(
+                pageWidth = width,
+                pageHeight = height,
+                modelWidth = 1,
+                modelHeight = 1,
+                validWidth = 1,
+                validHeight = 1,
+                values = byteArrayOf(0),
+            )
+        }
+        val source = Bitmap.createBitmap(24, 24, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val cleaned = SourceCleanupEngine(textMaskProvider = segmenter).clean(
+            source,
+            emptyList(),
+            CleanupPolicy(),
+        )
+
+        try {
+            assertEquals(0, inferenceCount)
+            assertTrue(cleaned.regions.isEmpty())
+        } finally {
+            cleaned.bitmap.recycle()
+            source.recycle()
+        }
+    }
+
     private fun target(
         box: PixelBox,
         strategy: CleanupStrategy = CleanupStrategy.FLAT_LOCAL_FILL,

@@ -21,6 +21,7 @@ import rs.masumi.core.cleanup.CleanupJobPage
 import rs.masumi.core.cleanup.CleanupJobRecord
 import rs.masumi.core.cleanup.CleanupJobReducer
 import rs.masumi.core.cleanup.CleanupJobStatus
+import rs.masumi.core.cleanup.CleanupMaskModelRef
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.cleanup.CleanupPreserveReason
@@ -68,6 +69,7 @@ class CleanupRunner(
     private val decoder: PageBitmapDecoder = PageBitmapDecoder(),
     private val engine: SourceCleanupEngine = SourceCleanupEngine(),
     private val policy: CleanupPolicy = CleanupPolicy(),
+    private val maskModel: CleanupMaskModelRef? = null,
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
 ) {
@@ -92,7 +94,11 @@ class CleanupRunner(
             catalog.publishedOcrRun(projectId, translationRun.artifact.dependencies.ocrRunArtifactKey),
         ) { "translation OCR dependency was not found" }
         validateDependencies(project, translationRun, ocrRun)
-        val dependencies = CleanupDependencies(translationRunArtifactKey = translationRun.artifact.runArtifactKey, policy = policy)
+        val dependencies = CleanupDependencies(
+            translationRunArtifactKey = translationRun.artifact.runArtifactKey,
+            policy = policy,
+            maskModel = maskModel,
+        )
         val pageKeys = project.manifest.pages.associate { page ->
             val translationEntry = translationRun.artifact.entries.single { it.pageOrder == page.order }
             page.order to CleanupIdentity.pageArtifactKey(

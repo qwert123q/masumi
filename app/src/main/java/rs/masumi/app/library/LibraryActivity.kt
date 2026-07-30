@@ -28,6 +28,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import rs.masumi.app.AutomaticPipelinePlanner
 import rs.masumi.app.HorizontalSwipeViewFlipper
 import rs.masumi.app.MainActivity
@@ -49,6 +50,8 @@ import rs.masumi.app.typesetting.TypesettingForegroundService
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPromptRef
+import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.typesetting.TypesettingPolicy
 import java.io.InputStream
 import java.nio.file.Files
@@ -68,10 +71,14 @@ class LibraryActivity : Activity() {
     private lateinit var processingContainer: LinearLayout
     private lateinit var finishedEmptyText: TextView
     private lateinit var processingEmptyText: TextView
+    private lateinit var finishedRefresh: SwipeRefreshLayout
+    private lateinit var processingRefresh: SwipeRefreshLayout
+    private lateinit var finishedScroll: ScrollView
+    private lateinit var processingScroll: ScrollView
     private lateinit var chooseLibraryButton: Button
     private lateinit var catalog: ProjectCatalog
     private lateinit var libraryPreferences: MangaLibraryPreferences
-    private lateinit var readingProgressStore: MangaReadingProgressStore
+    private lateinit var readerPreferences: MangaReaderPreferences
     private lateinit var pipelineQueueStore: PipelineQueueStore
     private lateinit var snapshotStore: LibraryHomeSnapshotStore
     private lateinit var projectOrderStore: MangaLibraryOrderStore
@@ -103,10 +110,14 @@ class LibraryActivity : Activity() {
         processingContainer = findViewById(R.id.libraryHomeProcessingList)
         finishedEmptyText = findViewById(R.id.libraryHomeFinishedEmpty)
         processingEmptyText = findViewById(R.id.libraryHomeProcessingEmpty)
+        finishedRefresh = findViewById(R.id.libraryHomeFinishedRefresh)
+        processingRefresh = findViewById(R.id.libraryHomeProcessingRefresh)
+        finishedScroll = findViewById(R.id.libraryHomeFinishedScroll)
+        processingScroll = findViewById(R.id.libraryHomeProcessingScroll)
         chooseLibraryButton = findViewById(R.id.libraryHomeChooseFolder)
         catalog = ProjectCatalog(filesDir.toPath().resolve("workspace"))
         libraryPreferences = MangaLibraryPreferences(this)
-        readingProgressStore = MangaReadingProgressStore(this)
+        readerPreferences = MangaReaderPreferences(this)
         pipelineQueueStore = PipelineQueueStore(this)
         snapshotStore = LibraryHomeSnapshotStore(this)
         projectOrderStore = MangaLibraryOrderStore(this)
@@ -116,6 +127,10 @@ class LibraryActivity : Activity() {
         chooseLibraryButton.setOnClickListener { openLibraryFolder(false) }
         finishedTabButton.setOnClickListener { selectTab(TAB_FINISHED) }
         processingTabButton.setOnClickListener { selectTab(TAB_PROCESSING) }
+        finishedRefresh.setOnRefreshListener(::refreshLibrary)
+        processingRefresh.setOnRefreshListener(::refreshLibrary)
+        finishedRefresh.setOnChildScrollUpCallback { _, _ -> finishedScroll.canScrollVertically(-1) }
+        processingRefresh.setOnChildScrollUpCallback { _, _ -> processingScroll.canScrollVertically(-1) }
         savedInstanceState?.getInt(STATE_SELECTED_TAB)?.let { restored ->
             initialTabResolved = true
             selectTab(restored)
@@ -250,7 +265,6 @@ class LibraryActivity : Activity() {
                     0
                 },
                 cover = null,
-                readingProgress = readingProgressStore.load(project.metadata.projectId),
                 queueStatus = queueEntry?.status,
                 queueErrorCode = queueEntry?.errorCode,
             )
@@ -262,6 +276,7 @@ class LibraryActivity : Activity() {
         val generation = refreshGeneration.incrementAndGet()
         val rootUri = libraryPreferences.rootUri()
         if (rootUri == null) {
+            finishRefreshGesture()
             renderLibrary(null, null, emptyList(), false)
             return
         }
@@ -285,6 +300,7 @@ class LibraryActivity : Activity() {
             }
             runOnUiThread {
                 if (generation != refreshGeneration.get() || isFinishing || isDestroyed) return@runOnUiThread
+                finishRefreshGesture()
                 result.fold(
                     onSuccess = { (name, uri, projects) ->
                         renderLibrary(uri, name, projects, false)
@@ -318,7 +334,12 @@ class LibraryActivity : Activity() {
                         it.artifact.dependencies.batching == TranslationBatchingConfig()
                 }
             val cleanup = translation?.let {
-                catalog.latestPublishedCleanupRun(projectId, it.artifact.runArtifactKey)
+                catalog.latestPublishedCleanupRun(
+                    projectId = projectId,
+                    translationRunArtifactKey = it.artifact.runArtifactKey,
+                    policy = CleanupPolicy(),
+                    maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
+                )
             }
             val typesetting = cleanup?.let {
                 catalog.latestPublishedTypesettingRun(
@@ -354,7 +375,6 @@ class LibraryActivity : Activity() {
             project = project,
             completedStages = completedStages,
             cover = cover,
-            readingProgress = readingProgressStore.load(projectId),
             queueStatus = queueStatus,
             queueErrorCode = queueErrorCode,
         )
@@ -496,13 +516,7 @@ class LibraryActivity : Activity() {
             }
         }
         if (canReadCurrentResult) {
-            primary.setText(
-                if ((summary.readingProgress?.pageIndex ?: 0) > 0) {
-                    R.string.library_continue_reading
-                } else {
-                    R.string.library_read
-                },
-            )
+            primary.setText(R.string.library_read)
             primary.setOnClickListener {
                 startActivity(MangaReaderActivity.intent(this, requireNotNull(rootUri), project))
             }
@@ -759,7 +773,7 @@ class LibraryActivity : Activity() {
                             .deleteProject(project.metadata.projectId)
                         check(removed)
                         pipelineQueueStore.remove(project.metadata.projectId)
-                        readingProgressStore.remove(project.metadata.projectId)
+                        readerPreferences.remove(project.metadata.projectId)
                         deletePrivateProject(project.metadata.projectId)
                     }
                     runOnUiThread {
@@ -816,12 +830,6 @@ class LibraryActivity : Activity() {
             )
         summary.queueStatus == PipelineQueueStatus.PAUSED ->
             getString(R.string.library_project_status_paused)
-        summary.project.outputPageCount > 0 && summary.readingProgress != null ->
-            getString(
-                R.string.library_project_status_reading,
-                summary.project.outputPageCount,
-                summary.readingProgress.pageIndex + 1,
-            )
         summary.project.outputPageCount > 0 ->
             getString(R.string.library_project_status_ready, summary.project.outputPageCount)
         summary.completedStages >= AutomaticPipelinePlanner.STAGE_COUNT ->
@@ -876,10 +884,14 @@ class LibraryActivity : Activity() {
         val project: MangaLibraryProject,
         val completedStages: Int,
         val cover: Bitmap?,
-        val readingProgress: MangaReadingProgress?,
         val queueStatus: PipelineQueueStatus?,
         val queueErrorCode: String?,
     )
+
+    private fun finishRefreshGesture() {
+        finishedRefresh.isRefreshing = false
+        processingRefresh.isRefreshing = false
+    }
 
     private companion object {
         const val REQUEST_LIBRARY_FOLDER = 2101

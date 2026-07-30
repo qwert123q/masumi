@@ -35,7 +35,7 @@ Release APK 必须签名，否则 Android 直接拒绝安装。签名配置从 G
 ```
 
 产物在 `app/build/outputs/apk/release/app-release.apk`，单文件即装：
-AOT 修复模型已打进 assets，检测与 OCR 模型由应用在首次使用时自行下载。
+AOT 修复与漫画文字分割模型已打进 assets，检测与 OCR 模型由应用在首次使用时自行下载。
 要求 Android 9+（minSdk 28）、arm64-v8a 设备。
 
 发布到 GitHub：

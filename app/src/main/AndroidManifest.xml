@@ -58,6 +58,7 @@
             android:exported="false" />
         <activity
             android:name=".library.MangaReaderActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize"
             android:exported="false" />
         <service
             android:name=".detection.DetectionForegroundService"

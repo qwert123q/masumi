@@ -2,31 +2,9 @@ package rs.masumi.app.library
 
 import android.content.Context
 
-data class MangaReadingProgress(
-    val pageIndex: Int,
-    val pageCount: Int,
-)
-
-class MangaReadingProgressStore(context: Context) {
+/** Reader presentation preferences; the current page is deliberately transient. */
+class MangaReaderPreferences(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-
-    fun load(projectId: String): MangaReadingProgress? {
-        if (!SAFE_ID.matches(projectId)) return null
-        val pageCount = preferences.getInt("$projectId.pageCount", 0)
-        if (pageCount <= 0) return null
-        val pageIndex = preferences.getInt("$projectId.pageIndex", 0).coerceIn(0, pageCount - 1)
-        return MangaReadingProgress(pageIndex, pageCount)
-    }
-
-    fun save(projectId: String, pageIndex: Int, pageCount: Int) {
-        require(SAFE_ID.matches(projectId))
-        require(pageCount > 0)
-        require(pageIndex in 0 until pageCount)
-        preferences.edit()
-            .putInt("$projectId.pageIndex", pageIndex)
-            .putInt("$projectId.pageCount", pageCount)
-            .apply()
-    }
 
     /** Continuous vertical scrolling is the default browsing mode. */
     fun readsContinuously(projectId: String): Boolean =
@@ -49,6 +27,8 @@ class MangaReadingProgressStore(context: Context) {
     fun remove(projectId: String) {
         require(SAFE_ID.matches(projectId))
         preferences.edit()
+            // Remove legacy progress keys as well. New reader sessions always
+            // open at page one and never recreate these values.
             .remove("$projectId.pageIndex")
             .remove("$projectId.pageCount")
             .remove("$projectId.continuous")

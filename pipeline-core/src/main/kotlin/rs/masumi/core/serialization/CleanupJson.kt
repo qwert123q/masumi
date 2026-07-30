@@ -7,6 +7,7 @@ import rs.masumi.core.cleanup.CleanupJobRecord
 import rs.masumi.core.cleanup.CleanupReport
 import rs.masumi.core.cleanup.CleanupRunArtifact
 import rs.masumi.core.cleanup.PageCleanupArtifact
+import rs.masumi.core.modelpackage.TextSegmenterModelPackageMetadata
 
 class CleanupJson(
     private val json: Json = Json {
@@ -24,4 +25,8 @@ class CleanupJson(
     fun decodeRun(value: String): CleanupRunArtifact = json.decodeFromString(value)
     fun encodeReport(value: CleanupReport): String = json.encodeToString(value)
     fun decodeReport(value: String): CleanupReport = json.decodeFromString(value)
+    fun encodeTextSegmenterModelPackageMetadata(value: TextSegmenterModelPackageMetadata): String =
+        json.encodeToString(value)
+    fun decodeTextSegmenterModelPackageMetadata(value: String): TextSegmenterModelPackageMetadata =
+        json.decodeFromString(value)
 }

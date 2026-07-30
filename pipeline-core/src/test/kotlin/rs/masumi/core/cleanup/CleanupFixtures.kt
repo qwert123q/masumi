@@ -45,6 +45,8 @@ object CleanupFixtures {
                 roiPixelCount = 100,
                 maskPixelCount = 20,
                 changedPixelCount = 20,
+                maskSource = CleanupMaskSource.FLAT_COLOR,
+                cleanupAttemptCount = 1,
             ),
         ),
     )

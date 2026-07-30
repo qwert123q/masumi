@@ -3,8 +3,10 @@ package rs.masumi.app.library
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,7 +14,10 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -27,13 +32,18 @@ class MangaReaderActivity : Activity() {
     private lateinit var continuousView: ContinuousReaderView
     private lateinit var modeButton: Button
     private lateinit var statusView: TextView
+    private lateinit var jumpInput: EditText
     private lateinit var topBar: View
     private lateinit var bottomBar: View
     private lateinit var seekBar: SeekBar
     private lateinit var directionButton: Button
-    private lateinit var readingProgressStore: MangaReadingProgressStore
-    private val executor = Executors.newSingleThreadExecutor(
-        PipelineThreading.factory("masumi-reader"),
+    private lateinit var readerPreferences: MangaReaderPreferences
+    private val metadataExecutor = Executors.newSingleThreadExecutor(
+        PipelineThreading.factory("masumi-reader-metadata"),
+    )
+    private val pageExecutor = Executors.newFixedThreadPool(
+        PAGE_DECODE_WORKERS,
+        PipelineThreading.factory("masumi-reader-page", numbered = true),
     )
     private val loadGeneration = AtomicInteger()
     private var pages: List<MangaLibraryPage> = emptyList()
@@ -44,7 +54,7 @@ class MangaReaderActivity : Activity() {
     private var chromeVisible = false
     private var rightToLeft = true
     private var continuousMode = true
-    private var pageAspects: List<Float> = emptyList()
+    private var pageAspects: MutableList<Float> = mutableListOf()
     private var seekBarDragging = false
     private lateinit var projectId: String
 
@@ -59,12 +69,22 @@ class MangaReaderActivity : Activity() {
         continuousView = findViewById(R.id.readerContinuous)
         modeButton = findViewById(R.id.readerModeButton)
         statusView = findViewById(R.id.readerStatus)
+        jumpInput = findViewById(R.id.readerJumpInput)
         topBar = findViewById(R.id.readerTopBar)
         bottomBar = findViewById(R.id.readerBottomBar)
         seekBar = findViewById(R.id.readerSeekBar)
         directionButton = findViewById(R.id.readerDirectionButton)
-        readingProgressStore = MangaReadingProgressStore(this)
+        readerPreferences = MangaReaderPreferences(this)
         findViewById<Button>(R.id.readerCloseButton).setOnClickListener { finish() }
+        findViewById<Button>(R.id.readerJumpButton).setOnClickListener { jumpToEnteredPage() }
+        jumpInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_GO) {
+                jumpToEnteredPage()
+                true
+            } else {
+                false
+            }
+        }
 
         val rootUri = intent.getStringExtra(EXTRA_LIBRARY_ROOT)?.let(Uri::parse)
         val requestedProjectId = intent.getStringExtra(EXTRA_PROJECT_ID)
@@ -78,11 +98,9 @@ class MangaReaderActivity : Activity() {
         }
         projectId = requestedProjectId
         titleView.text = title
-        rightToLeft = readingProgressStore.readsRightToLeft(projectId)
-        continuousMode = readingProgressStore.readsContinuously(projectId)
-        currentIndex = savedInstanceState?.getInt(STATE_PAGE_INDEX)
-            ?: readingProgressStore.load(projectId)?.pageIndex
-            ?: 0
+        rightToLeft = readerPreferences.readsRightToLeft(projectId)
+        continuousMode = readerPreferences.readsContinuously(projectId)
+        currentIndex = savedInstanceState?.getInt(STATE_PAGE_INDEX) ?: 0
 
         readerView.onTap = ::handleTap
         readerView.onHorizontalSwipe = ::handleSwipe
@@ -92,8 +110,8 @@ class MangaReaderActivity : Activity() {
             currentIndex = index
             statusView.text = pageIndicator(index)
             if (!seekBarDragging) seekBar.progress = index
-            if (pages.isNotEmpty()) readingProgressStore.save(projectId, index, pages.size)
             evictDistantPages()
+            prefetchPages(index)
         }
         modeButton.setOnClickListener { toggleReadingMode() }
         directionButton.setOnClickListener { toggleDirection() }
@@ -124,13 +142,27 @@ class MangaReaderActivity : Activity() {
 
     override fun onDestroy() {
         loadGeneration.incrementAndGet()
-        executor.shutdownNow()
+        metadataExecutor.shutdownNow()
+        pageExecutor.shutdownNow()
         readerView.setImageDrawable(null)
         displayedBitmap = null
         pageCache.values.forEach { it.takeUnless(Bitmap::isRecycled)?.recycle() }
         pageCache.clear()
         pendingLoads.clear()
         super.onDestroy()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Keep the currently displayed bitmap during rotation. Recreating the
+        // activity used to discard the cache and rescan every page, producing
+        // a long black screen. Reposition first, then replace the current page
+        // at the new viewport size in the background.
+        enterImmersiveMode()
+        continuousView.post {
+            if (continuousMode) continuousView.scrollToPage(currentIndex)
+            ensurePageLoaded(currentIndex, replaceExisting = true)
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -187,7 +219,7 @@ class MangaReaderActivity : Activity() {
 
     private fun toggleReadingMode() {
         continuousMode = !continuousMode
-        readingProgressStore.saveReadingMode(projectId, continuousMode)
+        readerPreferences.saveReadingMode(projectId, continuousMode)
         applyReadingMode()
     }
 
@@ -212,12 +244,11 @@ class MangaReaderActivity : Activity() {
         currentIndex = index
         continuousView.scrollToPage(index)
         statusView.text = pageIndicator(index)
-        readingProgressStore.save(projectId, index, pages.size)
     }
 
     private fun toggleDirection() {
         rightToLeft = !rightToLeft
-        readingProgressStore.saveReadingDirection(projectId, rightToLeft)
+        readerPreferences.saveReadingDirection(projectId, rightToLeft)
         applyDirectionLabel()
     }
 
@@ -240,7 +271,7 @@ class MangaReaderActivity : Activity() {
     private fun loadProject(rootUri: Uri, projectId: String) {
         statusView.setText(R.string.reader_loading)
         val generation = loadGeneration.incrementAndGet()
-        executor.execute {
+        metadataExecutor.execute {
             val loaded = runCatching {
                 MangaLibraryStore(contentResolver, rootUri).outputPages(projectId)
             }.getOrDefault(emptyList())
@@ -258,36 +289,15 @@ class MangaReaderActivity : Activity() {
                 } else {
                     seekBar.max = pages.lastIndex
                     currentIndex = currentIndex.coerceIn(0, pages.lastIndex)
-                    loadPageAspects(rootUri, generation)
+                    // Bind immediately with a stable provisional aspect ratio.
+                    // Actual ratios are corrected as pages are decoded; opening
+                    // a chapter no longer waits for a bounds pass over every
+                    // file in the chapter.
+                    pageAspects = MutableList(pages.size) { DEFAULT_PAGE_ASPECT }
+                    statusView.text = pageIndicator(currentIndex)
+                    applyReadingMode()
+                    prefetchPages(currentIndex)
                 }
-            }
-        }
-    }
-
-    /**
-     * One cheap bounds-only decode per page gives the continuous layout a
-     * stable total height before any full page is decoded.
-     */
-    private fun loadPageAspects(rootUri: Uri, generation: Int) {
-        val snapshot = pages
-        executor.execute {
-            val aspects = snapshot.map { page ->
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                runCatching {
-                    contentResolver.openInputStream(page.uri)?.use {
-                        BitmapFactory.decodeStream(it, null, bounds)
-                    }
-                }
-                if (bounds.outWidth > 0 && bounds.outHeight > 0) {
-                    bounds.outHeight.toFloat() / bounds.outWidth
-                } else {
-                    DEFAULT_PAGE_ASPECT
-                }
-            }
-            runOnUiThread {
-                if (generation != loadGeneration.get() || isFinishing || isDestroyed) return@runOnUiThread
-                pageAspects = aspects
-                applyReadingMode()
             }
         }
     }
@@ -297,26 +307,39 @@ class MangaReaderActivity : Activity() {
         currentIndex = index
         statusView.text = pageIndicator(index)
         if (!seekBarDragging) seekBar.progress = index
-        readingProgressStore.save(projectId, index, pages.size)
         pageCache[index]?.let(::display)
-        ensurePageLoaded(index)
-        ensurePageLoaded(index + 1)
-        ensurePageLoaded(index - 1)
+        prefetchPages(index)
         evictDistantPages()
     }
 
-    private fun cacheRadius(): Int = if (continuousMode) CONTINUOUS_CACHE_RADIUS else CACHE_RADIUS
+    private fun prefetchPages(index: Int) {
+        ensurePageLoaded(index)
+        ensurePageLoaded(index - PREFETCH_BACKWARD_PAGE_COUNT)
+        for (offset in 1..PREFETCH_FORWARD_PAGE_COUNT) {
+            ensurePageLoaded(index + offset)
+        }
+    }
+
+    private fun shouldRetainPage(index: Int): Boolean =
+        index >= currentIndex - PREFETCH_BACKWARD_PAGE_COUNT &&
+            index <= currentIndex + PREFETCH_FORWARD_PAGE_COUNT
 
     private fun display(bitmap: Bitmap) {
         displayedBitmap = bitmap
         readerView.setImageBitmap(bitmap)
     }
 
-    private fun ensurePageLoaded(index: Int) {
-        if (index !in pages.indices || pageCache.containsKey(index) || !pendingLoads.add(index)) return
+    private fun ensurePageLoaded(index: Int, replaceExisting: Boolean = false) {
+        if (
+            index !in pages.indices ||
+            (!replaceExisting && pageCache.containsKey(index)) ||
+            !pendingLoads.add(index)
+        ) {
+            return
+        }
         val generation = loadGeneration.get()
         val page = pages[index]
-        executor.execute {
+        pageExecutor.execute {
             val bitmap = decodePage(page.uri)
             runOnUiThread {
                 pendingLoads.remove(index)
@@ -330,16 +353,22 @@ class MangaReaderActivity : Activity() {
                     }
                     return@runOnUiThread
                 }
-                if (kotlin.math.abs(index - currentIndex) > cacheRadius()) {
+                if (!replaceExisting && !shouldRetainPage(index)) {
                     bitmap.recycle()
                     return@runOnUiThread
                 }
-                pageCache[index] = bitmap
+                val oldBitmap = pageCache.put(index, bitmap)
+                val aspect = bitmap.height.toFloat() / bitmap.width.coerceAtLeast(1)
+                if (kotlin.math.abs(pageAspects[index] - aspect) >= ASPECT_UPDATE_EPSILON) {
+                    pageAspects[index] = aspect
+                    continuousView.updatePageAspect(index, aspect)
+                }
                 if (continuousMode) {
                     continuousView.invalidate()
                 } else if (index == currentIndex) {
                     display(bitmap)
                 }
+                oldBitmap?.takeUnless { it === bitmap || it.isRecycled }?.recycle()
             }
         }
     }
@@ -348,7 +377,7 @@ class MangaReaderActivity : Activity() {
         val iterator = pageCache.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
-            if (kotlin.math.abs(entry.key - currentIndex) > cacheRadius()) {
+            if (!shouldRetainPage(entry.key)) {
                 iterator.remove()
                 if (entry.value === displayedBitmap) {
                     readerView.setImageDrawable(null)
@@ -360,34 +389,82 @@ class MangaReaderActivity : Activity() {
     }
 
     private fun decodePage(uri: Uri): Bitmap? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching {
+                return ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) {
+                    decoder, info, _ ->
+                    val target = targetDecodeSize(info.size.width, info.size.height)
+                    decoder.setTargetSize(target.first, target.second)
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    decoder.memorySizePolicy = ImageDecoder.MEMORY_POLICY_LOW_RAM
+                }
+            }
+        }
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        val targetWidth = resources.displayMetrics.widthPixels.coerceAtLeast(1)
-        val detailWidth = (targetWidth.toLong() * READER_DETAIL_WIDTH_MULTIPLIER)
-            .coerceAtMost(Int.MAX_VALUE.toLong())
-            .toInt()
+        val targetWidth = targetDecodeSize(bounds.outWidth, bounds.outHeight).first
         var sampleSize = 1
-        while (bounds.outWidth / (sampleSize * 2) >= detailWidth) {
+        while (bounds.outWidth / (sampleSize * 2) >= targetWidth) {
             sampleSize *= 2
         }
-        // Memory pressure may require another step down, but never decode a
-        // page narrower than the screen and then upscale it. That was the
-        // second source of visible jagged text on very tall pages.
         while (
             sampledPixelCount(bounds.outWidth, bounds.outHeight, sampleSize) > MAX_BITMAP_PIXELS &&
-            bounds.outWidth / (sampleSize * 2) >= targetWidth
+            bounds.outWidth / (sampleSize * 2) >= resources.displayMetrics.widthPixels
         ) {
             sampleSize *= 2
         }
         val options = BitmapFactory.Options().apply {
             inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inPreferredConfig = Bitmap.Config.RGB_565
             inScaled = false
         }
         return runCatching {
             contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
         }.getOrNull()
+    }
+
+    private fun targetDecodeSize(sourceWidth: Int, sourceHeight: Int): Pair<Int, Int> {
+        require(sourceWidth > 0 && sourceHeight > 0)
+        val viewportWidth = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+        var targetWidth = minOf(
+            sourceWidth,
+            (viewportWidth * READER_DETAIL_WIDTH_MULTIPLIER).toInt().coerceAtLeast(1),
+        )
+        var targetHeight = (sourceHeight.toLong() * targetWidth / sourceWidth)
+            .coerceIn(1L, Int.MAX_VALUE.toLong())
+            .toInt()
+        val pixels = targetWidth.toLong() * targetHeight
+        if (pixels > MAX_BITMAP_PIXELS) {
+            val scale = kotlin.math.sqrt(MAX_BITMAP_PIXELS.toDouble() / pixels)
+            targetWidth = (targetWidth * scale).toInt().coerceAtLeast(1)
+            targetHeight = (targetHeight * scale).toInt().coerceAtLeast(1)
+        }
+        return targetWidth to targetHeight
+    }
+
+    private fun jumpToEnteredPage() {
+        if (pages.isEmpty()) return
+        val requested = jumpInput.text.toString().trim().toIntOrNull()
+        if (requested == null || requested !in 1..pages.size) {
+            Toast.makeText(
+                this,
+                getString(R.string.reader_jump_invalid, pages.size),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        if (continuousMode) {
+            jumpToPage(requested - 1)
+            prefetchPages(requested - 1)
+            evictDistantPages()
+        } else {
+            showPage(requested - 1)
+        }
+        jumpInput.text.clear()
+        jumpInput.clearFocus()
+        (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
+            ?.hideSoftInputFromWindow(jumpInput.windowToken, 0)
     }
 
     private fun sampledPixelCount(width: Int, height: Int, sampleSize: Int): Long =
@@ -398,11 +475,13 @@ class MangaReaderActivity : Activity() {
         private const val EXTRA_PROJECT_ID = "project_id"
         private const val EXTRA_TITLE = "title"
         private const val STATE_PAGE_INDEX = "page_index"
-        private const val MAX_BITMAP_PIXELS = 12_000_000L
-        private const val READER_DETAIL_WIDTH_MULTIPLIER = 2
-        private const val CACHE_RADIUS = 1
-        private const val CONTINUOUS_CACHE_RADIUS = 1
+        private const val MAX_BITMAP_PIXELS = 6_000_000L
+        private const val READER_DETAIL_WIDTH_MULTIPLIER = 1.25f
+        private const val PAGE_DECODE_WORKERS = 2
+        private const val PREFETCH_BACKWARD_PAGE_COUNT = 5
+        private const val PREFETCH_FORWARD_PAGE_COUNT = 5
         private const val DEFAULT_PAGE_ASPECT = 1.45f
+        private const val ASPECT_UPDATE_EPSILON = 0.002f
         private const val PREVIOUS_TAP_ZONE = 0.32f
         private const val NEXT_TAP_ZONE = 0.68f
         private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
