@@ -299,6 +299,9 @@ class OcrArtifactStore(
         require(artifact.selectedAttemptIndex == null || artifact.selectedAttemptIndex in artifact.attempts.indices) {
             "selected attempt is outside attempt list"
         }
+        require((artifact.state == OcrRegionState.RECOGNIZED) == (artifact.selectedAttemptIndex != null)) {
+            "only a recognized region may select an OCR attempt"
+        }
         require(artifact.attempts.all { it.tokenIds.size == it.tokenProbabilities.size }) {
             "token IDs and probabilities must align"
         }

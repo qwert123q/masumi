@@ -5,7 +5,7 @@ import rs.masumi.core.detection.DetectorClass
 import rs.masumi.core.detection.PixelBox
 import rs.masumi.core.detection.VisibleOrientation
 
-const val OCR_SCHEMA_VERSION: Int = 1
+const val OCR_SCHEMA_VERSION: Int = 2
 
 @Serializable
 enum class OcrSemanticStatus {
@@ -54,6 +54,13 @@ enum class OcrCropStrategy {
     PADDED_TEXT,
     TIGHT_TEXT,
     CONTEXT_TEXT,
+    HIGH_DETAIL_CONTEXT,
+}
+
+@Serializable
+enum class OcrVisualDetailProfile {
+    STANDARD,
+    HIGH_DETAIL,
 }
 
 @Serializable
@@ -115,12 +122,28 @@ data class OcrReadingOrderConfig(
 
 @Serializable
 data class OcrCropConfig(
-    val revision: String = "three-crops-mobile-v3",
+    val revision: String = "three-crops-mobile-v4",
     val paddedTextFraction: Double = 0.12,
     val tightTextFraction: Double = 0.04,
     val contextTextFraction: Double = 0.24,
     val minimumPaddingPixels: Int = 4,
 )
+
+@Serializable
+data class OcrHighDetailRetryConfig(
+    val revision: String = "one-context-high-detail-v1",
+    val maximumVisualTokens: Int = 192,
+    val maximumSourcePixels: Int = 4_000_000,
+) {
+    init {
+        require(maximumVisualTokens in 129..256) {
+            "maximumVisualTokens must be between 129 and 256"
+        }
+        require(maximumSourcePixels in 1..4_000_000) {
+            "maximumSourcePixels must be between 1 and 4000000"
+        }
+    }
+}
 
 @Serializable
 data class OcrNormalizationConfig(
@@ -129,7 +152,7 @@ data class OcrNormalizationConfig(
 
 @Serializable
 data class OcrQualityConfig(
-    val revision: String = "paddle-vl-quality-v2",
+    val revision: String = "paddle-vl-quality-v3-high-detail-terminal",
     val agreementSimilarityThreshold: Double = 0.90,
     val primaryTokenProbabilityThreshold: Double = 0.55,
     val emptyConfirmationAttemptCount: Int = 2,
@@ -152,6 +175,7 @@ data class OcrDependencies(
     val consolidation: OcrConsolidationConfig = OcrConsolidationConfig(),
     val readingOrder: OcrReadingOrderConfig = OcrReadingOrderConfig(),
     val crop: OcrCropConfig = OcrCropConfig(),
+    val highDetailRetry: OcrHighDetailRetryConfig = OcrHighDetailRetryConfig(),
     val normalization: OcrNormalizationConfig = OcrNormalizationConfig(),
     val quality: OcrQualityConfig = OcrQualityConfig(),
     val generation: OcrGenerationConfig = OcrGenerationConfig(),
@@ -176,6 +200,8 @@ data class OcrCandidate(
 data class OcrCropDescriptor(
     val strategy: OcrCropStrategy,
     val box: PixelBox,
+    val visualDetailProfile: OcrVisualDetailProfile = OcrVisualDetailProfile.STANDARD,
+    val maximumSourcePixels: Int? = null,
 )
 
 @Serializable

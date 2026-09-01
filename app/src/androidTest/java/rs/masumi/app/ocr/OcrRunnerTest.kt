@@ -40,6 +40,7 @@ import rs.masumi.core.modelpackage.PinnedPaddleOcrVl
 import rs.masumi.core.ocr.OcrArtifactStore
 import rs.masumi.core.ocr.OcrJobStatus
 import rs.masumi.core.ocr.OcrRegionState
+import rs.masumi.core.ocr.OcrVisualDetailProfile
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 
@@ -138,6 +139,39 @@ class OcrRunnerTest {
                 },
             )
             assertEquals(OcrRegionState.RECOGNIZED, page.regions.single().state)
+        }
+    }
+
+    @Test
+    fun detectorPositiveEmptyStandardCropsUseOneHighDetailRetry() {
+        withWorkspace { workspace ->
+            createProjectAndDetection(workspace, candidateCount = 1, duplicatePage = false)
+            val requests = mutableListOf<OcrEngineRequest>()
+            val outputs = ArrayDeque(
+                listOf(result("", 0.9), result("", 0.9), result("", 0.9), result("文脈で認識", 0.9)),
+            )
+            val runner = runner(workspace) { request ->
+                requests += request
+                outputs.removeFirst()
+            }
+
+            val completed = runner.run(PROJECT_ID, { false }) { }
+
+            assertEquals(OcrJobStatus.SUCCEEDED, completed.job.status)
+            assertTrue(outputs.isEmpty())
+            assertEquals(
+                listOf(
+                    OcrVisualDetailProfile.STANDARD,
+                    OcrVisualDetailProfile.STANDARD,
+                    OcrVisualDetailProfile.STANDARD,
+                    OcrVisualDetailProfile.HIGH_DETAIL,
+                ),
+                requests.map(OcrEngineRequest::visualDetailProfile),
+            )
+            val pagePath = completed.publishedDirectory!!.resolve("pages/${completed.job.pages.first().pageId}/ocr.json")
+            val page = OcrJson().decodePageArtifact(Files.newBufferedReader(pagePath).use { it.readText() })
+            assertEquals(OcrRegionState.RECOGNIZED, page.regions.single().state)
+            assertEquals(4, page.regions.single().attempts.size)
         }
     }
 

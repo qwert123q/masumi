@@ -78,6 +78,13 @@ class CleanupArtifactStoreTest {
         assertEquals(run, assertNotNull(store.readPublishedRun(job.runArtifactKey)))
         assertEquals(report, assertNotNull(store.readPublishedReport(job.runArtifactKey)))
         assertEquals(artifact, assertNotNull(store.readPublishedPage(job.runArtifactKey, run.entries.single())))
+
+        // Ordinary catalog/page reads trust the app-private atomic publish.
+        // Changing image bytes after publication must not trigger another
+        // whole-file digest pass at every downstream lookup.
+        Files.write(published.resolve(imagePath), byteArrayOf(9, 8, 7, 6))
+        assertEquals(run, assertNotNull(store.readPublishedRun(job.runArtifactKey)))
+        assertEquals(artifact, assertNotNull(store.readPublishedPage(job.runArtifactKey, run.entries.single())))
     }
 
     @Test
@@ -97,5 +104,110 @@ class CleanupArtifactStoreTest {
         assertFailsWith<IllegalArgumentException> {
             store.commitPage(job, artifact, png, "webp")
         }
+    }
+
+    @Test
+    fun `cleaned page accepts audited residual only when explicitly marked best effort`() {
+        val png = byteArrayOf(1, 2, 3, 4)
+        var job = CleanupJobReducer.start(CleanupFixtures.job(), 2L)
+        job = CleanupJobReducer.startPage(job, 0, 3L)
+        store.prepareRun(job)
+        val artifact = CleanupFixtures.artifact(png).let { page ->
+            page.copy(
+                regions = page.regions.map { region ->
+                    region.copy(
+                        completionMode = CleanupCompletionMode.BEST_EFFORT_RESIDUAL,
+                        auditPixelCount = 1_000,
+                        initialResidualPixelCount = 24,
+                        residualRetryPixelCount = 18,
+                        residualPixelCount = 9,
+                        cleanupAttemptCount = 3,
+                    )
+                },
+            )
+        }
+
+        val committed = store.commitPage(job, artifact, png, "webp")
+
+        assertTrue(committed.first.endsWith("cleanup.json"))
+    }
+
+    @Test
+    fun `best effort residual rejects missing local retry diagnostics`() {
+        val png = byteArrayOf(1, 2, 3, 4)
+        var job = CleanupJobReducer.start(CleanupFixtures.job(), 2L)
+        job = CleanupJobReducer.startPage(job, 0, 3L)
+        store.prepareRun(job)
+        val artifact = CleanupFixtures.artifact(png).let { page ->
+            page.copy(
+                regions = page.regions.map { region ->
+                    region.copy(
+                        completionMode = CleanupCompletionMode.BEST_EFFORT_RESIDUAL,
+                        auditPixelCount = 1_000,
+                        initialResidualPixelCount = 0,
+                        residualRetryPixelCount = 0,
+                        residualPixelCount = 9,
+                        cleanupAttemptCount = 3,
+                    )
+                },
+            )
+        }
+
+        assertFailsWith<IllegalArgumentException> {
+            store.commitPage(job, artifact, png, "webp")
+        }
+    }
+
+    @Test
+    fun `neural outcome rejects an inconsistent attempt count`() {
+        val png = byteArrayOf(1, 2, 3, 4)
+        var job = CleanupJobReducer.start(CleanupFixtures.job(), 2L)
+        job = CleanupJobReducer.startPage(job, 0, 3L)
+        store.prepareRun(job)
+        val artifact = CleanupFixtures.artifact(png).let { page ->
+            page.copy(
+                regions = page.regions.map { region ->
+                    region.copy(
+                        maskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION_NEURAL_RETRY,
+                        cleanupAttemptCount = 3,
+                        neuralFallbackOutcome = NeuralFallbackOutcome.SUCCEEDED,
+                        neuralFallbackMillis = 12,
+                    )
+                },
+            )
+        }
+
+        assertFailsWith<IllegalArgumentException> {
+            store.commitPage(job, artifact, png, "webp")
+        }
+    }
+
+    @Test
+    fun `successful neural retry records its independent acceptance result`() {
+        val png = byteArrayOf(1, 2, 3, 4)
+        var job = CleanupJobReducer.start(CleanupFixtures.job(), 2L)
+        job = CleanupJobReducer.startPage(job, 0, 3L)
+        store.prepareRun(job)
+        val artifact = CleanupFixtures.artifact(png).let { page ->
+            page.copy(
+                regions = page.regions.map { region ->
+                    region.copy(
+                        maskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION_NEURAL_RETRY,
+                        auditPixelCount = 1_000,
+                        initialResidualPixelCount = 24,
+                        residualRetryPixelCount = 18,
+                        residualPixelCount = 0,
+                        cleanupAttemptCount = 4,
+                        neuralFallbackOutcome = NeuralFallbackOutcome.SUCCEEDED,
+                        neuralFallbackMillis = 12,
+                    )
+                },
+            )
+        }
+
+        val committed = store.commitPage(job, artifact, png, "webp")
+
+        assertTrue(committed.first.endsWith("cleanup.json"))
+        assertTrue(committed.second.endsWith("cleaned.webp"))
     }
 }

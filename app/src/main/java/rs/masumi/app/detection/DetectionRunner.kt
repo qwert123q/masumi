@@ -26,9 +26,9 @@ import rs.masumi.core.model.PageRecord
 import rs.masumi.core.model.ProjectManifest
 import rs.masumi.core.modelpackage.ModelPackageException
 import rs.masumi.core.modelpackage.PinnedComicDetector
-import java.nio.file.Files
+import rs.masumi.app.pipeline.SourceFilePreflight
+import rs.masumi.app.pipeline.SourceFilePreflightException
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 
 data class DetectionProgress(
@@ -104,7 +104,7 @@ class DetectionRunner(
         }
 
         try {
-            validateSources(project.directory, manifest)
+            val sourcePaths = preflightSources(project.directory, manifest)
 
             job = persist(DetectionJobReducer.startModelDownload(job, clock.millis()))
             val modelFile = modelProvider.acquire(job.jobId) { downloaded, total ->
@@ -140,7 +140,7 @@ class DetectionRunner(
                     return DetectionRunResult(job = job)
                 }
 
-                val sourcePath = resolveSource(project.directory, sourcePage)
+                val sourcePath = sourcePaths.getValue(sourcePage.pageId)
                 var completed = false
                 while (!completed) {
                     job = persist(
@@ -372,40 +372,17 @@ class DetectionRunner(
         )
     }
 
-    private fun validateSources(projectDirectory: Path, manifest: ProjectManifest) {
-        manifest.pages.distinctBy(PageRecord::pageId).forEach { page ->
+    private fun preflightSources(projectDirectory: Path, manifest: ProjectManifest): Map<String, Path> =
+        manifest.pages.distinctBy(PageRecord::pageId).associate { page ->
             require(SHA256.matches(page.pageId)) { "page ID is not a SHA-256 digest" }
             require(page.pageId == page.sourceSha256) { "page and source digests differ" }
-            val source = resolveSource(projectDirectory, page)
-            if (!Files.isRegularFile(source)) throw FatalDetectionException("SOURCE_MISSING")
-            if (Files.size(source) != page.byteLength) throw FatalDetectionException("SOURCE_LENGTH_MISMATCH")
-            if (sha256(source) != page.sourceSha256) throw FatalDetectionException("SOURCE_HASH_MISMATCH")
-        }
-    }
-
-    private fun resolveSource(projectDirectory: Path, page: PageRecord): Path {
-        require(page.storedPath.isNotBlank()) { "source path must not be blank" }
-        require(!page.storedPath.startsWith('/')) { "source path must be relative" }
-        require(page.storedPath.split('/').none { it.isBlank() || it == ".." }) {
-            "source path is unsafe"
-        }
-        val source = projectDirectory.resolve(page.storedPath).normalize()
-        require(source.startsWith(projectDirectory)) { "source path escaped project" }
-        return source
-    }
-
-    private fun sha256(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).buffered().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read > 0) digest.update(buffer, 0, read)
+            val source = try {
+                SourceFilePreflight.resolve(projectDirectory, page)
+            } catch (failure: SourceFilePreflightException) {
+                throw FatalDetectionException(failure.code)
             }
+            page.pageId to source
         }
-        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-    }
 
     private fun DetectionJobRecord.toRunArtifact(createdAt: Long): DetectionRunArtifact =
         DetectionRunArtifact(
@@ -499,7 +476,7 @@ class DetectionRunner(
 
     private fun safeFatalMessage(code: String): String = when (code) {
         "SOURCE_MISSING" -> "An imported source page was missing"
-        "SOURCE_LENGTH_MISMATCH", "SOURCE_HASH_MISMATCH" -> "An imported source page failed integrity checks"
+        "SOURCE_LENGTH_MISMATCH" -> "An imported source page failed integrity checks"
         "COMMITTED_ARTIFACT_INVALID" -> "A committed detection checkpoint was invalid"
         "JOB_RECOVERY_INVALID" -> "The detection checkpoint could not be recovered"
         "PAGE_ARTIFACT_WRITE_FAILED" -> "A page detection checkpoint could not be written"

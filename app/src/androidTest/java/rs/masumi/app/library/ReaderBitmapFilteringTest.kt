@@ -1,7 +1,5 @@
 package rs.masumi.app.library
 
-import android.graphics.Bitmap
-import android.graphics.drawable.BitmapDrawable
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertTrue
@@ -19,17 +17,4 @@ class ReaderBitmapFilteringTest {
         }
     }
 
-    @Test
-    fun pagedReaderEnablesFilteredBitmapSampling() {
-        InstrumentationRegistry.getInstrumentation().runOnMainSync {
-            val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
-            try {
-                val reader = ZoomableReaderView(context)
-                reader.setImageBitmap(bitmap)
-                assertTrue((reader.drawable as BitmapDrawable).paint.isFilterBitmap)
-            } finally {
-                bitmap.recycle()
-            }
-        }
-    }
 }

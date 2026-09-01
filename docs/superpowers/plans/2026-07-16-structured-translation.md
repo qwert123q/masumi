@@ -22,14 +22,14 @@
 
 - [x] Add an OpenAI-compatible provider interface and OkHttp implementation.
 - [x] Keep endpoint and credentials out of artifacts and logs.
-- [x] Add cancellation, bounded timeouts, transient-only retries, sanitized errors, and usage capture.
+- [x] Add cancellation, bounded timeouts, single-attempt fail-fast transport, sanitized errors, and usage capture. (The earlier transient-retry policy was removed by the later simplicity requirement.)
 - [x] Add deterministic fake-provider tests for success, malformed JSON, partial output, timeout, and cancellation.
 
 ## Task 4: Add resumable artifacts and orchestration
 
 - [x] Define page, run, job, glossary, checkpoint, and terminal-report contracts.
 - [x] Include OCR, policy, prompt, sanitized model, generation, and glossary dependencies in cache identity.
-- [x] Checkpoint successful windows and pages atomically; recover only the active uncommitted window.
+- [x] Checkpoint successful windows and pages atomically; retain the trusted prefix and rewind the complete glossary-dependent suffix after an untrusted window.
 - [x] Finish with protected results rather than requiring manual approval.
 
 ## Task 5: Add Android execution and UI

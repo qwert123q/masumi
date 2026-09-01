@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.DocumentsContract
-import android.widget.ImageView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -70,8 +69,6 @@ class MangaReaderActivityTest {
             var loaded = false
             while (!loaded && SystemClock.uptimeMillis() < deadline) {
                 scenario.onActivity { activity ->
-                    // Continuous mode draws on ContinuousReaderView; paged mode
-                    // sets a drawable. Either way the indicator reflects load.
                     loaded = activity.findViewById<TextView>(R.id.readerStatus)
                         .text.toString().contains("1 / 1")
                 }
@@ -87,8 +84,10 @@ class MangaReaderActivityTest {
                 )
                 assertTrue(
                     activity.findViewById<ContinuousReaderView>(R.id.readerContinuous).visibility ==
-                        android.view.View.VISIBLE ||
-                        activity.findViewById<ImageView>(R.id.readerImage).drawable != null,
+                        android.view.View.VISIBLE,
+                )
+                assertTrue(
+                    activity.findViewById<Button>(R.id.readerRestartButton).text.toString() == "从头阅读",
                 )
             }
         }

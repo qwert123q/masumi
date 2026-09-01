@@ -124,7 +124,7 @@ class MangaLibraryStoreTest {
     }
 
     @Test
-    fun archivesByteIdenticalSourcesWithTheirOriginalNames() {
+    fun reusesByteIdenticalLegacyArchiveWithoutCreatingAStableNameCopy() {
         val bytes = "raw-jpeg-content".toByteArray()
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(bytes)
@@ -146,13 +146,14 @@ class MangaLibraryStoreTest {
                 storedPath = "sources/$digest.jpg",
             )
             val store = MangaLibraryStore(context.contentResolver, treeUri)
-            store.ensureProject(
+            val project = store.ensureProject(
                 "source-project",
                 "铃井",
                 123L,
                 treeUri,
                 sourceFingerprint = mangaSourceFingerprint(listOf(page)),
             )
+            createOutput(requireNotNull(project.sourceDirectoryUri), "第 01 页.jpg", bytes.decodeToString())
 
             store.archiveSourcePages("source-project", privateProject, listOf(page))
             // Repeating the archive must reuse the existing document.
@@ -168,10 +169,275 @@ class MangaLibraryStoreTest {
         }
     }
 
-    private fun createOutput(parent: android.net.Uri, name: String, content: String) {
+    @Test
+    fun legacyCollisionIsReusedOnlyByThePageWhoseContentMatches() {
+        val firstBytes = "first-content".toByteArray()
+        val secondBytes = "other-content".toByteArray()
+        assertEquals(firstBytes.size, secondBytes.size)
+        val firstDigest = sha256(firstBytes)
+        val secondDigest = sha256(secondBytes)
+        val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
+        Files.createDirectories(cacheDirectory)
+        val privateProject = Files.createTempDirectory(cacheDirectory, "library-source-collision-")
+        try {
+            val firstSource = privateProject.resolve("sources/$firstDigest.jpg")
+            val secondSource = privateProject.resolve("sources/$secondDigest.jpg")
+            Files.createDirectories(firstSource.parent)
+            Files.write(firstSource, firstBytes)
+            Files.write(secondSource, secondBytes)
+            val firstPage = PageRecord(
+                order = 0,
+                pageId = firstDigest,
+                sourceSha256 = firstDigest,
+                originalName = "chapter/page.jpg",
+                mediaType = "image/jpeg",
+                byteLength = firstBytes.size.toLong(),
+                storedPath = "sources/$firstDigest.jpg",
+            )
+            val secondPage = PageRecord(
+                order = 1,
+                pageId = secondDigest,
+                sourceSha256 = secondDigest,
+                originalName = "chapter\\page.jpg",
+                mediaType = "image/jpeg",
+                byteLength = secondBytes.size.toLong(),
+                storedPath = "sources/$secondDigest.jpg",
+            )
+            val pages = listOf(firstPage, secondPage)
+            val store = MangaLibraryStore(context.contentResolver, treeUri)
+            val project = store.ensureProject(
+                "collision-project",
+                "碰撞",
+                123L,
+                treeUri,
+                sourceFingerprint = mangaSourceFingerprint(pages),
+            )
+            createOutput(
+                requireNotNull(project.sourceDirectoryUri),
+                "chapter_page.jpg",
+                secondBytes.decodeToString(),
+            )
+
+            store.archiveSourcePages("collision-project", privateProject, pages)
+
+            val archived = store.sourcePages("collision-project")
+            assertEquals(
+                listOf("000001-$firstDigest-chapter_page.jpg", "chapter_page.jpg"),
+                archived.map { it.name },
+            )
+            val archivedContent = archived.associate { page ->
+                page.name to context.contentResolver.openInputStream(page.uri)!!.use { it.readBytes() }
+            }
+            assertTrue(
+                requireNotNull(archivedContent["000001-$firstDigest-chapter_page.jpg"])
+                    .contentEquals(firstBytes),
+            )
+            assertTrue(requireNotNull(archivedContent["chapter_page.jpg"]).contentEquals(secondBytes))
+        } finally {
+            privateProject.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun legacyNameThatOccupiesAnotherPagesStableNameIsPreserved() {
+        val firstBytes = "first-content".toByteArray()
+        val secondBytes = "other-content".toByteArray()
+        assertEquals(firstBytes.size, secondBytes.size)
+        val firstDigest = sha256(firstBytes)
+        val secondDigest = sha256(secondBytes)
+        val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
+        Files.createDirectories(cacheDirectory)
+        val privateProject = Files.createTempDirectory(cacheDirectory, "library-stable-legacy-collision-")
+        try {
+            val firstSource = privateProject.resolve("sources/$firstDigest.jpg")
+            val secondSource = privateProject.resolve("sources/$secondDigest.jpg")
+            Files.createDirectories(firstSource.parent)
+            Files.write(firstSource, firstBytes)
+            Files.write(secondSource, secondBytes)
+            val firstPage = PageRecord(
+                order = 0,
+                pageId = firstDigest,
+                sourceSha256 = firstDigest,
+                originalName = "page.jpg",
+                mediaType = "image/jpeg",
+                byteLength = firstBytes.size.toLong(),
+                storedPath = "sources/$firstDigest.jpg",
+            )
+            val occupiedStableName = mangaArchiveSourceFileName(firstPage)
+            val secondPage = PageRecord(
+                order = 1,
+                pageId = secondDigest,
+                sourceSha256 = secondDigest,
+                originalName = occupiedStableName,
+                mediaType = "image/jpeg",
+                byteLength = secondBytes.size.toLong(),
+                storedPath = "sources/$secondDigest.jpg",
+            )
+            val pages = listOf(firstPage, secondPage)
+            val store = MangaLibraryStore(context.contentResolver, treeUri)
+            val project = store.ensureProject(
+                "stable-legacy-collision-project",
+                "稳定名碰撞",
+                123L,
+                treeUri,
+                sourceFingerprint = mangaSourceFingerprint(pages),
+            )
+            createOutput(
+                requireNotNull(project.sourceDirectoryUri),
+                occupiedStableName,
+                secondBytes.decodeToString(),
+            )
+
+            store.archiveSourcePages("stable-legacy-collision-project", privateProject, pages)
+            store.archiveSourcePages("stable-legacy-collision-project", privateProject, pages)
+
+            val firstAlternateName = mangaArchiveAlternativeSourceFileName(firstPage, 2)
+            val secondStableName = mangaArchiveSourceFileName(secondPage)
+            val archived = store.sourcePages("stable-legacy-collision-project")
+            assertEquals(3, archived.size)
+            assertEquals(
+                setOf(occupiedStableName, firstAlternateName, secondStableName),
+                archived.mapTo(mutableSetOf()) { it.name },
+            )
+            assertTrue(archived.groupingBy { it.name }.eachCount().values.all { it == 1 })
+            val archivedContent = archived.associate { page ->
+                page.name to context.contentResolver.openInputStream(page.uri)!!.use { it.readBytes() }
+            }
+            assertTrue(requireNotNull(archivedContent[occupiedStableName]).contentEquals(secondBytes))
+            assertTrue(requireNotNull(archivedContent[firstAlternateName]).contentEquals(firstBytes))
+            assertTrue(requireNotNull(archivedContent[secondStableName]).contentEquals(secondBytes))
+        } finally {
+            privateProject.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun differentLengthStableOccupantIsPreservedAndUsesDeterministicAlternate() {
+        val sourceBytes = "longer-source-content".toByteArray()
+        val occupiedBytes = "short".toByteArray()
+        val digest = sha256(sourceBytes)
+        val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
+        Files.createDirectories(cacheDirectory)
+        val privateProject = Files.createTempDirectory(cacheDirectory, "library-stable-length-collision-")
+        try {
+            val source = privateProject.resolve("sources/$digest.jpg")
+            Files.createDirectories(source.parent)
+            Files.write(source, sourceBytes)
+            val page = PageRecord(
+                order = 0,
+                pageId = digest,
+                sourceSha256 = digest,
+                originalName = "page.jpg",
+                mediaType = "image/jpeg",
+                byteLength = sourceBytes.size.toLong(),
+                storedPath = "sources/$digest.jpg",
+            )
+            val stableName = mangaArchiveSourceFileName(page)
+            val alternateName = mangaArchiveAlternativeSourceFileName(page, 2)
+            val store = MangaLibraryStore(context.contentResolver, treeUri)
+            val project = store.ensureProject(
+                "stable-length-collision-project",
+                "长度碰撞",
+                123L,
+                treeUri,
+                sourceFingerprint = mangaSourceFingerprint(listOf(page)),
+            )
+            createOutput(
+                requireNotNull(project.sourceDirectoryUri),
+                stableName,
+                occupiedBytes.decodeToString(),
+            )
+
+            store.archiveSourcePages("stable-length-collision-project", privateProject, listOf(page))
+            store.archiveSourcePages("stable-length-collision-project", privateProject, listOf(page))
+
+            val archived = store.sourcePages("stable-length-collision-project")
+            assertEquals(2, archived.size)
+            assertEquals(setOf(stableName, alternateName), archived.mapTo(mutableSetOf()) { it.name })
+            assertTrue(archived.groupingBy { it.name }.eachCount().values.all { it == 1 })
+            val archivedContent = archived.associate { archivedPage ->
+                archivedPage.name to context.contentResolver.openInputStream(archivedPage.uri)!!.use {
+                    it.readBytes()
+                }
+            }
+            assertTrue(requireNotNull(archivedContent[stableName]).contentEquals(occupiedBytes))
+            assertTrue(requireNotNull(archivedContent[alternateName]).contentEquals(sourceBytes))
+        } finally {
+            privateProject.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun occupiedPrimaryAndFirstAlternateArePreservedBeforeReusingSecondAlternate() {
+        val sourceBytes = "expected-content".toByteArray()
+        val primaryBytes = "occupied-primary".toByteArray()
+        val firstAlternateBytes = "occupied-alternate".toByteArray()
+        val digest = sha256(sourceBytes)
+        val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
+        Files.createDirectories(cacheDirectory)
+        val privateProject = Files.createTempDirectory(cacheDirectory, "library-stable-multi-collision-")
+        try {
+            val source = privateProject.resolve("sources/$digest.jpg")
+            Files.createDirectories(source.parent)
+            Files.write(source, sourceBytes)
+            val page = PageRecord(
+                order = 0,
+                pageId = digest,
+                sourceSha256 = digest,
+                originalName = "page.jpg",
+                mediaType = "image/jpeg",
+                byteLength = sourceBytes.size.toLong(),
+                storedPath = "sources/$digest.jpg",
+            )
+            val stableName = mangaArchiveSourceFileName(page)
+            val firstAlternateName = mangaArchiveAlternativeSourceFileName(page, 2)
+            val secondAlternateName = mangaArchiveAlternativeSourceFileName(page, 3)
+            val store = MangaLibraryStore(context.contentResolver, treeUri)
+            val project = store.ensureProject(
+                "stable-multi-collision-project",
+                "连续碰撞",
+                123L,
+                treeUri,
+                sourceFingerprint = mangaSourceFingerprint(listOf(page)),
+            )
+            val sourceDirectory = requireNotNull(project.sourceDirectoryUri)
+            createOutput(sourceDirectory, stableName, primaryBytes.decodeToString())
+            createOutput(sourceDirectory, firstAlternateName, firstAlternateBytes.decodeToString())
+
+            store.archiveSourcePages("stable-multi-collision-project", privateProject, listOf(page))
+            store.archiveSourcePages("stable-multi-collision-project", privateProject, listOf(page))
+
+            val archived = store.sourcePages("stable-multi-collision-project")
+            assertEquals(3, archived.size)
+            assertEquals(
+                setOf(stableName, firstAlternateName, secondAlternateName),
+                archived.mapTo(mutableSetOf()) { it.name },
+            )
+            assertTrue(archived.groupingBy { it.name }.eachCount().values.all { it == 1 })
+            val archivedContent = archived.associate { archivedPage ->
+                archivedPage.name to context.contentResolver.openInputStream(archivedPage.uri)!!.use {
+                    it.readBytes()
+                }
+            }
+            assertTrue(requireNotNull(archivedContent[stableName]).contentEquals(primaryBytes))
+            assertTrue(
+                requireNotNull(archivedContent[firstAlternateName]).contentEquals(firstAlternateBytes),
+            )
+            assertTrue(requireNotNull(archivedContent[secondAlternateName]).contentEquals(sourceBytes))
+        } finally {
+            privateProject.toFile().deleteRecursively()
+        }
+    }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
+        .joinToString("") { "%02x".format(it) }
+
+    private fun createOutput(parent: android.net.Uri, name: String, content: String): android.net.Uri {
         val uri = requireNotNull(
             DocumentsContract.createDocument(context.contentResolver, parent, "image/png", name),
         )
         context.contentResolver.openOutputStream(uri, "w")!!.use { it.write(content.toByteArray()) }
+        return uri
     }
 }

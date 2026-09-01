@@ -27,6 +27,7 @@ data class TranslationDependencies(
     val policy: TranslationPolicy,
     val prompt: TranslationPromptRef,
     val batching: TranslationBatchingConfig,
+    val outputValidation: TranslationOutputValidationConfig = TranslationOutputValidationConfig(),
     val provider: TranslationProviderDependency,
     val initialGlossarySha256: String,
 )

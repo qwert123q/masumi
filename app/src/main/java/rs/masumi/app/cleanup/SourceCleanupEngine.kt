@@ -13,10 +13,12 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.cleanup.CleanupMaskSource
+import rs.masumi.core.cleanup.CleanupCompletionMode
 import rs.masumi.core.cleanup.CleanupPreserveReason
 import rs.masumi.core.cleanup.CleanupRegionArtifact
 import rs.masumi.core.cleanup.CleanupRegionState
 import rs.masumi.core.cleanup.CleanupStrategy
+import rs.masumi.core.cleanup.NeuralFallbackOutcome
 import rs.masumi.core.detection.PixelBox
 import rs.masumi.app.pipeline.PipelineThreading
 
@@ -33,9 +35,32 @@ data class CleanedPage(
     val regions: List<CleanupRegionArtifact>,
 )
 
+internal object CleanupExecutionPolicy {
+    fun workerCount(
+        availableWorkerCount: Int,
+        groupCount: Int,
+        neuralPipelineConfigured: Boolean,
+        potentialNeuralCandidateExists: Boolean,
+    ): Int {
+        require(availableWorkerCount > 0)
+        require(groupCount >= 0)
+        val deterministicWorkerCount = min(availableWorkerCount, groupCount)
+        return if (
+            deterministicWorkerCount > 1 &&
+            neuralPipelineConfigured &&
+            potentialNeuralCandidateExists
+        ) {
+            1
+        } else {
+            deterministicWorkerCount
+        }
+    }
+}
+
 class SourceCleanupEngine(
-    private val neuralInpainter: NeuralInpainter? = null,
     private val textMaskProvider: TextMaskProvider? = null,
+    private val neuralFallbackProvider: (() -> NeuralInpainter?)? = null,
+    private val neuralRepairBudget: NeuralRepairBudget? = null,
 ) {
     fun clean(
         source: Bitmap,
@@ -96,7 +121,26 @@ class SourceCleanupEngine(
     ): List<CleanupRegionArtifact> {
         val artifacts = arrayOfNulls<CleanupRegionArtifact>(targets.size)
         val groups = groupByRoiOverlap(targets, policy, width, height)
-        val parallelism = min(cleanupParallelism(), groups.size)
+        // Neural attempts are run-budgeted. Preserve target order whenever the
+        // fallback could actually be reached so the same first N eligible
+        // regions receive that budget on every run; otherwise worker arrival
+        // order would make the output nondeterministic. When every clipped core
+        // fails a necessary geometry gate (or segmentation is unavailable),
+        // neural work is impossible and disjoint deterministic groups remain
+        // safe to run in parallel.
+        val potentialNeuralCandidateExists = textProbability != null && targets.any { target ->
+            val core = target.box.toIntBox(width, height) ?: return@any false
+            NeuralCleanupFallback.isPotentiallyEligible(
+                corePixelCount = core.width * core.height,
+                longestCoreSide = max(core.width, core.height),
+            )
+        }
+        val parallelism = CleanupExecutionPolicy.workerCount(
+            availableWorkerCount = cleanupParallelism(),
+            groupCount = groups.size,
+            neuralPipelineConfigured = neuralFallbackProvider != null && neuralRepairBudget != null,
+            potentialNeuralCandidateExists = potentialNeuralCandidateExists,
+        )
         if (parallelism <= 1) {
             targets.forEachIndexed { index, target ->
                 if (cancellation()) throw CleanupCancellationSignal()
@@ -215,6 +259,7 @@ class SourceCleanupEngine(
         val background: Int
         val dilated: BooleanArray
         val useBoundaryInpaint: Boolean
+        val complexBackground: Boolean
         var maskSource: CleanupMaskSource
         var relaxedGlyphSelection = false
         when (target.strategy) {
@@ -246,6 +291,7 @@ class SourceCleanupEngine(
                 val flatCoverage = flatMask.count { it }.toDouble() / corePixelCount
                 val dilatedFlat = dilate(flatMask, roi.width, roi.height, policy.dilationRadiusPixels)
                 val dilatedFlatCoreCoverage = coreCoverage(dilatedFlat, core, roi)
+                val flatBackgroundTextured = flatBackgroundIsTextured(pixels, width, core, roi, flatMask)
                 val segmented = textProbability?.let { probability ->
                     SegmentationMaskRefiner.eraseMask(
                         probability = probability,
@@ -292,25 +338,28 @@ class SourceCleanupEngine(
                     // box. Long narration boxes often touch their white
                     // border; the padded ROI perimeter then lies on artwork
                     // and incorrectly sent a uniform white box through AOT.
+                    val interiorBackgroundTextured = flatBackgroundIsTextured(
+                        pixels,
+                        width,
+                        core,
+                        roi,
+                        interiorFlatMask,
+                    )
                     useBoundaryInpaint =
                         interiorFlatCoverage >= SOLID_REGION_COVERAGE ||
-                            flatBackgroundIsTextured(
-                                pixels,
-                                width,
-                                core,
-                                roi,
-                                interiorFlatMask,
-                            ) ||
+                            interiorBackgroundTextured ||
                             interiorDilatedCoreCoverage > MAXIMUM_FLAT_COLOR_MASK_COVERAGE
+                    complexBackground = interiorBackgroundTextured
                     maskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION
                 } else if (
                     flatCoverage < SOLID_REGION_COVERAGE &&
-                    !flatBackgroundIsTextured(pixels, width, core, roi, flatMask) &&
+                    !flatBackgroundTextured &&
                     dilatedFlatCoreCoverage <= MAXIMUM_FLAT_COLOR_MASK_COVERAGE
                 ) {
                     background = perimeter
                     dilated = dilatedFlat
                     useBoundaryInpaint = false
+                    complexBackground = false
                     maskSource = CleanupMaskSource.FLAT_COLOR
                 } else {
                     // Colored, gradient, or halftone interiors make the flat
@@ -354,6 +403,7 @@ class SourceCleanupEngine(
                         // coverage cap stays in force.
                         dilated = dilatedFlat
                         useBoundaryInpaint = true
+                        complexBackground = flatBackgroundTextured
                         maskSource = CleanupMaskSource.FLAT_COLOR
                     } else {
                         relaxedGlyphSelection = ink.relaxedSelection
@@ -371,6 +421,7 @@ class SourceCleanupEngine(
                             freeTextDilationRadius(core, policy),
                         )
                         useBoundaryInpaint = true
+                        complexBackground = flatBackgroundTextured
                         maskSource = CleanupMaskSource.HEURISTIC_GLYPH
                     }
                 }
@@ -417,6 +468,7 @@ class SourceCleanupEngine(
                     maskSource = CleanupMaskSource.HEURISTIC_GLYPH
                 }
                 useBoundaryInpaint = true
+                complexBackground = flatBackgroundIsTextured(pixels, width, core, roi, dilated)
             }
         }
         val maskCount = dilated.count { it }
@@ -457,22 +509,22 @@ class SourceCleanupEngine(
                 pixels[y * width + x] = beforeRoi[local]
             }
         }
+        fun restoreRoi(snapshot: IntArray) {
+            require(snapshot.size == beforeRoi.size)
+            for (local in snapshot.indices) {
+                val x = roi.left + local % roi.width
+                val y = roi.top + local / roi.width
+                pixels[y * width + x] = snapshot[local]
+            }
+        }
+        fun snapshotRoi(): IntArray = IntArray(roiPixelCount) { local ->
+            val x = roi.left + local % roi.width
+            val y = roi.top + local / roi.width
+            pixels[y * width + x]
+        }
         fun applyMask(mask: BooleanArray) {
             if (useBoundaryInpaint) {
-                val inpainter = neuralInpainter
-                val neuralApplied = inpainter != null && runCatching {
-                    inpainter.inpaint(
-                        pixels = pixels,
-                        pageWidth = width,
-                        pageHeight = height,
-                        roiLeft = roi.left,
-                        roiTop = roi.top,
-                        roiRight = roi.right,
-                        roiBottom = roi.bottom,
-                        roiMask = mask,
-                    )
-                }.getOrDefault(false)
-                if (!neuralApplied) inpaintBidirectional(pixels, width, roi, mask, cancellation)
+                inpaintBidirectional(pixels, width, roi, mask, cancellation)
             } else {
                 fillFlat(pixels, width, roi, mask, background)
             }
@@ -496,11 +548,41 @@ class SourceCleanupEngine(
             }
             return retryCoverageForLimit <= maximumCoverage
         }
+        fun applyNeuralResidual(mask: BooleanArray, budgetControl: NeuralRunControl): Boolean {
+            if (cancellation()) throw CleanupCancellationSignal()
+            val window = tightMaskWindow(mask, roi) ?: return false
+            val inpainter = neuralFallbackProvider?.invoke() ?: return false
+            if (cancellation()) throw CleanupCancellationSignal()
+            val control = object : NeuralRunControl {
+                override fun shouldStop(): Boolean = cancellation() || budgetControl.shouldStop()
+                override fun remainingMillis(): Long = budgetControl.remainingMillis()
+            }
+            val applied = runCatching {
+                inpainter.inpaint(
+                    pixels = pixels,
+                    pageWidth = width,
+                    pageHeight = height,
+                    roiLeft = window.box.left,
+                    roiTop = window.box.top,
+                    roiRight = window.box.right,
+                    roiBottom = window.box.bottom,
+                    roiMask = window.mask,
+                    control = control,
+                )
+            }.getOrDefault(false)
+            if (cancellation()) throw CleanupCancellationSignal()
+            return applied
+        }
 
         var finalMask = dilated
         var finalMaskSource = maskSource
         var cleanupAttemptCount = 1
         var audit = ResidualTextAudit(auditPixelCount = 0, residualPixelCount = 0)
+        var initialResidualPixelCount = 0
+        var residualRetryPixelCount = 0
+        var completionMode = CleanupCompletionMode.STRICT
+        var neuralFallbackOutcome = NeuralFallbackOutcome.NOT_ATTEMPTED
+        var neuralFallbackMillis = 0L
         applyMask(finalMask)
 
         if (
@@ -523,8 +605,10 @@ class SourceCleanupEngine(
                 pageStride = width,
                 roi = roi.toMaskBounds(),
                 auditMask = auditMask,
+                background = background,
                 maximumUnchangedDistance = policy.residualColorDistanceThreshold,
             )
+            initialResidualPixelCount = audit.residualPixelCount
             if (!audit.isAcceptable(policy)) {
                 restoreRoi()
                 val retryMask = SegmentationMaskRefiner.retryMask(
@@ -543,6 +627,7 @@ class SourceCleanupEngine(
                         maskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION_RETRY,
                         audit = audit,
                         cleanupAttemptCount = cleanupAttemptCount,
+                        initialResidualPixelCount = initialResidualPixelCount,
                     )
                 }
                 finalMask = retryMask
@@ -555,18 +640,108 @@ class SourceCleanupEngine(
                     pageStride = width,
                     roi = roi.toMaskBounds(),
                     auditMask = auditMask,
+                    background = background,
                     maximumUnchangedDistance = policy.residualColorDistanceThreshold,
                 )
                 if (!audit.isAcceptable(policy)) {
-                    restoreRoi()
-                    return target.preserved(
-                        reason = CleanupPreserveReason.RESIDUAL_TEXT,
-                        roiPixelCount = roiPixelCount,
-                        maskPixelCount = finalMask.count { it },
-                        maskSource = finalMaskSource,
-                        audit = audit,
-                        cleanupAttemptCount = cleanupAttemptCount,
+                    val localResidualMask = SegmentationMaskRefiner.residualRetryMask(
+                        residualMask = audit.residualMask,
+                        width = roi.width,
+                        height = roi.height,
+                        dilationRadius = policy.residualRetryDilationPixels,
                     )
+                    residualRetryPixelCount = localResidualMask.count { it }
+                    if (residualRetryPixelCount == 0 || !retryMaskIsSafe(localResidualMask)) {
+                        restoreRoi()
+                        return target.preserved(
+                            reason = if (residualRetryPixelCount == 0) {
+                                CleanupPreserveReason.MASK_EMPTY
+                            } else {
+                                CleanupPreserveReason.MASK_UNSAFE
+                            },
+                            roiPixelCount = roiPixelCount,
+                            maskPixelCount = residualRetryPixelCount,
+                            maskSource = finalMaskSource,
+                            audit = audit,
+                            cleanupAttemptCount = cleanupAttemptCount,
+                            initialResidualPixelCount = initialResidualPixelCount,
+                            residualRetryPixelCount = residualRetryPixelCount,
+                        )
+                    }
+                    cleanupAttemptCount += 1
+                    applyMask(localResidualMask)
+                    finalMask = BooleanArray(finalMask.size) { finalMask[it] || localResidualMask[it] }
+                    audit = SegmentationMaskRefiner.auditResidual(
+                        beforeRoi = beforeRoi,
+                        currentPixels = pixels,
+                        pageStride = width,
+                        roi = roi.toMaskBounds(),
+                        auditMask = auditMask,
+                        background = background,
+                        maximumUnchangedDistance = policy.residualColorDistanceThreshold,
+                    )
+                    if (!audit.isAcceptable(policy)) {
+                        completionMode = CleanupCompletionMode.BEST_EFFORT_RESIDUAL
+                        val neuralEligible = neuralFallbackProvider != null &&
+                            NeuralCleanupFallback.isEligible(
+                                complexBackground = complexBackground,
+                                residualPixelCount = audit.residualPixelCount,
+                                corePixelCount = core.width * core.height,
+                                longestCoreSide = maxOf(core.width, core.height),
+                            )
+                        if (!neuralEligible) {
+                            neuralFallbackOutcome = NeuralFallbackOutcome.NOT_ELIGIBLE
+                        } else {
+                            val lease = neuralRepairBudget?.acquire(cancellation)
+                            if (lease == null) {
+                                neuralFallbackOutcome = NeuralFallbackOutcome.BUDGET_SKIPPED
+                            } else {
+                                val bestDeterministic = snapshotRoi()
+                                val bestAudit = audit
+                                cleanupAttemptCount += 1
+                                val neuralMask = SegmentationMaskRefiner.residualRetryMask(
+                                    residualMask = audit.residualMask,
+                                    width = roi.width,
+                                    height = roi.height,
+                                    dilationRadius = policy.residualRetryDilationPixels,
+                                )
+                                val neuralApplied = try {
+                                    applyNeuralResidual(neuralMask, lease)
+                                } finally {
+                                    lease.close()
+                                    neuralFallbackMillis = lease.elapsedMillis
+                                }
+                                val neuralAudit = if (neuralApplied) {
+                                    SegmentationMaskRefiner.auditResidual(
+                                        beforeRoi = beforeRoi,
+                                        currentPixels = pixels,
+                                        pageStride = width,
+                                        roi = roi.toMaskBounds(),
+                                        auditMask = auditMask,
+                                        background = background,
+                                        maximumUnchangedDistance = policy.residualColorDistanceThreshold,
+                                    )
+                                } else {
+                                    bestAudit
+                                }
+                                if (neuralApplied && neuralAudit.residualPixelCount < bestAudit.residualPixelCount) {
+                                    audit = neuralAudit
+                                    finalMask = BooleanArray(finalMask.size) { finalMask[it] || neuralMask[it] }
+                                    finalMaskSource = CleanupMaskSource.COMIC_TEXT_SEGMENTATION_NEURAL_RETRY
+                                    neuralFallbackOutcome = NeuralFallbackOutcome.SUCCEEDED
+                                    completionMode = if (audit.isAcceptable(policy)) {
+                                        CleanupCompletionMode.STRICT
+                                    } else {
+                                        CleanupCompletionMode.BEST_EFFORT_RESIDUAL
+                                    }
+                                } else {
+                                    restoreRoi(bestDeterministic)
+                                    audit = bestAudit
+                                    neuralFallbackOutcome = NeuralFallbackOutcome.FAILED
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -595,8 +770,13 @@ class SourceCleanupEngine(
             changedPixelCount = changed,
             maskSource = finalMaskSource,
             auditPixelCount = audit.auditPixelCount,
+            initialResidualPixelCount = initialResidualPixelCount,
+            residualRetryPixelCount = residualRetryPixelCount,
             residualPixelCount = audit.residualPixelCount,
             cleanupAttemptCount = cleanupAttemptCount,
+            completionMode = completionMode,
+            neuralFallbackOutcome = neuralFallbackOutcome,
+            neuralFallbackMillis = neuralFallbackMillis,
         )
     }
 
@@ -710,6 +890,34 @@ class SourceCleanupEngine(
             if (mask[(y - roi.top) * roi.width + (x - roi.left)]) count += 1
         }
         return count.toDouble() / (core.width * core.height)
+    }
+
+    private fun tightMaskWindow(mask: BooleanArray, roi: IntBox): MaskWindow? {
+        require(mask.size == roi.width * roi.height)
+        var left = roi.width
+        var top = roi.height
+        var right = 0
+        var bottom = 0
+        mask.indices.forEach { local ->
+            if (!mask[local]) return@forEach
+            val x = local % roi.width
+            val y = local / roi.width
+            left = min(left, x)
+            top = min(top, y)
+            right = max(right, x + 1)
+            bottom = max(bottom, y + 1)
+        }
+        if (right <= left || bottom <= top) return null
+        val windowWidth = right - left
+        val windowHeight = bottom - top
+        val windowMask = BooleanArray(windowWidth * windowHeight)
+        for (y in top until bottom) for (x in left until right) {
+            windowMask[(y - top) * windowWidth + x - left] = mask[y * roi.width + x]
+        }
+        return MaskWindow(
+            box = IntBox(roi.left + left, roi.top + top, roi.left + right, roi.top + bottom),
+            mask = windowMask,
+        )
     }
 
     /**
@@ -1282,6 +1490,8 @@ class SourceCleanupEngine(
         maskSource: CleanupMaskSource? = null,
         audit: ResidualTextAudit = ResidualTextAudit(0, 0),
         cleanupAttemptCount: Int = 0,
+        initialResidualPixelCount: Int = 0,
+        residualRetryPixelCount: Int = 0,
     ) = CleanupRegionArtifact(
         translationRegionId = translationRegionId,
         ocrRegionId = ocrRegionId,
@@ -1293,6 +1503,8 @@ class SourceCleanupEngine(
         maskPixelCount = maskPixelCount,
         maskSource = maskSource,
         auditPixelCount = audit.auditPixelCount,
+        initialResidualPixelCount = initialResidualPixelCount,
+        residualRetryPixelCount = residualRetryPixelCount,
         residualPixelCount = audit.residualPixelCount,
         cleanupAttemptCount = cleanupAttemptCount,
     )
@@ -1312,6 +1524,8 @@ class SourceCleanupEngine(
 
         fun toMaskBounds() = MaskBounds(left, top, right, bottom)
     }
+
+    private data class MaskWindow(val box: IntBox, val mask: BooleanArray)
 
     private data class InkComponent(
         val members: IntArray,

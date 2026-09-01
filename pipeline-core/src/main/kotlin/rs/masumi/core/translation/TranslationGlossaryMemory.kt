@@ -3,6 +3,12 @@ package rs.masumi.core.translation
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.channels.FileChannel
+import java.nio.file.StandardOpenOption.CREATE
+import java.nio.file.StandardOpenOption.WRITE
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
@@ -22,6 +28,7 @@ class WorkspaceGlossaryStore(
     private val maximumEntries: Int = DEFAULT_MAXIMUM_ENTRIES,
 ) : TranslationGlossaryMemory {
     private val file = workspaceRoot.toAbsolutePath().normalize().resolve(FILE_NAME)
+    private val lockFile = file.resolveSibling("$FILE_NAME.lock")
     private val json = Json { ignoreUnknownKeys = true }
     private val serializer = ListSerializer(TranslationGlossaryEntry.serializer())
 
@@ -41,33 +48,43 @@ class WorkspaceGlossaryStore(
 
     override fun record(entries: List<TranslationGlossaryEntry>) {
         if (entries.isEmpty()) return
-        // Earlier chapters win: an established rendering must not flip when a
-        // later chapter discovers a different candidate for the same source.
-        val merged = linkedMapOf<String, String>()
-        load().forEach { merged[it.source] = it.translation }
-        entries.forEach { entry ->
-            if (entry.source.isNotBlank() && entry.translation.isNotBlank()) {
-                merged.putIfAbsent(entry.source, entry.translation)
-            }
-        }
-        val bounded = merged.entries.take(maximumEntries)
-            .map { TranslationGlossaryEntry(it.key, it.value) }
-            .sortedWith(compareBy(TranslationGlossaryEntry::source, TranslationGlossaryEntry::translation))
-        runCatching {
+        val jvmLock = JVM_LOCKS.computeIfAbsent(lockFile) { ReentrantLock() }
+        jvmLock.withLock {
             Files.createDirectories(file.parent)
-            val temporary = Files.createTempFile(file.parent, FILE_NAME, ".tmp")
-            Files.writeString(temporary, json.encodeToString(serializer, bounded))
-            Files.move(
-                temporary,
-                file,
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE,
-            )
+            FileChannel.open(lockFile, CREATE, WRITE).use { channel ->
+                channel.lock().use {
+                    // Earlier chapters win: an established rendering must not flip when a
+                    // later chapter discovers a different candidate for the same source.
+                    val merged = linkedMapOf<String, String>()
+                    load().forEach { merged[it.source] = it.translation }
+                    entries.forEach { entry ->
+                        if (entry.source.isNotBlank() && entry.translation.isNotBlank()) {
+                            merged.putIfAbsent(entry.source, entry.translation)
+                        }
+                    }
+                    val bounded = merged.entries.take(maximumEntries)
+                        .map { TranslationGlossaryEntry(it.key, it.value) }
+                        .sortedWith(compareBy(TranslationGlossaryEntry::source, TranslationGlossaryEntry::translation))
+                    val temporary = Files.createTempFile(file.parent, FILE_NAME, ".tmp")
+                    try {
+                        Files.writeString(temporary, json.encodeToString(serializer, bounded))
+                        Files.move(
+                            temporary,
+                            file,
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE,
+                        )
+                    } finally {
+                        Files.deleteIfExists(temporary)
+                    }
+                }
+            }
         }
     }
 
     private companion object {
         const val FILE_NAME = "series-glossary.json"
         const val DEFAULT_MAXIMUM_ENTRIES = 800
+        val JVM_LOCKS = ConcurrentHashMap<Path, ReentrantLock>()
     }
 }

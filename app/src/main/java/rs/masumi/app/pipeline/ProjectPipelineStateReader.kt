@@ -1,15 +1,8 @@
 package rs.masumi.app.pipeline
 
 import java.nio.file.Path
-import rs.masumi.app.detection.ProjectCatalog
-import rs.masumi.core.cleanup.CleanupPolicy
-import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.exporting.ExportArtifactStore
 import rs.masumi.core.exporting.ExportJobStatus
-import rs.masumi.core.translation.TranslationBatchingConfig
-import rs.masumi.core.translation.TranslationPolicy
-import rs.masumi.core.translation.TranslationPromptRef
-import rs.masumi.core.typesetting.TypesettingPolicy
 
 internal data class ProjectPipelineState(
     val projectId: String,
@@ -21,38 +14,27 @@ internal data class ProjectPipelineState(
 )
 
 internal class ProjectPipelineStateReader(workspaceRoot: Path) {
-    private val catalog = ProjectCatalog(workspaceRoot.toAbsolutePath().normalize())
+    private val artifacts = CurrentPipelineArtifactsReader(workspaceRoot)
 
     fun read(projectId: String): ProjectPipelineState? = runCatching {
-        val project = catalog.openProject(projectId) ?: return null
-        val detection = catalog.latestPublishedRun(projectId)
+        val current = artifacts.read(projectId) ?: return null
+        val project = current.project
+        val detection = current.detection
             ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.DETECTION)
-        val ocr = catalog.latestPublishedOcrRun(projectId)
-            ?.takeIf { it.artifact.detectionRunArtifactKey == detection.artifact.runArtifactKey }
+        val ocr = current.ocr
             ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.OCR)
-        val translation = catalog.latestPublishedTranslationRun(projectId)
-            ?.takeIf {
-                it.artifact.dependencies.ocrRunArtifactKey == ocr.artifact.runArtifactKey &&
-                    it.artifact.dependencies.policy == TranslationPolicy() &&
-                    it.artifact.dependencies.prompt == TranslationPromptRef() &&
-                    it.artifact.dependencies.batching == TranslationBatchingConfig()
-            }
+        val translation = current.translation
             ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.TRANSLATION)
-        val cleanup = catalog.latestPublishedCleanupRun(
-            projectId = projectId,
-            translationRunArtifactKey = translation.artifact.runArtifactKey,
-            policy = CleanupPolicy(),
-            maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
-        ) ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.CLEANUP)
-        val typesetting = catalog.latestPublishedTypesettingRun(
-            projectId = projectId,
-            cleanupRunArtifactKey = cleanup.artifact.runArtifactKey,
-            policy = TypesettingPolicy(),
-        ) ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.TYPESETTING)
-        val exported = ExportArtifactStore(project.directory).findLatestJob()?.takeIf { job ->
+        current.cleanup
+            ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.CLEANUP)
+        val typesetting = current.typesetting
+            ?: return ProjectPipelineState(projectId, project.manifest.pages.size, PipelineStage.TYPESETTING)
+        val exportStore = ExportArtifactStore(project.directory)
+        val exported = exportStore.findLatestJob()?.takeIf { job ->
             job.projectId == projectId &&
                 job.dependencies.typesettingRunArtifactKey == typesetting.artifact.runArtifactKey &&
-                job.status == ExportJobStatus.SUCCEEDED
+                job.status == ExportJobStatus.SUCCEEDED &&
+                exportStore.readReport(job.jobId) != null
         }
         if (exported != null) {
             ProjectPipelineState(

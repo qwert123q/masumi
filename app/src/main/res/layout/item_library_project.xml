@@ -8,6 +8,7 @@
     android:padding="14dp">
 
     <FrameLayout
+        android:id="@+id/libraryProjectCoverContainer"
         android:layout_width="92dp"
         android:layout_height="132dp"
         android:background="@drawable/masumi_cover_placeholder_background">
@@ -77,7 +78,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:minHeight="44dp"
+                android:minHeight="48dp"
                 android:text="@string/library_read" />
 
             <Button

@@ -12,7 +12,9 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.forUserPresentation
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.detection.DetectionJobStatus
 import java.util.concurrent.ExecutorService
@@ -101,6 +103,7 @@ class DetectionForegroundService : Service() {
                     }
                 }
             } catch (_: Throwable) {
+                PipelineQueueStore(this).fail(projectId, "STAGE_UNEXPECTED_FAILURE")
                 notificationManager.notify(NOTIFICATION_ID, unexpectedFailureNotification())
             } finally {
                 synchronized(stateLock) {
@@ -142,7 +145,7 @@ class DetectionForegroundService : Service() {
 
     private fun progressNotification(progress: DetectionProgress): Notification {
         val completed = progress.committedPageCount + progress.preservedPageCount
-        val text = when (progress.status) {
+        val text = when (progress.status.forUserPresentation()) {
             DetectionJobStatus.DOWNLOADING_MODEL -> getString(
                 R.string.detection_notification_downloading,
                 progress.downloadedBytes,
@@ -150,10 +153,8 @@ class DetectionForegroundService : Service() {
             )
 
             DetectionJobStatus.SUCCEEDED -> getString(R.string.detection_notification_succeeded)
-            DetectionJobStatus.SUCCEEDED_WITH_PRESERVED_PAGES -> getString(
-                R.string.detection_notification_succeeded_preserved,
-                progress.preservedPageCount,
-            )
+            DetectionJobStatus.SUCCEEDED_WITH_PRESERVED_PAGES ->
+                error("presentation status is normalized")
 
             DetectionJobStatus.CANCELLED -> getString(R.string.detection_notification_cancelled)
             DetectionJobStatus.FAILED -> getString(

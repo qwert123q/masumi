@@ -16,10 +16,14 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.forUserPresentation
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.cleanup.CleanupJobStatus
+import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
+import rs.masumi.core.modelpackage.PinnedAotInpainter
 
 class CleanupForegroundService : Service() {
     private lateinit var executor: ExecutorService
@@ -30,6 +34,9 @@ class CleanupForegroundService : Service() {
     @Volatile private var runner: CleanupRunner? = null
     private val textSegmenterLock = Any()
     private var textSegmenter: OnnxComicTextSegmenter? = null
+    private val inpainterLock = Any()
+    private var inpainter: OnnxAotInpainter? = null
+    private var inpainterFailed = false
 
     override fun onCreate() {
         super.onCreate()
@@ -92,6 +99,11 @@ class CleanupForegroundService : Service() {
             textSegmenter?.close()
             textSegmenter = null
         }
+        synchronized(inpainterLock) {
+            inpainter?.close()
+            inpainter = null
+            inpainterFailed = false
+        }
         taskWakeLock.release()
         super.onDestroy()
     }
@@ -109,6 +121,20 @@ class CleanupForegroundService : Service() {
         return OnnxComicTextSegmenter(modelFile).also { textSegmenter = it }
     }
 
+    /**
+     * AOT is intentionally lazy. Simple regions stay on deterministic cleanup;
+     * the model is loaded only for a bounded residual on a complex background.
+     */
+    private fun obtainInpainter(): NeuralInpainter? = synchronized(inpainterLock) {
+        inpainter?.let { return it }
+        if (inpainterFailed) return null
+        runCatching {
+            OnnxAotInpainter(assets.open(OnnxAotInpainter.ASSET_PATH).use { it.readBytes() })
+        }.onFailure { inpainterFailed = true }
+            .getOrNull()
+            ?.also { inpainter = it }
+    }
+
     private fun startCleanup(projectId: String): Boolean {
         if (!ACTIVE_PROJECT.compareAndSet(null, projectId)) return false
         cancellation.set(false)
@@ -117,17 +143,26 @@ class CleanupForegroundService : Service() {
             try {
                 val workspace = filesDir.toPath().resolve("workspace")
                 PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
+                    val policy = CleanupPolicy()
                     val active = CleanupRunner(
                         workspaceRoot = workspace,
                         engine = SourceCleanupEngine(
                             textMaskProvider = obtainTextSegmenter(workspace, projectId),
+                            neuralFallbackProvider = ::obtainInpainter,
+                            neuralRepairBudget = NeuralRepairBudget(
+                                policy.maximumNeuralFallbackAttempts,
+                                policy.maximumNeuralFallbackMillis,
+                            ),
                         ),
+                        policy = policy,
                         maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
+                        neuralModel = PinnedAotInpainter.descriptor.toModelRef(),
                     )
                     runner = active
                     active.run(projectId, cancellation::get, ::publishProgress)
                 }
             } catch (_: Throwable) {
+                PipelineQueueStore(this).fail(projectId, "STAGE_UNEXPECTED_FAILURE")
                 notificationManager.notify(
                     NOTIFICATION_ID,
                     baseNotification(getString(R.string.cleanup_notification_failed_unknown)).setOngoing(false).build(),
@@ -148,18 +183,16 @@ class CleanupForegroundService : Service() {
             CleanupStatusBroadcast.create(packageName, progress),
             "$packageName.permission.INTERNAL_CLEANUP_STATUS",
         )
-        val text = when (progress.status) {
+        val text = when (progress.status.forUserPresentation()) {
             CleanupJobStatus.QUEUED -> getString(R.string.cleanup_notification_starting)
             CleanupJobStatus.RUNNING -> getString(
                 R.string.cleanup_notification_progress,
                 progress.terminalPageCount,
                 progress.totalPageCount,
             )
-            CleanupJobStatus.SUCCEEDED -> getString(R.string.cleanup_notification_succeeded)
-            CleanupJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS -> getString(
-                R.string.cleanup_notification_succeeded_preserved,
-                progress.preservedRegionCount,
-            )
+            CleanupJobStatus.SUCCEEDED,
+            CleanupJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS,
+            -> getString(R.string.cleanup_notification_succeeded)
             CleanupJobStatus.CANCELLED -> getString(R.string.cleanup_notification_cancelled)
             CleanupJobStatus.FAILED -> getString(
                 R.string.cleanup_notification_failed,

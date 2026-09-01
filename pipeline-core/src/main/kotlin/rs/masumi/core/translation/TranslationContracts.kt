@@ -2,7 +2,7 @@ package rs.masumi.core.translation
 
 import kotlinx.serialization.Serializable
 
-const val TRANSLATION_SCHEMA_VERSION = 1
+const val TRANSLATION_SCHEMA_VERSION = 2
 
 @Serializable
 enum class TranslationSourceLanguage {
@@ -46,9 +46,16 @@ enum class TranslationPreserveReason {
     DUPLICATE_RESPONSE,
     INVALID_ROLE,
     BLANK_TRANSLATION,
+    INVALID_TARGET_SCRIPT,
+    SOURCE_TEXT_ECHO,
     PROVIDER_FAILURE,
     OVERSIZED_INPUT,
 }
+
+@Serializable
+data class TranslationOutputValidationConfig(
+    val revision: String = "target-script-source-echo-v1",
+)
 
 @Serializable
 data class TranslationPolicy(

@@ -144,14 +144,28 @@ class DetectionRunnerTest {
     }
 
     @Test
-    fun sourceIntegrityFailureIsFatalBeforeInference() {
+    fun sourceWithRecordedLengthRunsWhenContentsDoNotMatchManifestHash() {
         withWorkspace { workspace ->
             val project = createProject(workspace, listOf(Color.RED), orderToSource = listOf(0))
             val source = project.resolve("sources").toFile().listFiles()!!.single().toPath()
-            val corrupted = Files.readAllBytes(source).also { bytes ->
-                bytes[bytes.lastIndex] = (bytes.last() + 1).toByte()
+            val json = ProjectJson()
+            val manifestPath = project.resolve("manifest.json")
+            val manifest = Files.newBufferedReader(manifestPath).use { reader ->
+                json.decodeManifest(reader.readText())
             }
-            Files.write(source, corrupted)
+            val recordedSha = "0".repeat(64)
+            assertTrue(sha256(Files.readAllBytes(source)) != recordedSha)
+            Files.newBufferedWriter(manifestPath).use { writer ->
+                writer.write(
+                    json.encodeManifest(
+                        manifest.copy(
+                            pages = manifest.pages.map { page ->
+                                page.copy(pageId = recordedSha, sourceSha256 = recordedSha)
+                            },
+                        ),
+                    ),
+                )
+            }
             var detectionCount = 0
             val runner = runner(workspace) { page ->
                 detectionCount += 1
@@ -160,10 +174,9 @@ class DetectionRunnerTest {
 
             val result = runner.run(PROJECT_ID, { false }) { }
 
-            assertEquals(DetectionJobStatus.FAILED, result.job.status)
-            assertEquals("SOURCE_HASH_MISMATCH", result.job.error?.code)
-            assertEquals(0, detectionCount)
-            assertEquals(null, result.publishedDirectory)
+            assertEquals(DetectionJobStatus.SUCCEEDED, result.job.status)
+            assertEquals(1, detectionCount)
+            assertNotNull(result.publishedDirectory)
         }
     }
 

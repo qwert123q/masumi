@@ -39,6 +39,21 @@ class OcrCropPolicyTest {
         assertBox(PixelBox(0.0, 0.0, 15.0, 16.0), attempts[2].box)
     }
 
+    @Test
+    fun `high detail retry reuses the contextual source crop exactly once`() {
+        val candidate = OcrFixtures.candidate().copy(
+            box = PixelBox(20.0, 30.0, 60.0, 80.0),
+            associatedBubbleBox = PixelBox(15.0, 10.0, 65.0, 90.0),
+        )
+
+        val retry = OcrCropPolicy().highDetailRetry(candidate, 100, 120)
+
+        assertEquals(OcrCropStrategy.HIGH_DETAIL_CONTEXT, retry.strategy)
+        assertEquals(OcrVisualDetailProfile.HIGH_DETAIL, retry.visualDetailProfile)
+        assertEquals(4_000_000, retry.maximumSourcePixels)
+        assertBox(PixelBox(15.0, 18.0, 65.0, 90.0), retry.box)
+    }
+
     private fun assertBox(expected: PixelBox, actual: PixelBox) {
         assertEquals(expected.left, actual.left, 1e-9)
         assertEquals(expected.top, actual.top, 1e-9)

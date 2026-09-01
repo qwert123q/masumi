@@ -3,7 +3,6 @@ package rs.masumi.app.translation
 import android.content.Context
 import android.util.AtomicFile
 import java.nio.charset.StandardCharsets
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -240,10 +239,10 @@ class TranslationSettingsStore(
             profileId = normalized.id,
             providerName = normalized.name,
         )
-        val parsed = normalized.apiUrl.trimEnd('/').toHttpUrlOrNull()
-        require(parsed != null && parsed.scheme == "https" && parsed.query == null && parsed.fragment == null) {
-            "translation API URL must be HTTPS without a query or fragment"
-        }
+        OpenAiCompatibleEndpointResolver.completionUrl(
+            normalized.apiUrl,
+            allowInsecureLocalhost = false,
+        )
         return normalized
     }
 

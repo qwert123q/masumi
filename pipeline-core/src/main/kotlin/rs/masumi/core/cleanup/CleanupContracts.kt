@@ -3,7 +3,7 @@ package rs.masumi.core.cleanup
 import kotlinx.serialization.Serializable
 import rs.masumi.core.detection.PixelBox
 
-const val CLEANUP_SCHEMA_VERSION = 2
+const val CLEANUP_SCHEMA_VERSION = 4
 
 @Serializable
 data class CleanupMaskModelRef(
@@ -19,8 +19,21 @@ data class CleanupMaskModelRef(
 )
 
 @Serializable
+data class CleanupNeuralModelRef(
+    val modelId: String,
+    val repository: String,
+    val revision: String,
+    val fileName: String,
+    val sha256: String,
+    val byteLength: Long,
+    val license: String,
+    val opset: Int,
+    val runtimeRevision: String,
+)
+
+@Serializable
 data class CleanupPolicy(
-    val revision: String = "comic-text-segmentation-fast-512-v26",
+    val revision: String = "comic-text-segmentation-local-residual-budgeted-aot-v33",
     val boxPaddingFraction: Double = 0.08,
     val minimumPaddingPixels: Int = 2,
     val colorDistanceThreshold: Int = 20,
@@ -33,6 +46,8 @@ data class CleanupPolicy(
     val maximumResidualRatio: Double = 0.001,
     val maximumResidualPixelCount: Int = 8,
     val residualRetryDilationPixels: Int = 2,
+    val maximumNeuralFallbackAttempts: Int = 8,
+    val maximumNeuralFallbackMillis: Long = 120_000L,
 ) {
     init {
         require(boxPaddingFraction in 0.0..0.5)
@@ -48,6 +63,8 @@ data class CleanupPolicy(
         require(maximumResidualRatio in 0.0..1.0)
         require(maximumResidualPixelCount >= 0)
         require(residualRetryDilationPixels in 0..16)
+        require(maximumNeuralFallbackAttempts in 0..64)
+        require(maximumNeuralFallbackMillis in 0L..600_000L)
     }
 }
 
@@ -57,6 +74,7 @@ data class CleanupDependencies(
     val translationRunArtifactKey: String,
     val policy: CleanupPolicy = CleanupPolicy(),
     val maskModel: CleanupMaskModelRef? = null,
+    val neuralModel: CleanupNeuralModelRef? = null,
 )
 
 @Serializable
@@ -81,6 +99,22 @@ enum class CleanupMaskSource {
     HEURISTIC_GLYPH,
     COMIC_TEXT_SEGMENTATION,
     COMIC_TEXT_SEGMENTATION_RETRY,
+    COMIC_TEXT_SEGMENTATION_NEURAL_RETRY,
+}
+
+@Serializable
+enum class CleanupCompletionMode {
+    STRICT,
+    BEST_EFFORT_RESIDUAL,
+}
+
+@Serializable
+enum class NeuralFallbackOutcome {
+    NOT_ATTEMPTED,
+    NOT_ELIGIBLE,
+    BUDGET_SKIPPED,
+    SUCCEEDED,
+    FAILED,
 }
 
 @Serializable
@@ -96,8 +130,13 @@ data class CleanupRegionArtifact(
     val changedPixelCount: Int = 0,
     val maskSource: CleanupMaskSource? = null,
     val auditPixelCount: Int = 0,
+    val initialResidualPixelCount: Int = 0,
+    val residualRetryPixelCount: Int = 0,
     val residualPixelCount: Int = 0,
     val cleanupAttemptCount: Int = 0,
+    val completionMode: CleanupCompletionMode = CleanupCompletionMode.STRICT,
+    val neuralFallbackOutcome: NeuralFallbackOutcome = NeuralFallbackOutcome.NOT_ATTEMPTED,
+    val neuralFallbackMillis: Long = 0L,
 )
 
 @Serializable

@@ -4,12 +4,6 @@
     android:layout_height="match_parent"
     android:background="@color/masumi_reader_background">
 
-    <rs.masumi.app.library.ZoomableReaderView
-        android:id="@+id/readerImage"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:contentDescription="@string/reader_page_content_description" />
-
     <rs.masumi.app.library.ContinuousReaderView
         android:id="@+id/readerContinuous"
         android:layout_width="match_parent"
@@ -36,6 +30,14 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/reader_close" />
+
+        <Button
+            android:id="@+id/readerRestartButton"
+            style="@style/Widget.Masumi.Button.Secondary"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:text="@string/reader_restart" />
 
         <TextView
             android:id="@+id/readerTitle"
@@ -103,27 +105,5 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/readerModeButton"
-                style="@style/Widget.Masumi.Button.Secondary"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/reader_mode_continuous" />
-
-            <Button
-                android:id="@+id/readerDirectionButton"
-                style="@style/Widget.Masumi.Button.Secondary"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:text="@string/reader_direction_rtl" />
-        </LinearLayout>
     </LinearLayout>
 </FrameLayout>

@@ -31,6 +31,7 @@ constexpr int kImageMinTokens = 64;
 // budget below the desktop-oriented default avoids exhausting mobile Vulkan
 // drivers while retaining ample resolution for the oversized glyphs.
 constexpr int kImageMaxTokens = 128;
+constexpr int kMaximumHighDetailImageTokens = 256;
 constexpr int64_t kVulkanInferenceTimeoutMillis = 75'000;
 constexpr int64_t kCpuInferenceTimeoutMillis = 30'000;
 
@@ -44,7 +45,11 @@ enum class ExecutionBackend {
 struct EngineHandle {
     llama_model * model = nullptr;
     mtmd_context * vision = nullptr;
+    mtmd_context * high_detail_vision = nullptr;
     llama_context * context = nullptr;
+    std::string projector_file;
+    int vision_threads = 0;
+    int high_detail_max_tokens = 0;
     ExecutionBackend backend = ExecutionBackend::Cpu;
     std::atomic<bool> cancelled{false};
     std::atomic<int64_t> deadline_nanos{0};
@@ -52,10 +57,47 @@ struct EngineHandle {
 
     ~EngineHandle() {
         if (context != nullptr) llama_free(context);
+        if (high_detail_vision != nullptr) mtmd_free(high_detail_vision);
         if (vision != nullptr) mtmd_free(vision);
         if (model != nullptr) llama_model_free(model);
     }
 };
+
+mtmd_context * create_vision_context(EngineHandle * handle, int maximum_tokens) {
+    mtmd_context_params vision_params = mtmd_context_params_default();
+    // The vision projector is CPU-bound on the reference GPU; retain that
+    // profile for both ordinary and one-off high-detail OCR attempts.
+    vision_params.use_gpu = false;
+    vision_params.print_timings = false;
+    vision_params.n_threads = handle->vision_threads;
+    vision_params.warmup = false;
+    vision_params.image_min_tokens = kImageMinTokens;
+    vision_params.image_max_tokens = maximum_tokens;
+    return mtmd_init_from_file(handle->projector_file.c_str(), handle->model, vision_params);
+}
+
+mtmd_context * select_vision_context(
+    EngineHandle * handle,
+    bool high_detail,
+    int maximum_visual_tokens) {
+    if (!high_detail) return handle->vision;
+    if (maximum_visual_tokens <= kImageMaxTokens || maximum_visual_tokens > kMaximumHighDetailImageTokens) {
+        return nullptr;
+    }
+    if (handle->high_detail_vision != nullptr &&
+        handle->high_detail_max_tokens == maximum_visual_tokens) {
+        return handle->high_detail_vision;
+    }
+    if (handle->high_detail_vision != nullptr) {
+        mtmd_free(handle->high_detail_vision);
+        handle->high_detail_vision = nullptr;
+    }
+    handle->high_detail_vision = create_vision_context(handle, maximum_visual_tokens);
+    if (handle->high_detail_vision != nullptr) {
+        handle->high_detail_max_tokens = maximum_visual_tokens;
+    }
+    return handle->high_detail_vision;
+}
 
 struct BitmapDeleter {
     void operator()(mtmd_bitmap * value) const {
@@ -286,8 +328,9 @@ const char * run_inference(
     const std::string & prompt,
     int maximum_generated_tokens,
     double repetition_penalty,
+    bool high_detail,
+    int maximum_visual_tokens,
     InferenceResult * result) {
-    handle->cancelled.store(false);
     const int64_t timeout_millis = handle->backend == ExecutionBackend::Vulkan
         ? kVulkanInferenceTimeoutMillis
         : kCpuInferenceTimeoutMillis;
@@ -314,10 +357,12 @@ const char * run_inference(
     };
     ChunksPtr chunks(mtmd_input_chunks_init());
     if (!chunks) return "CONTEXT";
+    mtmd_context * vision = select_vision_context(handle, high_detail, maximum_visual_tokens);
+    if (vision == nullptr) return "PROJECTOR_LOAD";
     const mtmd_bitmap * bitmap_pointer = bitmap.get();
     if (const char * abort = abort_error(handle)) return abort;
     if (mtmd_tokenize(
-            handle->vision,
+            vision,
             chunks.get(),
             &input_text,
             &bitmap_pointer,
@@ -334,7 +379,7 @@ const char * run_inference(
     llama_pos n_past = 0;
     const auto prompt_start = std::chrono::steady_clock::now();
     const int32_t eval_result = mtmd_helper_eval_chunks(
-        handle->vision,
+        vision,
         handle->context,
         chunks.get(),
         0,
@@ -487,22 +532,9 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_nativeCreate(
         if (llama_model_chat_template(handle->model, nullptr) == nullptr) {
             return -4;
         }
-        mtmd_context_params vision_params = mtmd_context_params_default();
-        // Measured on Adreno 750 (Xiaomi 14): the SigLIP-style vision encoder's
-        // conv/attention graph runs ~5x slower through ggml-vulkan than through
-        // the optimized CPU backend (42s vs 8.8s per crop), while the language
-        // model layers do benefit from the GPU. Keep the projector on CPU and
-        // offload only the LLM.
-        vision_params.use_gpu = false;
-        vision_params.print_timings = false;
-        vision_params.n_threads = thread_count;
-        vision_params.warmup = false;
-        // Preserve crop-adaptive preprocessing while avoiding the projector's
-        // full-page minimum (576 input patches) for small text boxes. The actual
-        // token count still follows each crop's own width, height, and aspect ratio.
-        vision_params.image_min_tokens = kImageMinTokens;
-        vision_params.image_max_tokens = kImageMaxTokens;
-        handle->vision = mtmd_init_from_file(projector_file.c_str(), handle->model, vision_params);
+        handle->projector_file = projector_file;
+        handle->vision_threads = thread_count;
+        handle->vision = create_vision_context(handle.get(), kImageMaxTokens);
         if (handle->vision == nullptr) return -2;
         if (!mtmd_support_vision(handle->vision)) return -3;
         llama_context_params context_params = llama_context_default_params();
@@ -534,8 +566,17 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_executionBackend(
         handle->backend == ExecutionBackend::Vulkan ? "VULKAN" : "CPU");
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_rs_masumi_app_ocr_JniNativeOcrBridge_beginRecognition(
+    JNIEnv *,
+    jobject,
+    jlong handle_value) {
+    EngineHandle * handle = from_handle(handle_value);
+    if (handle != nullptr) handle->cancelled.store(false);
+}
+
 extern "C" JNIEXPORT jstring JNICALL
-Java_rs_masumi_app_ocr_JniNativeOcrBridge_recognize(
+Java_rs_masumi_app_ocr_JniNativeOcrBridge_nativeRecognize(
     JNIEnv * env,
     jobject,
     jlong handle_value,
@@ -544,7 +585,10 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_recognize(
     jint height,
     jstring prompt,
     jint maximum_generated_tokens,
-    jdouble repetition_penalty) {
+    jdouble repetition_penalty,
+    jboolean high_detail,
+    jint maximum_visual_tokens,
+    jint maximum_source_pixels) {
     EngineHandle * handle = from_handle(handle_value);
     if (handle == nullptr || rgb == nullptr || prompt == nullptr) return error_json(env, "CONTEXT");
     const int64_t expected_length = static_cast<int64_t>(width) * height * 3;
@@ -552,7 +596,12 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_recognize(
         env->GetArrayLength(rgb) != expected_length ||
         maximum_generated_tokens <= 0 ||
         !std::isfinite(repetition_penalty) ||
-        repetition_penalty <= 0.0) {
+        repetition_penalty <= 0.0 ||
+        (high_detail && (maximum_visual_tokens <= kImageMaxTokens ||
+            maximum_visual_tokens > kMaximumHighDetailImageTokens ||
+            maximum_source_pixels <= 0 ||
+            maximum_source_pixels > 4'000'000 ||
+            static_cast<int64_t>(width) * height > maximum_source_pixels))) {
         return error_json(env, "IMAGE_INVALID");
     }
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
@@ -574,6 +623,8 @@ Java_rs_masumi_app_ocr_JniNativeOcrBridge_recognize(
             prompt_chars,
             maximum_generated_tokens,
             repetition_penalty,
+            high_detail,
+            maximum_visual_tokens,
             &result);
     } catch (const std::exception & failure) {
         const std::string message = failure.what() == nullptr ? "" : failure.what();

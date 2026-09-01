@@ -27,8 +27,8 @@ class ExportArtifactStoreTest {
         var job = ExportJobReducer.start(ExportFixtures.job(), 2L)
         job = ExportJobReducer.startPage(job, 0, 3L)
         job = ExportJobReducer.commitPage(job, 0, "a".repeat(64), 12L, true, 4L)
-        job = ExportJobReducer.finishSuccess(job, 5L)
         store.writeJob(job)
+        job = ExportJobReducer.finishSuccess(job, 5L)
         val report = ExportReport(
             jobId = job.jobId,
             projectId = job.projectId,
@@ -50,7 +50,7 @@ class ExportArtifactStoreTest {
         )
 
         assertNull(store.readReport(job.jobId))
-        store.writeReport(report)
+        store.commitSuccessfulExport(job, report)
 
         assertEquals(job, store.readJob(job.jobId))
         assertEquals(report, store.readReport(job.jobId))

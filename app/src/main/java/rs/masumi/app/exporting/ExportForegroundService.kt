@@ -20,6 +20,7 @@ import rs.masumi.app.describePipelineError
 import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.exporting.ExportJobStatus
 
@@ -106,14 +107,15 @@ class ExportForegroundService : Service() {
                 PipelineResourceLease.acquire(workspace, cancellation::get)?.use {
                     val active = ExportRunner(
                         workspaceRoot = workspace,
-                        destinationFactory = { uri, jobId ->
-                            SafFolderExportDestination(contentResolver, uri, jobId)
+                        destinationFactory = { uri, jobId, generationName ->
+                            SafFolderExportDestination(contentResolver, uri, jobId, generationName)
                         },
                     )
                     runner = active
                     active.run(projectId, destinationUri, cancellation::get, ::publishProgress)
                 }
             } catch (_: Throwable) {
+                PipelineQueueStore(this).fail(projectId, "STAGE_UNEXPECTED_FAILURE")
                 notificationManager.notify(
                     NOTIFICATION_ID,
                     baseNotification(getString(R.string.export_notification_failed_unknown))

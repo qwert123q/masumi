@@ -16,7 +16,9 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.forUserPresentation
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.typesetting.TypesettingJobStatus
 
@@ -105,6 +107,7 @@ class TypesettingForegroundService : Service() {
                     active.run(projectId, cancellation::get, ::publishProgress)
                 }
             } catch (_: Throwable) {
+                PipelineQueueStore(this).fail(projectId, "STAGE_UNEXPECTED_FAILURE")
                 notificationManager.notify(
                     NOTIFICATION_ID,
                     baseNotification(getString(R.string.typesetting_notification_failed_unknown))
@@ -127,18 +130,16 @@ class TypesettingForegroundService : Service() {
             TypesettingStatusBroadcast.create(packageName, progress),
             "$packageName.permission.INTERNAL_TYPESETTING_STATUS",
         )
-        val text = when (progress.status) {
+        val text = when (progress.status.forUserPresentation()) {
             TypesettingJobStatus.QUEUED -> getString(R.string.typesetting_notification_starting)
             TypesettingJobStatus.RUNNING -> getString(
                 R.string.typesetting_notification_progress,
                 progress.terminalPageCount,
                 progress.totalPageCount,
             )
-            TypesettingJobStatus.SUCCEEDED -> getString(R.string.typesetting_notification_succeeded)
-            TypesettingJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS -> getString(
-                R.string.typesetting_notification_succeeded_preserved,
-                progress.preservedRegionCount,
-            )
+            TypesettingJobStatus.SUCCEEDED,
+            TypesettingJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS,
+            -> getString(R.string.typesetting_notification_succeeded)
             TypesettingJobStatus.CANCELLED -> getString(R.string.typesetting_notification_cancelled)
             TypesettingJobStatus.FAILED -> getString(
                 R.string.typesetting_notification_failed,

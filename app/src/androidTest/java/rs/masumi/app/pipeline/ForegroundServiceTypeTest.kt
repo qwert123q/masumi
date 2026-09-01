@@ -13,7 +13,6 @@ import rs.masumi.app.cleanup.CleanupForegroundService
 import rs.masumi.app.detection.DetectionForegroundService
 import rs.masumi.app.exporting.ExportForegroundService
 import rs.masumi.app.ocr.OcrForegroundService
-import rs.masumi.app.quality.QualityForegroundService
 import rs.masumi.app.translation.TranslationForegroundService
 import rs.masumi.app.typesetting.TypesettingForegroundService
 
@@ -29,7 +28,6 @@ class ForegroundServiceTypeTest {
             OcrForegroundService::class.java,
             CleanupForegroundService::class.java,
             TypesettingForegroundService::class.java,
-            QualityForegroundService::class.java,
         ).forEach { service ->
             assertEquals(
                 service.name,

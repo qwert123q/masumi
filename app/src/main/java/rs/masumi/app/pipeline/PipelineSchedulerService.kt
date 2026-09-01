@@ -28,8 +28,6 @@ import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.library.invalidateMangaLibraryCache
 import rs.masumi.app.ocr.OcrForegroundService
 import rs.masumi.app.ocr.OcrStatusBroadcast
-import rs.masumi.app.quality.QualityForegroundService
-import rs.masumi.app.quality.QualityStatusBroadcast
 import rs.masumi.app.translation.TranslationForegroundService
 import rs.masumi.app.translation.TranslationSettingsStore
 import rs.masumi.app.translation.TranslationStatusBroadcast
@@ -39,7 +37,6 @@ import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.detection.DetectionJobStatus
 import rs.masumi.core.exporting.ExportJobStatus
 import rs.masumi.core.ocr.OcrJobStatus
-import rs.masumi.core.quality.QualityJobStatus
 import rs.masumi.core.translation.TranslationJobStatus
 import rs.masumi.core.typesetting.TypesettingJobStatus
 
@@ -105,18 +102,6 @@ class PipelineSchedulerService : Service() {
                         progress.status == TypesettingJobStatus.FAILED ||
                             progress.status == TypesettingJobStatus.CANCELLED,
                         progress.errorCode,
-                    )
-                }
-                QualityStatusBroadcast.ACTION -> QualityStatusBroadcast.parse(intent)?.let { progress ->
-                    handleProgress(
-                        PipelineStage.QUALITY,
-                        progress.projectId,
-                        progress.status in QUALITY_ACTIVE,
-                        progress.status in QUALITY_SUCCESS,
-                        progress.status == QualityJobStatus.FAILED ||
-                            progress.status == QualityJobStatus.CANCELLED ||
-                            progress.status == QualityJobStatus.BLOCKED,
-                        progress.errorCode ?: if (progress.status == QualityJobStatus.BLOCKED) "QUALITY_BLOCKED" else null,
                     )
                 }
                 ExportStatusBroadcast.ACTION -> ExportStatusBroadcast.parse(intent)?.let { progress ->
@@ -212,8 +197,13 @@ class PipelineSchedulerService : Service() {
         val now = System.currentTimeMillis()
         val states = queueStore.entries().mapNotNull { entry ->
             val state = stateCache[entry.projectId]
-                ?: stateReader.read(entry.projectId)?.also { stateCache[entry.projectId] = it }
-                ?: return@mapNotNull null
+                ?: runCatching { stateReader.read(entry.projectId) }.getOrNull()
+                    ?.also { stateCache[entry.projectId] = it }
+            if (state == null) {
+                queueStore.fail(entry.projectId, "SOURCE_PROJECT_INVALID")
+                running.remove(entry.projectId)
+                return@mapNotNull null
+            }
             if (state.complete) {
                 queueStore.remove(entry.projectId)
                 running.remove(entry.projectId)
@@ -221,13 +211,16 @@ class PipelineSchedulerService : Service() {
                 return@mapNotNull null
             }
             if (state.blocked && entry.status == PipelineQueueStatus.ACTIVE) {
-                queueStore.pause(entry.projectId, state.errorCode ?: "PIPELINE_BLOCKED")
+                queueStore.fail(entry.projectId, state.errorCode ?: "PIPELINE_BLOCKED")
             }
             entry to state
         }
 
-        val newlyDelayed = reconcileRunning(
+        val newlyPaused = reconcileRunning(
             states.associate { it.first.projectId to it.second },
+            states.asSequence()
+                .filter { it.first.status == PipelineQueueStatus.ACTIVE }
+                .mapTo(mutableSetOf()) { it.first.projectId },
             now,
         )
         val hasSettings = TranslationSettingsStore(this).loadProviderSettings() != null
@@ -239,9 +232,8 @@ class PipelineSchedulerService : Service() {
                 nextStage = state.nextStage,
                 waitingForSettings = state.nextStage == PipelineStage.TRANSLATION && !hasSettings,
                 blocked = entry.status == PipelineQueueStatus.PAUSED ||
-                    entry.retryNotBeforeEpochMillis > now ||
                     state.blocked ||
-                    entry.projectId in newlyDelayed,
+                    entry.projectId in newlyPaused,
             )
         }
         val launches = PipelineSchedulePlanner.plan(
@@ -250,6 +242,7 @@ class PipelineSchedulerService : Service() {
                 RunningPipelineTask(projectId, task.stage)
             }.toSet(),
             translationCapacity = PipelineDeviceCapacity.translationSlots(this),
+            readerForeground = ReaderForegroundState.isForeground(),
         )
         launches.forEach { launch ->
             val tracked = TrackedTask(launch.stage, now)
@@ -278,32 +271,42 @@ class PipelineSchedulerService : Service() {
 
     private fun reconcileRunning(
         states: Map<String, ProjectPipelineState>,
+        activeProjectIds: Set<String>,
         now: Long,
     ): Set<String> {
-        val newlyDelayed = mutableSetOf<String>()
+        val newlyPaused = mutableSetOf<String>()
         val ocrProcessAlive = isOcrProcessAlive()
         running.entries.removeIf { (projectId, tracked) ->
             val state = states[projectId]
-            val stageChanged = state == null ||
-                state.complete ||
-                state.blocked ||
-                state.nextStage != tracked.stage
-            if (stageChanged) {
+            val shouldRelease = PipelineTrackedTaskPolicy.shouldRelease(
+                queueActive = projectId in activeProjectIds,
+                state = state,
+                expectedStage = tracked.stage,
+            )
+            if (shouldRelease) {
                 return@removeIf true
             }
             val processDied = tracked.stage == PipelineStage.OCR &&
                 tracked.confirmed &&
                 now - tracked.lastProgressAtEpochMillis > PROCESS_DEATH_GRACE_MILLIS &&
                 !ocrProcessAlive
-            if (processDied) {
-                queueStore.scheduleRetry(projectId, "OCR_PROCESS_DIED", now)
-                newlyDelayed += projectId
+            val launchTimedOut = !tracked.confirmed &&
+                now - tracked.lastProgressAtEpochMillis > LAUNCH_CONFIRM_TIMEOUT_MILLIS
+            val stalled = tracked.confirmed &&
+                now - tracked.lastProgressAtEpochMillis > STALL_RECOVERY_TIMEOUT_MILLIS
+            val errorCode = when {
+                processDied -> "OCR_PROCESS_DIED"
+                launchTimedOut -> "STAGE_START_FAILED"
+                stalled -> "STAGE_STALLED"
+                else -> null
             }
-            processDied ||
-                (!tracked.confirmed && now - tracked.lastProgressAtEpochMillis > LAUNCH_CONFIRM_TIMEOUT_MILLIS) ||
-                (tracked.confirmed && now - tracked.lastProgressAtEpochMillis > STALL_RECOVERY_TIMEOUT_MILLIS)
+            if (errorCode != null) {
+                queueStore.fail(projectId, errorCode)
+                newlyPaused += projectId
+            }
+            errorCode != null
         }
-        return newlyDelayed
+        return newlyPaused
     }
 
     private fun isOcrProcessAlive(): Boolean =
@@ -324,17 +327,18 @@ class PipelineSchedulerService : Service() {
                 startForegroundService(CleanupForegroundService.startIntent(this, launch.projectId))
             PipelineStage.TYPESETTING ->
                 startForegroundService(TypesettingForegroundService.startIntent(this, launch.projectId))
-            PipelineStage.QUALITY ->
-                startForegroundService(QualityForegroundService.startIntent(this, launch.projectId))
             PipelineStage.EXPORT -> {
-                val root = MangaLibraryPreferences(this).rootUri() ?: return false
+                val root = MangaLibraryPreferences(this).rootUri() ?: run {
+                    queueStore.fail(launch.projectId, "EXPORT_DESTINATION_MISSING")
+                    return@runCatching false
+                }
                 val destination = MangaLibraryStore(contentResolver, root).ensureOutputDirectory(launch.projectId)
                 startForegroundService(ExportForegroundService.startIntent(this, launch.projectId, destination))
             }
         }
         true
     }.getOrElse {
-        queueStore.scheduleRetry(launch.projectId, "STAGE_START_FAILED")
+        queueStore.fail(launch.projectId, "STAGE_START_FAILED")
         false
     }
 
@@ -360,14 +364,8 @@ class PipelineSchedulerService : Service() {
             when {
                 // A stage cancellation is the expected acknowledgement of a
                 // user pause. Do not overwrite USER_PAUSED with STAGE_FAILED.
-                failure &&
-                    queueStore.isActive(projectId) &&
-                    PipelineRetryPolicy.isRetryable(stage, errorCode) ->
-                    queueStore.scheduleRetry(projectId, errorCode ?: "STAGE_FAILED")
-                failure && queueStore.isActive(projectId) ->
-                    queueStore.pause(projectId, errorCode ?: "STAGE_FAILED")
+                failure -> queueStore.fail(projectId, errorCode ?: "STAGE_FAILED")
                 success && stage == PipelineStage.EXPORT -> queueStore.remove(projectId)
-                success -> queueStore.clearRetry(projectId)
             }
         }
         scheduler.execute(::safeTick)
@@ -380,7 +378,6 @@ class PipelineSchedulerService : Service() {
             addAction(TranslationStatusBroadcast.ACTION)
             addAction(CleanupStatusBroadcast.ACTION)
             addAction(TypesettingStatusBroadcast.ACTION)
-            addAction(QualityStatusBroadcast.ACTION)
             addAction(ExportStatusBroadcast.ACTION)
         }
         registerReceiver(stageReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -484,11 +481,6 @@ class PipelineSchedulerService : Service() {
         private val TYPESETTING_SUCCESS = setOf(
             TypesettingJobStatus.SUCCEEDED,
             TypesettingJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS,
-        )
-        private val QUALITY_ACTIVE = setOf(QualityJobStatus.QUEUED, QualityJobStatus.RUNNING)
-        private val QUALITY_SUCCESS = setOf(
-            QualityJobStatus.SUCCEEDED,
-            QualityJobStatus.SUCCEEDED_WITH_WARNINGS,
         )
         private val EXPORT_ACTIVE = setOf(ExportJobStatus.QUEUED, ExportJobStatus.RUNNING)
     }

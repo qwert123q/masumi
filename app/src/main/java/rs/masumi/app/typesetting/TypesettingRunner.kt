@@ -15,6 +15,7 @@ import rs.masumi.app.detection.PublishedCleanupRun
 import rs.masumi.app.detection.PublishedOcrRun
 import rs.masumi.app.detection.PublishedTranslationRun
 import rs.masumi.app.detection.PublishedTypesettingRun
+import rs.masumi.app.pipeline.PipelineArtifactFreshness
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupRegionState
@@ -24,6 +25,7 @@ import rs.masumi.core.importer.IdSource
 import rs.masumi.core.importer.UuidIdSource
 import rs.masumi.core.model.PageRecord
 import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
+import rs.masumi.core.modelpackage.PinnedAotInpainter
 import rs.masumi.core.ocr.OcrPageState
 import rs.masumi.core.translation.TranslationArtifactStore
 import rs.masumi.core.translation.TranslationResultState
@@ -93,12 +95,32 @@ class TypesettingRunner(
     ): TypesettingRunResult {
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
+        val detectionRun = requireNotNull(catalog.latestPublishedRun(projectId)) {
+            "completed detection run was not found"
+        }
+        val currentOcrRun = requireNotNull(
+            catalog.publishedOcrRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact.runArtifactKey)
+            },
+        ) { "completed OCR run was not found" }
+        val currentTranslationRun = requireNotNull(
+            catalog.publishedTranslationRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.translation(it.artifact, currentOcrRun.artifact.runArtifactKey)
+            },
+        ) { "completed translation run was not found" }
         val cleanupRun = requireNotNull(
             catalog.latestPublishedCleanupRun(
                 projectId = projectId,
+                translationRunArtifactKey = currentTranslationRun.artifact.runArtifactKey,
                 policy = rs.masumi.core.cleanup.CleanupPolicy(),
                 maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
-            ),
+                neuralModel = PinnedAotInpainter.descriptor.toModelRef(),
+            )?.takeIf {
+                PipelineArtifactFreshness.cleanup(
+                    it.artifact,
+                    currentTranslationRun.artifact.runArtifactKey,
+                )
+            },
         ) { "completed cleanup run was not found" }
         val reuseRun = reuseRunArtifactKey?.let { runKey ->
             requireNotNull(catalog.publishedTypesettingRun(projectId, runKey)) {
@@ -288,7 +310,6 @@ class TypesettingRunner(
         dependencies: TypesettingDependencies,
         cancellation: () -> Boolean,
     ): Pair<PageTypesettingArtifact, ByteArray> {
-        validateSource(project.directory, sourcePage)
         val cleanupEntry = cleanupRun.artifact.entries.single { it.pageOrder == sourcePage.order }
         val cleanupPage = CleanupArtifactStore(project.directory).readPublishedPage(
             cleanupRun.artifact.runArtifactKey,
@@ -394,9 +415,6 @@ class TypesettingRunner(
         ) ?: throw FatalTypesettingException("REUSE_PAGE_INVALID")
         val imagePath = resolveInside(reuseRun.directory, requireNotNull(entry.imagePath))
         val png = Files.readAllBytes(imagePath)
-        if (sha256(png) != artifact.renderedImageSha256) {
-            throw FatalTypesettingException("REUSE_IMAGE_INVALID")
-        }
         return artifact.copy(
             pageArtifactKey = pageKey,
             reusedFromPageArtifactKey = artifact.pageArtifactKey,
@@ -507,13 +525,6 @@ class TypesettingRunner(
         }
     }
 
-    private fun validateSource(projectDirectory: Path, page: PageRecord) {
-        val path = resolveInside(projectDirectory, page.storedPath)
-        if (!Files.isRegularFile(path)) throw FatalTypesettingException("SOURCE_MISSING")
-        if (Files.size(path) != page.byteLength) throw FatalTypesettingException("SOURCE_LENGTH_MISMATCH")
-        if (sha256(path) != page.sourceSha256) throw FatalTypesettingException("SOURCE_HASH_MISMATCH")
-    }
-
     private fun resolveInside(root: Path, relative: String): Path {
         require(relative.isNotBlank() && !relative.startsWith('/'))
         return root.resolve(relative).normalize().also { require(it.startsWith(root.normalize())) }
@@ -591,19 +602,6 @@ class TypesettingRunner(
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes).joinToString("") { "%02x".format(it) }
-
-    private fun sha256(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).buffered().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read > 0) digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
 
     private fun Throwable.safePageErrorCode(): String = when (this) {
         is FatalTypesettingException -> code

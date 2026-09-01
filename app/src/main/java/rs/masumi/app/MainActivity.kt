@@ -44,6 +44,7 @@ import rs.masumi.app.exporting.ExportProgress
 import rs.masumi.app.exporting.ExportResumePolicy
 import rs.masumi.app.exporting.ExportStatusBroadcast
 import rs.masumi.app.pipeline.DurablePipelineProgress
+import rs.masumi.app.pipeline.PipelineArtifactFreshness
 import rs.masumi.app.pipeline.PipelineQueueStatus
 import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineSchedulerService
@@ -60,6 +61,7 @@ import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
+import rs.masumi.core.modelpackage.PinnedAotInpainter
 import rs.masumi.core.cleanup.CleanupRegionState
 import rs.masumi.core.cleanup.CleanupRunEntry
 import rs.masumi.app.ocr.OcrForegroundService
@@ -69,6 +71,7 @@ import rs.masumi.app.ocr.OcrStatusBroadcast
 import rs.masumi.app.translation.TranslationForegroundService
 import rs.masumi.app.translation.TranslationProgress
 import rs.masumi.app.translation.TranslationResumePolicy
+import rs.masumi.app.translation.TranslationSettingsSaveCoordinator
 import rs.masumi.app.translation.TranslationSettingsPane
 import rs.masumi.app.translation.TranslationSettingsStore
 import rs.masumi.app.translation.TranslationStatusBroadcast
@@ -101,6 +104,14 @@ import rs.masumi.core.typesetting.TypesettingRunEntry
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Executors
+
+internal enum class ProjectLaunchMode(
+    val showDetails: Boolean,
+    val autoContinue: Boolean,
+) {
+    CONTINUE(showDetails = false, autoContinue = true),
+    DETAILS(showDetails = true, autoContinue = false),
+}
 
 class MainActivity : Activity() {
     private lateinit var projectBackButton: Button
@@ -660,8 +671,6 @@ class MainActivity : Activity() {
             !hasSettings -> getString(R.string.process_waiting_settings)
             exportReady && exportSucceededForCurrentRun -> getString(R.string.process_saved)
             exportReady -> getString(R.string.process_ready_export)
-            queueEntry?.status == PipelineQueueStatus.ACTIVE && queueError != null ->
-                getString(R.string.pipeline_status_retrying, describePipelineErrorBrief(queueError))
             queueEntry?.status == PipelineQueueStatus.PAUSED && queueError != null ->
                 getString(R.string.pipeline_status_failed, describePipelineErrorBrief(queueError))
             active || automaticPipelineRequested -> getString(R.string.process_background)
@@ -1186,13 +1195,14 @@ class MainActivity : Activity() {
     }
 
     private fun onTranslationSettingsSaved() {
-        requestDurableStateRefresh()
-        if (currentProject != null && !typesettingRunComplete()) {
-            enqueueAutomaticPipeline(requireNotNull(currentProject).manifest.projectId)
-            onPipelineStateChanged()
-        } else {
-            startForegroundService(PipelineSchedulerService.wakeIntent(this))
-        }
+        automaticPipelineRequested = TranslationSettingsSaveCoordinator(pipelineQueueStore).onSettingsSaved(
+            projectId = currentProject?.manifest?.projectId,
+            refreshDurableState = ::requestDurableStateRefresh,
+            wakeScheduler = {
+                startForegroundService(PipelineSchedulerService.wakeIntent(this))
+            },
+        )
+        syncWorkspaceState()
     }
 
     private fun requestTranslationStart() {
@@ -1392,10 +1402,12 @@ class MainActivity : Activity() {
             ?: DurablePipelineProgress.detection(project, detectionRun)
 
         val ocrRun = detectionRun?.let { detection ->
-            catalog.latestPublishedOcrRun(projectId)
-                ?.takeIf {
-                    it.artifact.detectionRunArtifactKey == detection.artifact.runArtifactKey
-                }
+            catalog.publishedOcrRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.ocr(
+                    it.artifact,
+                    detection.artifact.runArtifactKey,
+                )
+            }
         }
         val ocrProgress = if (detectionRun == null) {
             null
@@ -1417,13 +1429,12 @@ class MainActivity : Activity() {
         }
 
         val translationRun = ocrRun?.let { ocr ->
-            catalog.latestPublishedTranslationRun(projectId)
-                ?.takeIf {
-                    it.artifact.dependencies.ocrRunArtifactKey == ocr.artifact.runArtifactKey &&
-                        it.artifact.dependencies.policy == TranslationPolicy() &&
-                        it.artifact.dependencies.prompt == TranslationPromptRef() &&
-                        it.artifact.dependencies.batching == TranslationBatchingConfig()
-                }
+            catalog.publishedTranslationRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.translation(
+                    it.artifact,
+                    ocr.artifact.runArtifactKey,
+                )
+            }
         }
         val translationProgress = if (ocrRun == null) {
             null
@@ -1450,7 +1461,13 @@ class MainActivity : Activity() {
                 translation.artifact.runArtifactKey,
                 CleanupPolicy(),
                 PinnedComicTextSegmenter.descriptor.toModelRef(),
-            )
+                PinnedAotInpainter.descriptor.toModelRef(),
+            )?.takeIf {
+                PipelineArtifactFreshness.cleanup(
+                    it.artifact,
+                    translation.artifact.runArtifactKey,
+                )
+            }
         }
         val cleanupProgress = if (translationRun == null) {
             null
@@ -1724,7 +1741,7 @@ class MainActivity : Activity() {
         detectionProgress.progress = completed.coerceIn(0, detectionProgress.max)
         detectionStatus.text = if (interrupted) {
             getString(R.string.stage_status_interrupted)
-        } else when (progress.status) {
+        } else when (progress.status.forUserPresentation()) {
             DetectionJobStatus.QUEUED -> getString(R.string.detection_status_starting)
             DetectionJobStatus.DOWNLOADING_MODEL -> getString(
                 R.string.detection_status_downloading,
@@ -1738,13 +1755,9 @@ class MainActivity : Activity() {
             )
             DetectionJobStatus.SUCCEEDED -> getString(
                 R.string.detection_status_succeeded,
-                progress.committedPageCount,
+                completed,
             )
-            DetectionJobStatus.SUCCEEDED_WITH_PRESERVED_PAGES -> getString(
-                R.string.detection_status_succeeded_preserved,
-                progress.committedPageCount,
-                progress.preservedPageCount,
-            )
+            DetectionJobStatus.SUCCEEDED_WITH_PRESERVED_PAGES -> error("presentation status is normalized")
             DetectionJobStatus.CANCELLED -> getString(R.string.detection_status_cancelled)
             DetectionJobStatus.FAILED -> getString(
                 R.string.detection_status_failed,
@@ -1762,7 +1775,7 @@ class MainActivity : Activity() {
         ocrProgress.progress = progress.terminalRegionCount.coerceIn(0, ocrProgress.max)
         ocrStatus.text = if (interrupted) {
             getString(R.string.stage_status_interrupted)
-        } else when (progress.status) {
+        } else when (progress.status.forUserPresentation()) {
             OcrJobStatus.QUEUED -> getString(R.string.ocr_status_starting)
             OcrJobStatus.DOWNLOADING_MODEL -> getString(
                 R.string.ocr_status_downloading,
@@ -1775,12 +1788,11 @@ class MainActivity : Activity() {
                 progress.terminalRegionCount,
                 progress.totalRegionCount,
             )
-            OcrJobStatus.SUCCEEDED -> getString(
+            OcrJobStatus.SUCCEEDED,
+            OcrJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS,
+            -> getString(
                 R.string.ocr_status_succeeded,
                 progress.terminalRegionCount,
-            )
-            OcrJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS -> getString(
-                R.string.ocr_status_succeeded_preserved,
             )
             OcrJobStatus.CANCELLED -> getString(R.string.ocr_status_cancelled)
             OcrJobStatus.FAILED -> getString(
@@ -1797,26 +1809,21 @@ class MainActivity : Activity() {
         translationProgress.isIndeterminate = false
         translationProgress.max = progress.totalWindowCount.coerceAtLeast(1)
         translationProgress.progress = progress.terminalWindowCount.coerceIn(0, translationProgress.max)
-        val protectedCount = progress.preservedItemCount + progress.protectedOcrCount
         val statusText = if (interrupted) {
             getString(R.string.stage_status_interrupted)
-        } else when (progress.status) {
+        } else when (progress.status.forUserPresentation()) {
             TranslationJobStatus.QUEUED -> getString(R.string.translation_status_starting)
             TranslationJobStatus.RUNNING -> getString(
                 R.string.translation_status_progress,
                 progress.terminalWindowCount,
                 progress.totalWindowCount,
                 progress.translatedItemCount,
-                protectedCount,
             )
-            TranslationJobStatus.SUCCEEDED -> getString(
+            TranslationJobStatus.SUCCEEDED,
+            TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS,
+            -> getString(
                 R.string.translation_status_succeeded,
                 progress.translatedItemCount,
-            )
-            TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS -> getString(
-                R.string.translation_status_succeeded_protected,
-                progress.translatedItemCount,
-                protectedCount,
             )
             TranslationJobStatus.CANCELLED -> getString(R.string.translation_status_cancelled)
             TranslationJobStatus.FAILED -> getString(
@@ -1850,23 +1857,19 @@ class MainActivity : Activity() {
         cleanupProgress.progress = progress.terminalPageCount.coerceIn(0, cleanupProgress.max)
         cleanupStatus.text = if (interrupted) {
             getString(R.string.stage_status_interrupted)
-        } else when (progress.status) {
+        } else when (progress.status.forUserPresentation()) {
             CleanupJobStatus.QUEUED -> getString(R.string.cleanup_status_starting)
             CleanupJobStatus.RUNNING -> getString(
                 R.string.cleanup_status_progress,
                 progress.terminalPageCount,
                 progress.totalPageCount,
                 progress.cleanedRegionCount,
-                progress.preservedRegionCount,
             )
-            CleanupJobStatus.SUCCEEDED -> getString(
+            CleanupJobStatus.SUCCEEDED,
+            CleanupJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS,
+            -> getString(
                 R.string.cleanup_status_succeeded,
                 progress.cleanedRegionCount,
-            )
-            CleanupJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS -> getString(
-                R.string.cleanup_status_succeeded_preserved,
-                progress.cleanedRegionCount,
-                progress.preservedRegionCount,
             )
             CleanupJobStatus.CANCELLED -> getString(R.string.cleanup_status_cancelled)
             CleanupJobStatus.FAILED -> getString(
@@ -1903,32 +1906,17 @@ class MainActivity : Activity() {
         } else {
             null
         }
-        val preservedCount = pageArtifact?.regions?.count {
-            it.state == CleanupRegionState.PRESERVED_SOURCE
-        } ?: 0
         cleanupPreviewPane.render(imagePath) { bitmap ->
-            cleanupPreservedPageMarker.visibility = when {
-                entry.state == CleanupPageState.PRESERVED_SOURCE -> View.VISIBLE
-                bitmap == null -> View.VISIBLE
-                preservedCount > 0 -> View.VISIBLE
-                else -> View.GONE
-            }
-            cleanupPreservedPageMarker.text = when {
-                entry.state == CleanupPageState.PRESERVED_SOURCE -> getString(
-                    R.string.cleanup_preview_preserved_page,
-                    describePipelineError(entry.error?.code),
-                )
-                bitmap == null -> getString(R.string.preview_unavailable)
-                preservedCount > 0 -> getString(R.string.cleanup_preview_protected_regions, preservedCount)
-                else -> ""
-            }
+            cleanupPreservedPageMarker.visibility =
+                if (shouldShowPreviewUnavailable(bitmap != null)) View.VISIBLE else View.GONE
+            cleanupPreservedPageMarker.text =
+                if (bitmap == null) getString(R.string.preview_unavailable) else ""
         }
         val cleanedCount = pageArtifact?.regions?.count { it.state == CleanupRegionState.CLEANED } ?: 0
         cleanupDetailText.text = pageArtifact?.let {
             getString(
                 R.string.cleanup_preview_detail,
                 cleanedCount,
-                preservedCount,
                 it.regions.sumOf { region -> region.changedPixelCount },
             )
         }.orEmpty()
@@ -1959,23 +1947,19 @@ class MainActivity : Activity() {
         typesettingProgress.progress = progress.terminalPageCount.coerceIn(0, typesettingProgress.max)
         typesettingStatus.text = if (interrupted) {
             getString(R.string.stage_status_interrupted)
-        } else when (progress.status) {
+        } else when (progress.status.forUserPresentation()) {
             TypesettingJobStatus.QUEUED -> getString(R.string.typesetting_status_starting)
             TypesettingJobStatus.RUNNING -> getString(
                 R.string.typesetting_status_progress,
                 progress.terminalPageCount,
                 progress.totalPageCount,
                 progress.typesetRegionCount,
-                progress.preservedRegionCount,
             )
-            TypesettingJobStatus.SUCCEEDED -> getString(
+            TypesettingJobStatus.SUCCEEDED,
+            TypesettingJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS,
+            -> getString(
                 R.string.typesetting_status_succeeded,
                 progress.typesetRegionCount,
-            )
-            TypesettingJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS -> getString(
-                R.string.typesetting_status_succeeded_preserved,
-                progress.typesetRegionCount,
-                progress.preservedRegionCount,
             )
             TypesettingJobStatus.CANCELLED -> getString(R.string.typesetting_status_cancelled)
             TypesettingJobStatus.FAILED -> getString(
@@ -2005,8 +1989,6 @@ class MainActivity : Activity() {
             ExportJobStatus.SUCCEEDED -> getString(
                 R.string.export_status_succeeded,
                 progress.totalPageCount,
-                progress.cleanedFallbackPageCount + progress.sourceFallbackPageCount,
-                progress.reusedPageCount,
             )
             ExportJobStatus.CANCELLED -> getString(R.string.export_status_cancelled)
             ExportJobStatus.FAILED -> getString(
@@ -2049,32 +2031,17 @@ class MainActivity : Activity() {
         } else {
             null
         }
-        val preservedCount = pageArtifact?.regions?.count {
-            it.state == TypesettingRegionState.PRESERVED_CLEANED_PAGE
-        } ?: 0
         typesettingPreviewPane.render(imagePath) { bitmap ->
-            typesettingPreservedPageMarker.visibility = when {
-                entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> View.VISIBLE
-                bitmap == null -> View.VISIBLE
-                preservedCount > 0 -> View.VISIBLE
-                else -> View.GONE
-            }
-            typesettingPreservedPageMarker.text = when {
-                entry.state == TypesettingPageState.PRESERVED_CLEANED_PAGE -> getString(
-                    R.string.typesetting_preview_preserved_page,
-                    describePipelineError(entry.error?.code),
-                )
-                bitmap == null -> getString(R.string.preview_unavailable)
-                preservedCount > 0 -> getString(R.string.typesetting_preview_protected_regions, preservedCount)
-                else -> ""
-            }
+            typesettingPreservedPageMarker.visibility =
+                if (shouldShowPreviewUnavailable(bitmap != null)) View.VISIBLE else View.GONE
+            typesettingPreservedPageMarker.text =
+                if (bitmap == null) getString(R.string.preview_unavailable) else ""
         }
         val typesetCount = pageArtifact?.regions?.count { it.state == TypesettingRegionState.TYPESET } ?: 0
         typesettingDetailText.text = pageArtifact?.let {
             getString(
                 R.string.typesetting_preview_detail,
                 typesetCount,
-                preservedCount,
                 it.regions.sumOf { region -> region.changedPixelCount },
             )
         }.orEmpty()
@@ -2120,21 +2087,10 @@ class MainActivity : Activity() {
         }
 
         detectionPreviewPane.render(imagePath) { bitmap ->
-            preservedPageMarker.visibility = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
-                View.VISIBLE
-            } else if (bitmap == null) {
-                View.VISIBLE
-            } else {
-                View.GONE
-            }
-            preservedPageMarker.text = if (entry.state == DetectionPageState.PRESERVED_SOURCE) {
-                getString(
-                    R.string.preview_preserved_page,
-                    describePipelineError(entry.error?.code),
-                )
-            } else {
-                getString(R.string.preview_unavailable)
-            }
+            preservedPageMarker.visibility =
+                if (shouldShowPreviewUnavailable(bitmap != null)) View.VISIBLE else View.GONE
+            preservedPageMarker.text =
+                if (bitmap == null) getString(R.string.preview_unavailable) else ""
         }
         pageIndicator.text = getString(
             R.string.preview_page_indicator,
@@ -2180,32 +2136,15 @@ class MainActivity : Activity() {
         } else {
             null
         }
-        val protectedCount = pageArtifact?.regions?.count { region ->
-            region.state == OcrRegionState.NEEDS_FALLBACK ||
-                region.state == OcrRegionState.PRESERVED_SOURCE
-        } ?: 0
         ocrPreviewPane.render(imagePath) { bitmap ->
-            ocrPreservedPageMarker.visibility = when {
-                entry.state == OcrPageState.PRESERVED_SOURCE -> View.VISIBLE
-                bitmap == null -> View.VISIBLE
-                protectedCount > 0 -> View.VISIBLE
-                else -> View.GONE
-            }
-            ocrPreservedPageMarker.text = when {
-                entry.state == OcrPageState.PRESERVED_SOURCE -> getString(
-                    R.string.ocr_preview_preserved_page,
-                    describePipelineError(entry.error?.code),
-                )
-                bitmap == null -> getString(R.string.preview_unavailable)
-                protectedCount > 0 -> getString(
-                    R.string.ocr_preview_protected_regions,
-                    protectedCount,
-                )
-                else -> ""
-            }
+            ocrPreservedPageMarker.visibility =
+                if (shouldShowPreviewUnavailable(bitmap != null)) View.VISIBLE else View.GONE
+            ocrPreservedPageMarker.text =
+                if (bitmap == null) getString(R.string.preview_unavailable) else ""
         }
         ocrDetailText.text = pageArtifact?.regions
             ?.sortedBy { it.candidate.readingOrderRank }
+            ?.filter { it.state.isUserVisibleDetail() }
             ?.joinToString("\n") { region ->
                 getString(
                     R.string.ocr_region_detail,
@@ -2518,9 +2457,6 @@ class MainActivity : Activity() {
     private fun internalTypesettingStatusPermission(): String =
         "$packageName.permission.INTERNAL_TYPESETTING_STATUS"
 
-    private fun internalQualityStatusPermission(): String =
-        "$packageName.permission.INTERNAL_QUALITY_STATUS"
-
     private fun internalExportStatusPermission(): String =
         "$packageName.permission.INTERNAL_EXPORT_STATUS"
 
@@ -2588,12 +2524,16 @@ class MainActivity : Activity() {
         private const val EXTRA_AUTO_CONTINUE = "auto_continue"
         private val SAFE_PROJECT_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
-        fun projectIntent(context: Context, projectId: String, showDetails: Boolean = false): Intent {
+        internal fun projectIntent(
+            context: Context,
+            projectId: String,
+            mode: ProjectLaunchMode = ProjectLaunchMode.CONTINUE,
+        ): Intent {
             require(SAFE_PROJECT_ID.matches(projectId))
             return Intent(context, MainActivity::class.java)
                 .putExtra(EXTRA_PROJECT_ID, projectId)
-                .putExtra(EXTRA_SHOW_DETAILS, showDetails)
-                .putExtra(EXTRA_AUTO_CONTINUE, !showDetails)
+                .putExtra(EXTRA_SHOW_DETAILS, mode.showDetails)
+                .putExtra(EXTRA_AUTO_CONTINUE, mode.autoContinue)
         }
 
         fun importIntent(context: Context, treeUri: Uri): Intent {

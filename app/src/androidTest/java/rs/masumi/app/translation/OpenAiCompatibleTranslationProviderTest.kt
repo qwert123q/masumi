@@ -62,14 +62,14 @@ class OpenAiCompatibleTranslationProviderTest {
     }
 
     @Test
-    fun providerDefaultsToOneTransportRetry() {
+    fun providerSettingsExposeNoTransportRetryPolicy() {
         val settings = TranslationProviderSettings(
             apiUrl = "https://example.invalid/v1",
             apiKey = "test-secret",
             model = "test-model",
         )
 
-        assertEquals(2, settings.maximumAttempts)
+        assertFalse(settings.toString().contains("attempt", ignoreCase = true))
     }
 
     @Test
@@ -101,26 +101,26 @@ class OpenAiCompatibleTranslationProviderTest {
     }
 
     @Test
-    fun transientHttpFailuresRetryButClientFailureDoesNotAndLeaksNothing() {
+    fun transientAndClientHttpFailuresStopImmediatelyAndLeakNothing() {
         server.enqueue(MockResponse().setResponseCode(429).setBody("secret-rate-body"))
-        server.enqueue(MockResponse().setResponseCode(503).setBody("secret-service-body"))
-        server.enqueue(MockResponse().setResponseCode(200).setBody(successBody()))
+        val transient = captureFailure {
+            provider().newCall(settings(), messages()).execute()
+        }
 
-        val retried = provider().newCall(settings(maximumAttempts = 3), messages()).execute()
-
-        assertEquals(3, retried.attemptCount)
-        assertEquals(3, server.requestCount)
+        assertEquals(TranslationProviderErrorCode.HTTP_TRANSIENT, transient.code)
+        assertEquals(429, transient.httpStatus)
+        assertEquals(1, transient.attemptCount)
+        assertEquals(1, server.requestCount)
 
         server.enqueue(MockResponse().setResponseCode(401).setBody("test-secret private-error"))
         val failure = captureFailure {
-            provider().newCall(settings(maximumAttempts = 3), messages()).execute()
+            provider().newCall(settings(), messages()).execute()
         }
 
         assertEquals(TranslationProviderErrorCode.HTTP_CLIENT, failure.code)
         assertEquals(401, failure.httpStatus)
-        assertFalse(failure.retryable)
         assertEquals(1, failure.attemptCount)
-        assertEquals(4, server.requestCount)
+        assertEquals(2, server.requestCount)
         assertEquals("HTTP_CLIENT", failure.message)
         assertNull(failure.cause)
         assertFalse(failure.stackTraceToString().contains("test-secret"))
@@ -129,30 +129,16 @@ class OpenAiCompatibleTranslationProviderTest {
     }
 
     @Test
-    fun malformedSuccessfulResponseIsRetriedWithinTheConfiguredBound() {
+    fun malformedSuccessfulResponseStopsImmediately() {
         server.enqueue(MockResponse().setResponseCode(200).setBody(envelope("not-json")))
-        server.enqueue(MockResponse().setResponseCode(200).setBody(successBody()))
-
-        val result = provider().newCall(settings(maximumAttempts = 3), messages()).execute()
-
-        assertEquals(2, result.attemptCount)
-        assertEquals(2, server.requestCount)
-    }
-
-    @Test
-    fun malformedResponsesStopAtTheConfiguredAttemptLimit() {
-        repeat(3) {
-            server.enqueue(MockResponse().setResponseCode(200).setBody(envelope("not-json")))
-        }
 
         val failure = captureFailure {
-            provider().newCall(settings(maximumAttempts = 3), messages()).execute()
+            provider().newCall(settings(), messages()).execute()
         }
 
         assertEquals(TranslationProviderErrorCode.MALFORMED_RESPONSE, failure.code)
-        assertTrue(failure.retryable)
-        assertEquals(3, failure.attemptCount)
-        assertEquals(3, server.requestCount)
+        assertEquals(1, failure.attemptCount)
+        assertEquals(1, server.requestCount)
         assertNull(failure.cause)
     }
 
@@ -186,7 +172,7 @@ class OpenAiCompatibleTranslationProviderTest {
 
         val failure = captureFailure {
             provider().newCall(
-                settings(maximumAttempts = 1, readTimeoutMillis = 100L),
+                settings(readTimeoutMillis = 100L),
                 messages(),
             ).execute()
         }
@@ -200,7 +186,7 @@ class OpenAiCompatibleTranslationProviderTest {
     fun cancellationStopsTheActiveHttpCall() {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
         val call = provider().newCall(
-            settings(maximumAttempts = 1, readTimeoutMillis = 10_000L),
+            settings(readTimeoutMillis = 10_000L),
             messages(),
         )
         val executor = Executors.newSingleThreadExecutor()
@@ -225,43 +211,15 @@ class OpenAiCompatibleTranslationProviderTest {
         }
     }
 
-    @Test
-    fun retryDelaysGrowExponentiallyAndHonorRetryAfter() {
-        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "2").setBody("busy"))
-        server.enqueue(MockResponse().setResponseCode(503).setBody("unavailable"))
-        server.enqueue(MockResponse().setResponseCode(200).setBody(successBody()))
-
-        val delays = mutableListOf<Long>()
-        val provider = OpenAiCompatibleTranslationProvider(
-            retryWaiter = TranslationRetryWaiter { delayMillis, isCancelled ->
-                delays += delayMillis
-                !isCancelled()
-            },
-        )
-        val result = provider.newCall(
-            settings(maximumAttempts = 3, retryDelayMillis = 100L),
-            messages(),
-        ).execute()
-
-        assertEquals(3, result.attemptCount)
-        assertEquals(listOf(2_000L, 200L), delays)
-    }
-
-    private fun provider() = OpenAiCompatibleTranslationProvider(
-        retryWaiter = TranslationRetryWaiter { _, isCancelled -> !isCancelled() },
-    )
+    private fun provider() = OpenAiCompatibleTranslationProvider()
 
     private fun settings(
-        maximumAttempts: Int = 1,
         readTimeoutMillis: Long = 2_000L,
         apiUrl: String = server.url("/v1/").toString(),
-        retryDelayMillis: Long = 0L,
     ) = TranslationProviderSettings(
         apiUrl = apiUrl,
         apiKey = "test-secret",
         model = "test-model",
-        maximumAttempts = maximumAttempts,
-        retryDelayMillis = retryDelayMillis,
         readTimeoutMillis = readTimeoutMillis,
         allowInsecureLocalhost = true,
     )

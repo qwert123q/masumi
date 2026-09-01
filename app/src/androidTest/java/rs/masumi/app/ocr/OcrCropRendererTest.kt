@@ -10,6 +10,7 @@ import org.junit.runner.RunWith
 import rs.masumi.core.detection.PixelBox
 import rs.masumi.core.ocr.OcrCropDescriptor
 import rs.masumi.core.ocr.OcrCropStrategy
+import rs.masumi.core.ocr.OcrVisualDetailProfile
 
 @RunWith(AndroidJUnit4::class)
 class OcrCropRendererTest {
@@ -56,6 +57,29 @@ class OcrCropRendererTest {
             assertEquals(4, crop.height)
         }
         page.recycle()
+    }
+
+    @Test
+    fun highDetailCropDownsamplesToTheSourcePixelBoundInsteadOfFailing() {
+        val page = Bitmap.createBitmap(2_500, 2_000, Bitmap.Config.ARGB_8888)
+        try {
+            val crop = OcrCropRenderer().render(
+                page,
+                OcrCropDescriptor(
+                    strategy = OcrCropStrategy.HIGH_DETAIL_CONTEXT,
+                    box = PixelBox(0.0, 0.0, 2_500.0, 2_000.0),
+                    visualDetailProfile = OcrVisualDetailProfile.HIGH_DETAIL,
+                    maximumSourcePixels = 4_000_000,
+                ),
+            )
+
+            assertEquals(2_236, crop.width)
+            assertEquals(1_788, crop.height)
+            assertEquals(3, crop.rgb.size / (crop.width * crop.height))
+            assertEquals(true, crop.width.toLong() * crop.height <= 4_000_000)
+        } finally {
+            page.recycle()
+        }
     }
 
     private fun checkerboard(width: Int, height: Int): Bitmap =

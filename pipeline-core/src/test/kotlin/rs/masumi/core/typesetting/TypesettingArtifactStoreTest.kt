@@ -76,5 +76,11 @@ class TypesettingArtifactStoreTest {
         assertEquals(run, store.readPublishedRun(job.runArtifactKey))
         assertEquals(report, store.readPublishedReport(job.runArtifactKey))
         assertEquals(artifact, store.readPublishedPage(job.runArtifactKey, run.entries.single()))
+
+        // Local immutable artifacts are not deep-hashed again on every
+        // catalog/page read after their atomic publication.
+        Files.write(published.resolve(paths.second), "changed-local-bytes".toByteArray())
+        assertEquals(run, store.readPublishedRun(job.runArtifactKey))
+        assertEquals(artifact, store.readPublishedPage(job.runArtifactKey, run.entries.single()))
     }
 }

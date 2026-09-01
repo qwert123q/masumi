@@ -21,8 +21,10 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.forUserPresentation
 import rs.masumi.app.detection.PageBitmapDecoder
 import rs.masumi.app.pipeline.PipelineResourceLease
+import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineDeviceCapacity
 import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.ocr.OcrJobStatus
@@ -146,6 +148,7 @@ class OcrForegroundService : Service() {
                     activeRunner.run(projectId, cancellation::get, ::publishProgress)
                 }
             } catch (_: Throwable) {
+                PipelineQueueStore(this).fail(projectId, "STAGE_UNEXPECTED_FAILURE")
                 notificationManager.notify(NOTIFICATION_ID, unexpectedFailureNotification())
             } finally {
                 runner = null
@@ -217,7 +220,7 @@ class OcrForegroundService : Service() {
     private fun internalStatusPermission(): String = "$packageName.permission.INTERNAL_OCR_STATUS"
 
     private fun progressNotification(progress: OcrProgress): Notification {
-        val text = when (progress.status) {
+        val text = when (progress.status.forUserPresentation()) {
             OcrJobStatus.DOWNLOADING_MODEL -> getString(
                 R.string.ocr_notification_downloading,
                 progress.downloadedBytes,
@@ -229,10 +232,9 @@ class OcrForegroundService : Service() {
                 progress.terminalRegionCount,
                 progress.totalRegionCount,
             )
-            OcrJobStatus.SUCCEEDED -> getString(R.string.ocr_notification_succeeded)
-            OcrJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS -> getString(
-                R.string.ocr_notification_succeeded_preserved,
-            )
+            OcrJobStatus.SUCCEEDED,
+            OcrJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS,
+            -> getString(R.string.ocr_notification_succeeded)
             OcrJobStatus.CANCELLED -> getString(R.string.ocr_notification_cancelled)
             OcrJobStatus.FAILED -> getString(
                 R.string.ocr_notification_failed,

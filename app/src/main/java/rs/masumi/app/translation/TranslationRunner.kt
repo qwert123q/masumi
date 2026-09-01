@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedOcrRun
+import rs.masumi.app.pipeline.PipelineArtifactFreshness
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.importer.UuidIdSource
 import rs.masumi.core.model.PageRecord
@@ -32,6 +33,7 @@ import rs.masumi.core.translation.TranslationJobRecord
 import rs.masumi.core.translation.TranslationJobReducer
 import rs.masumi.core.translation.TranslationJobStatus
 import rs.masumi.core.translation.TranslationJobWindow
+import rs.masumi.core.translation.TranslationOutputValidationConfig
 import rs.masumi.core.translation.TranslationPageState
 import rs.masumi.core.translation.TranslationPolicy
 import rs.masumi.core.translation.TranslationPreserveReason
@@ -85,10 +87,11 @@ class TranslationRunner(
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
     private val glossaryMemory: TranslationGlossaryMemory? = null,
+    private val outputValidation: TranslationOutputValidationConfig = TranslationOutputValidationConfig(),
 ) {
     private val catalog = ProjectCatalog(workspaceRoot.toAbsolutePath().normalize())
     private val promptBuilder = TranslationPromptBuilder()
-    private val responseValidator = TranslationResponseValidator()
+    private val responseValidator = TranslationResponseValidator(outputValidation)
     private val externallyCancelled = AtomicBoolean(false)
     private val activeCall = AtomicReference<TranslationProviderCall?>()
 
@@ -105,7 +108,14 @@ class TranslationRunner(
     ): TranslationRunResult {
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
-        val ocrRun = requireNotNull(catalog.latestPublishedOcrRun(projectId)) {
+        val detectionRun = requireNotNull(catalog.latestPublishedRun(projectId)) {
+            "completed detection run was not found"
+        }
+        val ocrRun = requireNotNull(
+            catalog.publishedOcrRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact.runArtifactKey)
+            },
+        ) {
             "completed OCR run was not found"
         }
         validateOcrDependency(project, ocrRun)
@@ -121,6 +131,7 @@ class TranslationRunner(
             policy = policy,
             prompt = prompt,
             batching = batching,
+            outputValidation = outputValidation,
             provider = TranslationProviderDependency(
                 modelId = sanitizedModelId(settings.model),
                 temperature = settings.temperature,
@@ -130,7 +141,10 @@ class TranslationRunner(
             ),
             initialGlossarySha256 = initialGlossarySha256,
         )
-        val windows = TranslationBatchPlanner(batching, promptBuilder).plan(canonicalInputs)
+        val windows = TranslationBatchPlanner(batching, promptBuilder).plan(
+            canonicalInputs,
+            initialGlossary.associate { entry -> entry.source to entry.translation },
+        )
         val pageKeys = occurrenceInputs.associate { input ->
             input.pageOrder to TranslationArtifactIdentity.pageArtifactKey(input.ocrPageArtifactKey, dependencies)
         }
@@ -228,42 +242,9 @@ class TranslationRunner(
                 windowArtifacts += artifact
             }
 
-            // A model can return valid prose wrapped in malformed JSON for a
-            // large batch. Split only those failed batches and retry smaller
-            // groups; semantic item omissions are retried in isolation.
-            val recoveredIds = salvagePreservedItems(
-                windows = windows,
-                artifacts = windowArtifacts,
-                outcomes = outcomes,
-                glossary = glossary,
-                dependencies = dependencies,
-                settings = settings,
-                cancellation = ::isCancelled,
-            )
-            if (recoveredIds.isNotEmpty()) {
-                for (index in windowArtifacts.indices) {
-                    val artifact = windowArtifacts[index]
-                    windowArtifacts[index] = artifact.copy(
-                        items = artifact.items.map { outcomes[it.translationRegionId] ?: it },
-                    )
-                }
-                // The job's window counters drive the final status and the
-                // progress numbers; without this the run keeps reporting the
-                // pre-salvage outcome it no longer publishes.
-                recoveredIds
-                    .groupingBy { id ->
-                        windows.single { window ->
-                            window.items.any { it.input.translationRegionId == id }
-                        }.windowIndex
-                    }
-                    .eachCount()
-                    .forEach { (windowIndex, count) ->
-                        job = persist(
-                            TranslationJobReducer.salvageWindowItems(job, windowIndex, count, clock.millis()),
-                        )
-                    }
-            }
-            failWhenRequiredTranslationsRemain(outcomes, windowArtifacts)
+            // Old resumable jobs may contain a pre-fail-fast provider-error
+            // checkpoint. Never publish that legacy preserved result.
+            failIfNonPublishable(outcomes.values.toList())
 
             occurrenceInputs.sortedBy(PageTranslationInput::pageOrder).forEach { input ->
                 val checkpoint = job.pages.single { it.pageOrder == input.pageOrder }
@@ -296,8 +277,8 @@ class TranslationRunner(
                 entries = glossary,
             )
             val published = store.publishRun(job, run, glossaryArtifact, report)
-            glossaryMemory?.record(glossary)
             job = persist(job)
+            runCatching { glossaryMemory?.record(glossary) }
             return TranslationRunResult(job, run, report, published)
         } catch (_: TranslationCancellationSignal) {
             activeCall.getAndSet(null)?.cancel()
@@ -321,14 +302,13 @@ class TranslationRunner(
         }
     }
 
-    private fun executeWindow(
+    internal fun executeWindow(
         window: TranslationBatchWindow,
         windowKey: String,
         inputGlossarySha256: String,
         inputGlossary: List<TranslationGlossaryEntry>,
         settings: TranslationProviderSettings,
         cancellation: () -> Boolean,
-        discoverGlossary: Boolean = true,
     ): TranslationWindowArtifact {
         val started = clock.millis()
         if (window.exceedsBudget) {
@@ -351,29 +331,24 @@ class TranslationRunner(
         var usage: TranslationUsage? = null
         var workingGlossary = inputGlossary
 
-        if (discoverGlossary) {
-            val discoveryWindow = window.copy(
-                glossary = inputGlossary,
-                contextItems = (window.contextItems + window.items)
-                    .distinctBy { it.input.translationRegionId },
-                items = emptyList(),
+        val discoveryWindow = window.copy(
+            glossary = inputGlossary,
+            contextItems = (window.contextItems + window.items)
+                .distinctBy { it.input.translationRegionId },
+            items = emptyList(),
+        )
+        try {
+            val discovery = executeProviderCall(
+                settings = settings,
+                messages = promptBuilder.buildGlossaryDiscovery(window),
+                cancellation = cancellation,
             )
-            try {
-                val discovery = executeProviderCall(
-                    settings = settings,
-                    messages = promptBuilder.buildGlossaryDiscovery(window),
-                    cancellation = cancellation,
-                )
-                attemptCount += discovery.attemptCount
-                usage = usage.plus(discovery.usage)
-                val discovered = responseValidator.validate(discoveryWindow, discovery.response)
-                workingGlossary = mergeGlossary(workingGlossary, discovered.glossaryUpdates)
-            } catch (failure: TranslationProviderException) {
-                if (failure.code == TranslationProviderErrorCode.CANCELLED || cancellation()) {
-                    throw TranslationCancellationSignal()
-                }
-                attemptCount += failure.attemptCount
-            }
+            attemptCount += discovery.attemptCount
+            usage = usage.plus(discovery.usage)
+            val discovered = responseValidator.validate(discoveryWindow, discovery.response)
+            workingGlossary = mergeGlossary(workingGlossary, discovered.glossaryUpdates)
+        } catch (failure: TranslationProviderException) {
+            throwProviderFailure(failure, cancellation)
         }
 
         val translationWindow = window.copy(glossary = workingGlossary)
@@ -386,20 +361,88 @@ class TranslationRunner(
             attemptCount += result.attemptCount
             usage = usage.plus(result.usage)
             val validation = responseValidator.validate(translationWindow, result.response)
-            val outputGlossary = mergeGlossary(workingGlossary, validation.glossaryUpdates)
-            val normalizedItems = validation.items.map { item ->
-                val translated = item.translatedText ?: return@map item
-                val source = translationWindow.items.single {
-                    it.input.translationRegionId == item.translationRegionId
-                }.input.sourceText
-                item.copy(
-                    translatedText = TranslationTextNormalizer.normalize(
-                        sourceText = source,
-                        translatedText = translated,
-                        glossary = outputGlossary,
-                    ),
-                )
+            // Validate the response against the glossary that existed before
+            // this response. A bad sibling must not smuggle a response-local
+            // glossary update into the typography repair of an otherwise
+            // valid sibling.
+            val baseFirstPassItems = normalizeAndValidateItems(
+                translationWindow,
+                validation.items,
+                workingGlossary,
+            )
+            val candidateGlossary = mergeGlossary(workingGlossary, validation.glossaryUpdates)
+            val candidateFirstPassItems = if (baseFirstPassItems.all(::isGlossaryAcceptableItem)) {
+                normalizeAndValidateItems(translationWindow, validation.items, candidateGlossary)
+            } else {
+                baseFirstPassItems
             }
+            val acceptFirstPassGlossary = baseFirstPassItems.any {
+                it.state == TranslationResultState.TRANSLATED
+            } && baseFirstPassItems.all(::isGlossaryAcceptableItem) &&
+                candidateFirstPassItems.all(::isGlossaryAcceptableItem)
+            val firstPassItems = if (acceptFirstPassGlossary) {
+                candidateFirstPassItems
+            } else {
+                baseFirstPassItems
+            }
+            // Missing, duplicate, invalid-role, and blank results are protocol
+            // failures. Stop the whole window before spending another request
+            // on an unrelated semantic repair.
+            failIfNonPublishable(firstPassItems)
+            val acceptedFirstPassGlossaryUpdates = if (acceptFirstPassGlossary) {
+                validation.glossaryUpdates
+            } else {
+                emptyList()
+            }
+            val firstPassGlossary = mergeGlossary(workingGlossary, acceptedFirstPassGlossaryUpdates)
+            val invalidItems = translationWindow.items.filter { batchItem ->
+                firstPassItems.single { it.translationRegionId == batchItem.input.translationRegionId }
+                    .preserveReason in INVALID_OUTPUT_REASONS
+            }
+            val outputGlossary = firstPassGlossary
+            var retryModelId: String? = null
+            val retryItems = linkedMapOf<String, ValidatedTranslationItem>()
+            val retryIgnoredResponseIds = mutableListOf<String>()
+            invalidItems.forEach { invalidItem ->
+                val retryWindow = translationWindow.copy(
+                    // Every invalid item gets exactly one isolated retry. The
+                    // original context and pre-response glossary remain on the
+                    // copied window; valid siblings are never resent.
+                    items = listOf(invalidItem),
+                    estimatedInputTokens = 0,
+                    exceedsBudget = false,
+                )
+                try {
+                    val retryResult = executeProviderCall(
+                        settings = settings,
+                        messages = promptBuilder.build(retryWindow),
+                        cancellation = cancellation,
+                    )
+                    attemptCount += retryResult.attemptCount
+                    usage = usage.plus(retryResult.usage)
+                    val retryValidation = responseValidator.validate(retryWindow, retryResult.response)
+                    retryIgnoredResponseIds += retryValidation.ignoredResponseIds
+                    // Isolated repair may replace only the failed item. Its
+                    // response cannot amend the glossary shared by successful
+                    // siblings or later windows.
+                    val normalizedRetry = normalizeAndValidateItems(
+                        retryWindow,
+                        retryValidation.items,
+                        firstPassGlossary,
+                    ).single()
+                    // A semantically invalid quality repair remains the
+                    // original INVALID_* internal result. Blank, missing, or
+                    // duplicate repair output never issues a third request.
+                    if (normalizedRetry.state == TranslationResultState.TRANSLATED) {
+                        retryItems[normalizedRetry.translationRegionId] = normalizedRetry
+                    }
+                    retryModelId = retryResult.modelId ?: retryModelId
+                } catch (failure: TranslationProviderException) {
+                    throwProviderFailure(failure, cancellation)
+                }
+            }
+            val normalizedItems = firstPassItems.map { item -> retryItems[item.translationRegionId] ?: item }
+            failIfNonPublishable(normalizedItems)
             TranslationWindowArtifact(
                 windowIndex = window.windowIndex,
                 windowArtifactKey = windowKey,
@@ -407,31 +450,16 @@ class TranslationRunner(
                 outputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(outputGlossary),
                 outputGlossary = outputGlossary,
                 items = normalizedItems,
-                ignoredResponseIds = validation.ignoredResponseIds,
+                ignoredResponseIds = (validation.ignoredResponseIds + retryIgnoredResponseIds)
+                    .distinct()
+                    .sorted(),
                 usage = usage,
-                providerModelId = result.modelId,
+                providerModelId = retryModelId ?: result.modelId,
                 attemptCount = attemptCount,
                 durationMillis = (clock.millis() - started).coerceAtLeast(0L),
             )
         } catch (failure: TranslationProviderException) {
-            if (failure.code == TranslationProviderErrorCode.CANCELLED || cancellation()) {
-                throw TranslationCancellationSignal()
-            }
-            attemptCount += failure.attemptCount
-            val items = window.items.map { item -> item.preserved(TranslationPreserveReason.PROVIDER_FAILURE) }
-            TranslationWindowArtifact(
-                windowIndex = window.windowIndex,
-                windowArtifactKey = windowKey,
-                inputGlossarySha256 = inputGlossarySha256,
-                outputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(workingGlossary),
-                outputGlossary = workingGlossary,
-                items = items,
-                ignoredResponseIds = emptyList(),
-                usage = usage,
-                attemptCount = attemptCount,
-                durationMillis = (clock.millis() - started).coerceAtLeast(0L),
-                error = TranslationError(failure.code.name, failure.httpStatus),
-            )
+            throwProviderFailure(failure, cancellation)
         }
     }
 
@@ -516,16 +544,17 @@ class TranslationRunner(
                 it.dependencies == dependencies
         }
         if (candidate != null) {
-            candidate.windows.filter { it.state == TranslationWindowState.RUNNING }.forEach {
-                store.cleanInterruptedWindow(candidate, it.windowIndex)
-            }
-            val recovered = when (candidate.status) {
-                TranslationJobStatus.QUEUED -> candidate
-                TranslationJobStatus.RUNNING,
-                TranslationJobStatus.CANCELLED,
-                -> TranslationJobReducer.recoverInterrupted(candidate, clock.millis())
-                else -> error("terminal translation job cannot be resumed")
-            }
+            val recovered = TranslationJobReducer.recoverInterrupted(candidate, clock.millis())
+            recovered.windows
+                .filter { it.state == TranslationWindowState.PENDING }
+                .minOfOrNull(TranslationJobWindow::windowIndex)
+                ?.let { firstWindowIndex ->
+                    // Window identities depend on the glossary emitted by the
+                    // preceding window. Delete the complete untrusted suffix
+                    // before journalling its PENDING state so recovery remains
+                    // crash-safe and cannot collide with stale checkpoints.
+                    store.discardWindowSuffix(candidate, firstWindowIndex)
+                }
             store.writeJob(recovered)
             return recovered
         }
@@ -570,8 +599,16 @@ class TranslationRunner(
         val artifact = store.readPublishedRun(runKey) ?: return null
         val report = store.readPublishedReport(runKey) ?: return null
         require(artifact.projectId == project.manifest.projectId && artifact.dependencies == dependencies)
-        val job = store.readJob(report.jobId) ?: return null
-        require(job.status == report.status && job.status.isSuccessful())
+        var job = store.readJob(report.jobId) ?: return null
+        if (!job.status.isSuccessful()) {
+            job = runCatching {
+                TranslationJobReducer.finishSuccess(job, report.finishedAtEpochMillis).also(store::writeJob)
+            }.getOrNull() ?: return null
+        }
+        require(job.status == report.status)
+        runCatching {
+            store.readPublishedGlossary(runKey)?.entries?.let { glossaryMemory?.record(it) }
+        }
         return TranslationRunResult(
             job = job,
             runArtifact = artifact,
@@ -670,6 +707,36 @@ class TranslationRunner(
         preserveReason = reason,
     )
 
+    private fun normalizeAndValidateItems(
+        window: TranslationBatchWindow,
+        items: List<ValidatedTranslationItem>,
+        glossary: List<TranslationGlossaryEntry>,
+    ): List<ValidatedTranslationItem> = items.map { item ->
+        val translated = item.translatedText ?: return@map item
+        val source = window.items.single {
+            it.input.translationRegionId == item.translationRegionId
+        }.input.sourceText
+        val normalized = TranslationTextNormalizer.normalize(
+            sourceText = source,
+            translatedText = translated,
+            glossary = glossary,
+        )
+        val invalidReason = responseValidator.invalidOutputReason(source, normalized)
+        if (invalidReason == null) {
+            item.copy(translatedText = normalized)
+        } else {
+            item.copy(
+                translatedText = null,
+                state = TranslationResultState.PRESERVED_SOURCE,
+                preserveReason = invalidReason,
+            )
+        }
+    }
+
+    private fun isGlossaryAcceptableItem(item: ValidatedTranslationItem): Boolean =
+        item.state == TranslationResultState.TRANSLATED ||
+            item.preserveReason == TranslationPreserveReason.POLICY_PRESERVED
+
     private fun sanitizedModelId(model: String): String {
         val normalized = model.trim()
         if (normalized.length in 1..128 && SAFE_MODEL_ID.matches(normalized)) return normalized
@@ -687,122 +754,12 @@ class TranslationRunner(
 
     private class TranslationCancellationSignal : RuntimeException()
     private class FatalTranslationException(val code: String) : RuntimeException(code)
-    private fun salvagePreservedItems(
-        windows: List<TranslationBatchWindow>,
-        artifacts: List<TranslationWindowArtifact>,
-        outcomes: MutableMap<String, ValidatedTranslationItem>,
-        glossary: List<TranslationGlossaryEntry>,
-        dependencies: TranslationDependencies,
-        settings: TranslationProviderSettings,
-        cancellation: () -> Boolean,
-    ): Set<String> {
-        val template = windows.firstOrNull() ?: return emptySet()
-        val batchItemsById = windows.flatMap(TranslationBatchWindow::items)
-            .associateBy { it.input.translationRegionId }
-        val glossarySha256 = TranslationArtifactIdentity.glossarySha256(glossary)
-        val recovered = mutableSetOf<String>()
-        var recoveryWindowIndex = SALVAGE_WINDOW_INDEX_BASE
-
-        fun request(items: List<TranslationBatchItem>): TranslationWindowArtifact {
-            if (cancellation()) throw TranslationCancellationSignal()
-            val window = template.copy(
-                windowIndex = recoveryWindowIndex++,
-                glossary = glossary,
-                contextItems = emptyList(),
-                items = items,
-                estimatedInputTokens = 0,
-                exceedsBudget = false,
-            )
-            return executeWindow(
-                window = window,
-                windowKey = TranslationArtifactIdentity.windowArtifactKey(window, glossarySha256, dependencies),
-                inputGlossarySha256 = glossarySha256,
-                inputGlossary = glossary,
-                settings = settings,
-                cancellation = cancellation,
-                discoverGlossary = false,
-            )
-        }
-
-        fun recoverGroup(items: List<TranslationBatchItem>, retryWholeGroup: Boolean) {
-            if (items.isEmpty()) return
-            if (!retryWholeGroup && items.size > 1) {
-                val midpoint = items.size / 2
-                recoverGroup(items.subList(0, midpoint), retryWholeGroup = true)
-                recoverGroup(items.subList(midpoint, items.size), retryWholeGroup = true)
-                return
-            }
-            val artifact = request(items)
-            artifact.items
-                .filter { it.state == TranslationResultState.TRANSLATED }
-                .forEach { translated ->
-                    outcomes[translated.translationRegionId] = translated
-                    recovered += translated.translationRegionId
-                }
-            val remaining = artifact.items
-                .filter { it.state == TranslationResultState.PRESERVED_SOURCE }
-                .mapNotNull { batchItemsById[it.translationRegionId] }
-            if (
-                remaining.isNotEmpty() &&
-                items.size > 1 &&
-                artifact.error?.code
-                    ?.let { it == TranslationProviderErrorCode.MALFORMED_RESPONSE.name }
-                    != false
-            ) {
-                if (remaining.size == 1) {
-                    recoverGroup(remaining, retryWholeGroup = true)
-                } else {
-                    val midpoint = remaining.size / 2
-                    recoverGroup(remaining.subList(0, midpoint), retryWholeGroup = true)
-                    recoverGroup(remaining.subList(midpoint, remaining.size), retryWholeGroup = true)
-                }
-            }
-        }
-
-        // Retrying the same malformed batch tends to reproduce the same JSON
-        // truncation. Start one level smaller, then keep bisecting only a group
-        // that still fails.
-        artifacts
-            .filter { it.error?.code == TranslationProviderErrorCode.MALFORMED_RESPONSE.name }
-            .forEach { artifact ->
-                recoverGroup(
-                    items = artifact.items.mapNotNull { batchItemsById[it.translationRegionId] },
-                    retryWholeGroup = artifact.items.size == 1,
-                )
-            }
-
-        // Successful responses can still omit or invalidate individual items.
-        // One isolated request removes batch interactions and gives each item a
-        // final bounded provider retry.
-        outcomes.values
-            .filter {
-                it.state == TranslationResultState.PRESERVED_SOURCE &&
-                    it.preserveReason in SEMANTIC_RECOVERY_REASONS
-            }
-            .mapNotNull { batchItemsById[it.translationRegionId] }
-            .forEach { item ->
-                recoverGroup(listOf(item), retryWholeGroup = true)
-            }
-
-        return recovered
-    }
-
-    private fun failWhenRequiredTranslationsRemain(
-        outcomes: Map<String, ValidatedTranslationItem>,
-        artifacts: List<TranslationWindowArtifact>,
-    ) {
-        val remaining = outcomes.values.filter {
+    private fun failIfNonPublishable(items: List<ValidatedTranslationItem>) {
+        val remaining = items.filter {
             it.state == TranslationResultState.PRESERVED_SOURCE &&
                 it.preserveReason in NON_PUBLISHABLE_REASONS
         }
-        val remainingIds = remaining
-            .mapTo(mutableSetOf(), ValidatedTranslationItem::translationRegionId)
-        if (remainingIds.isEmpty()) return
-        val providerError = artifacts.firstNotNullOfOrNull { artifact ->
-            artifact.error?.takeIf {
-                artifact.items.any { item -> item.translationRegionId in remainingIds }
-            }
-        }
+        if (remaining.isEmpty()) return
         val responseError = when {
             remaining.any { it.preserveReason == TranslationPreserveReason.BLANK_TRANSLATION } ->
                 "BLANK_TRANSLATION_RESPONSE"
@@ -812,7 +769,17 @@ class TranslationRunner(
             } -> TranslationProviderErrorCode.MALFORMED_RESPONSE.name
             else -> "INCOMPLETE_TRANSLATION_RESPONSE"
         }
-        throw TerminalProviderFailure(providerError ?: TranslationError(responseError))
+        throw TerminalProviderFailure(TranslationError(responseError))
+    }
+
+    private fun throwProviderFailure(
+        failure: TranslationProviderException,
+        cancellation: () -> Boolean,
+    ): Nothing {
+        if (failure.code == TranslationProviderErrorCode.CANCELLED || cancellation()) {
+            throw TranslationCancellationSignal()
+        }
+        throw TerminalProviderFailure(TranslationError(failure.code.name, failure.httpStatus))
     }
 
     private class TerminalProviderFailure(val error: TranslationError) : RuntimeException(error.code)
@@ -820,13 +787,16 @@ class TranslationRunner(
     private companion object {
         const val EXPECTED_PROVIDER_CALLS = 2
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
-        val SEMANTIC_RECOVERY_REASONS = setOf(
+        val NON_PUBLISHABLE_REASONS = setOf(
             TranslationPreserveReason.MISSING_RESPONSE,
             TranslationPreserveReason.DUPLICATE_RESPONSE,
             TranslationPreserveReason.INVALID_ROLE,
             TranslationPreserveReason.BLANK_TRANSLATION,
+            TranslationPreserveReason.PROVIDER_FAILURE,
         )
-        val NON_PUBLISHABLE_REASONS = SEMANTIC_RECOVERY_REASONS + TranslationPreserveReason.PROVIDER_FAILURE
-        const val SALVAGE_WINDOW_INDEX_BASE = 100_000
+        val INVALID_OUTPUT_REASONS = setOf(
+            TranslationPreserveReason.INVALID_TARGET_SCRIPT,
+            TranslationPreserveReason.SOURCE_TEXT_ECHO,
+        )
     }
 }

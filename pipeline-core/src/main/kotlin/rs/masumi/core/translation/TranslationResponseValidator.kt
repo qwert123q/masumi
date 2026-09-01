@@ -1,6 +1,8 @@
 package rs.masumi.core.translation
 
-class TranslationResponseValidator {
+class TranslationResponseValidator(
+    private val outputValidation: TranslationOutputValidationConfig = TranslationOutputValidationConfig(),
+) {
     fun validate(
         window: TranslationBatchWindow,
         response: TranslationModelResponse,
@@ -15,6 +17,8 @@ class TranslationResponseValidator {
             val normalizedSource = source.trim()
             val normalizedTranslation = translation.trim()
             if (normalizedSource.isBlank() || normalizedTranslation.isBlank()) {
+                null
+            } else if (invalidOutputReason(normalizedSource, normalizedTranslation) != null) {
                 null
             } else {
                 TranslationGlossaryEntry(normalizedSource, normalizedTranslation)
@@ -49,9 +53,9 @@ class TranslationResponseValidator {
         if (!shouldTranslate(policy, effectiveRole)) {
             return preserved(requested, effectiveRole, TranslationPreserveReason.POLICY_PRESERVED)
         }
-        val translatedText = response.translation?.trim().orEmpty()
-        if (translatedText.isBlank()) {
-            return preserved(requested, effectiveRole, TranslationPreserveReason.BLANK_TRANSLATION)
+        val translatedText = TranslationSourceText.normalizeForOutputValidation(response.translation.orEmpty())
+        invalidOutputReason(requested.sourceText, translatedText)?.let { reason ->
+            return preserved(requested, effectiveRole, reason)
         }
         return ValidatedTranslationItem(
             translationRegionId = requested.translationRegionId,
@@ -61,6 +65,20 @@ class TranslationResponseValidator {
             state = TranslationResultState.TRANSLATED,
             preserveReason = null,
         )
+    }
+
+    /** Re-applies the wire-output guard after local typography/glossary normalization. */
+    fun invalidOutputReason(sourceText: String, translatedText: String): TranslationPreserveReason? {
+        val normalizedTarget = TranslationSourceText.normalizeForOutputValidation(translatedText)
+        if (normalizedTarget.isBlank()) return TranslationPreserveReason.BLANK_TRANSLATION
+        if (TranslationSourceText.containsJapanesePhoneticScript(normalizedTarget)) {
+            return TranslationPreserveReason.INVALID_TARGET_SCRIPT
+        }
+        val normalizedSource = TranslationSourceText.normalizeForOutputValidation(sourceText)
+        if (normalizedTarget == normalizedSource && !TranslationSourceText.isPureNumberOrSymbol(normalizedSource)) {
+            return TranslationPreserveReason.SOURCE_TEXT_ECHO
+        }
+        return null
     }
 
     private fun shouldTranslate(policy: TranslationPolicy, role: TranslationRole): Boolean = when (role) {

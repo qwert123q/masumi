@@ -49,7 +49,7 @@ Requests use stable item IDs and chapter reading order. The model receives bound
 }
 ```
 
-Results are joined by ID, never by array position or item count. Unknown IDs are discarded. Duplicate IDs, invalid roles, blank required translations, and missing requested IDs are isolated to those items; valid siblings still commit. Sound-effect items may deliberately return no translation when the active policy preserves them.
+Results are joined by ID, never by array position or item count. Unknown IDs are discarded. Duplicate IDs, invalid roles, blank required translations, and missing requested IDs make the current window fail immediately instead of triggering salvage requests. Sound-effect items may deliberately return no translation when the active policy preserves them.
 
 The prompt distinguishes `items` from read-only `context`: every requested item ID must appear exactly once, while context IDs must never be returned. An in-box dialogue item cannot be relabeled by the model. Free text may be classified as dialogue, narration, sound effect, or other text. Dialogue and narration are mandatory policy invariants; disabling either is rejected by the contract.
 
@@ -65,19 +65,19 @@ Glossary updates are validated and merged serially after a successful window. A 
 
 The first network implementation targets an OpenAI-compatible chat-completions API behind a narrow provider interface. Endpoint and credentials are runtime configuration and never enter project artifacts, reports, logs, repository files, or cache identities. Artifacts may record a sanitized model identifier, protocol revision, prompt revision, generation settings, usage counters, and latency.
 
-The client must use bounded timeouts, cancellation, retry only transient failures, redact credentials from errors, and record prompt/completion token usage when the provider returns it. Batching and cache reuse are the primary cost controls; correctness does not depend on a particular commercial provider.
+The client must use bounded timeouts, cancellation, exactly one transport attempt per call, redact credentials from errors, and record prompt/completion token usage when the provider returns it. Batching and cache reuse are the primary cost controls; correctness does not depend on a particular commercial provider.
 
 The first provider implementation uses OkHttp and accepts either an API base path or a complete `/chat/completions` endpoint. It appends only `/chat/completions`; it never guesses or inserts `/v1`. Requests use bearer authentication, two chat messages, configurable JSON-object response format, bounded output tokens, and deterministic sampling settings. Runtime settings redact the endpoint, key, and model from `toString()`.
 
-Network failures, timeouts, HTTP `408`, `429`, and `5xx` responses are retryable under a bounded fixed-delay policy. Other HTTP failures and structurally invalid successful responses fail immediately. Cancellation closes the active OkHttp call and interrupts retry waiting. Public exceptions contain only a safe code, optional HTTP status, retryability, and attempt count; response bodies, URLs, credentials, and underlying exception messages are deliberately not retained.
+Network failures, timeouts, every non-success HTTP response, and structurally invalid successful responses fail after the first request. There is no provider retry/backoff configuration or `Retry-After` wait. Cancellation closes the active OkHttp call. Public exceptions contain only a safe code, optional HTTP status, and attempt count; response bodies, URLs, credentials, and underlying exception messages are deliberately not retained.
 
 ## Recovery and reporting
 
-Translation checkpoints at the window and page boundaries. Process loss repeats only the active uncommitted window. A terminal report records translated, sound-effect-preserved, OCR-protected, missing-response, invalid-response, and provider-failure counts plus sanitized usage and duration totals.
+Translation checkpoints at the window and page boundaries. Ordinary process loss repeats only the active uncommitted window. A terminal provider/protocol failure pauses the project and is not retried by the scheduler. Legacy untrusted checkpoints are never published; manual continuation creates or recovers work from the last trusted boundary. A terminal report records translated, protected, usage, and duration totals without credentials.
 
-A provider failure may retry and switch to a configured fallback later, but it never fabricates a translation. Exhausted items retain source artwork and allow the fully automatic pipeline to finish with a protected-result status.
+A provider failure never triggers an automatic retry or fallback. A structurally valid item that still contains Japanese or echoes its source may receive one isolated quality repair; if that result is still semantically invalid, the source artwork is retained and the automatic pipeline may finish with a protected-result status.
 
-Each window checkpoint atomically stores its validated item outcomes, input and output glossary digests, complete normalized output glossary, safe provider metadata, token usage, attempt count, and duration before the job journal advances. The next window accepts only the previous terminal checkpoint's output glossary digest. A crash can therefore leave at most one unjournaled active-window file, which recovery removes before returning only that window to pending.
+Each window checkpoint atomically stores its validated item outcomes, input and output glossary digests, complete normalized output glossary, safe provider metadata, token usage, attempt count, and duration before the job journal advances. The next window accepts only the previous trusted checkpoint's output glossary digest. Recovery deletes stale window and affected-page checkpoints before journalling the rewound suffix, so an interrupted cleanup is safe to repeat and later windows cannot reuse results based on an obsolete glossary.
 
 Page artifacts join terminal window outcomes back to the original page and carry OCR-protected regions separately. After every page is committed, the run publisher atomically exposes `artifact.json`, page translation JSON, the final `glossary.json`, and `report.json`. Cache identity covers the OCR run/page keys, explicit policy and prompt fields, batching limits, protocol, sanitized model, generation settings, initial glossary digest, stable item source text, and role hints; endpoint and credentials remain excluded.
 

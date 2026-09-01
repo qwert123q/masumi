@@ -1,9 +1,7 @@
 package rs.masumi.app.ocr
 
 import android.graphics.Bitmap
-import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -14,6 +12,8 @@ import rs.masumi.app.detection.PageDecodeException
 import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedDetectionRun
+import rs.masumi.app.pipeline.SourceFilePreflight
+import rs.masumi.app.pipeline.SourceFilePreflightException
 import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.detection.PageDetectionArtifact
 import rs.masumi.core.importer.IdSource
@@ -80,7 +80,7 @@ class OcrRunner(
     private val decoder: PageBitmapDecoder,
     private val cropRenderer: OcrCropRenderer,
     private val previewRenderer: OcrPreviewRenderer,
-    private val dependencies: OcrDependencies = defaultOcrDependencies(),
+    private val dependencies: OcrDependencies = currentOcrDependencies(),
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
     private val secondaryEngineFactory: OcrEngineFactory? = null,
@@ -88,7 +88,7 @@ class OcrRunner(
     private val workspaceRoot = workspaceRoot.toAbsolutePath().normalize()
     private val catalog = ProjectCatalog(this.workspaceRoot)
     private val consolidator = OcrCandidateConsolidator(dependencies.consolidation, dependencies.readingOrder)
-    private val cropPolicy = OcrCropPolicy(dependencies.crop)
+    private val cropPolicy = OcrCropPolicy(dependencies.crop, dependencies.highDetailRetry)
     private val qualityEvaluator = OcrQualityEvaluator(dependencies.quality)
     private val activeEngine = AtomicReference<OcrEngine?>()
     private val activeSecondaryEngine = AtomicReference<OcrEngine?>()
@@ -188,7 +188,7 @@ class OcrRunner(
         }
 
         try {
-            validateSources(project.directory, project.manifest)
+            val sourcePaths = preflightSources(project.directory, project.manifest)
             if (isCancelled()) throw OcrCancellationSignal()
 
             job = persist(OcrJobReducer.startModelDownload(job, clock.millis()))
@@ -232,7 +232,7 @@ class OcrRunner(
                 val detectionPage = detectionPages[sourcePage.pageId]
                     ?: throw FatalOcrException("DETECTION_PAGE_INVALID")
                 val pageCandidates = candidates.getValue(sourcePage.pageId)
-                val decoded = decoder.decode(resolveSource(project.directory, sourcePage))
+                val decoded = decoder.decode(sourcePaths.getValue(sourcePage.pageId))
                 try {
                     require(decoded.bitmap.width == detectionPage.visibleWidth)
                     require(decoded.bitmap.height == detectionPage.visibleHeight)
@@ -458,6 +458,11 @@ class OcrRunner(
                             if (isCancelled()) throw OcrCancellationSignal()
                             val artifact = recognizeRegion(
                                 engine = engine,
+                                // Keep ordinary crops parallel, but create the
+                                // large lazy high-detail projector on one
+                                // engine only. Two such contexts can push a
+                                // memory-rich phone into LMK pressure.
+                                highDetailEngine = engines.first(),
                                 page = page,
                                 detectionPage = detectionPage,
                                 candidate = candidate,
@@ -518,6 +523,7 @@ class OcrRunner(
 
     private fun recognizeRegion(
         engine: OcrEngine,
+        highDetailEngine: OcrEngine = engine,
         page: Bitmap,
         detectionPage: PageDetectionArtifact,
         candidate: OcrCandidate,
@@ -531,50 +537,16 @@ class OcrRunner(
         )
         descriptors.forEach { descriptor ->
             if (cancellation()) throw OcrCancellationSignal()
-            var rendered: RenderedOcrCrop? = null
-            var inferenceShouldPreserveRegion = false
-            val attempt = try {
-                rendered = cropRenderer.render(page, descriptor)
-                val crop = requireNotNull(rendered)
-                val result = engine.recognize(
-                    OcrEngineRequest(
-                        rgb = crop.rgb,
-                        width = crop.width,
-                        height = crop.height,
-                        prompt = dependencies.generation.prompt,
-                        maximumGeneratedTokens = dependencies.generation.maximumGeneratedTokens,
-                        repetitionPenalty = dependencies.generation.repetitionPenalty,
-                    ),
-                    cancellation,
-                )
-                if (cancellation()) throw OcrCancellationSignal()
-                result.toAttempt(
-                    descriptor,
-                    qualityEvaluator.normalize(result.rawText),
-                    engine.executionBackend,
-                )
-            } catch (failure: Throwable) {
-                if (cancellation() ||
-                    (failure is OcrEngineException && failure.code == OcrEngineErrorCode.CANCELLED)
-                ) {
-                    throw OcrCancellationSignal()
-                }
-                inferenceShouldPreserveRegion = failure is OcrEngineException &&
-                    (
-                        failure.code == OcrEngineErrorCode.TIMEOUT ||
-                            failure.code == OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE
-                        )
-                failure.toFailedAttempt(descriptor, rendered, engine.executionBackend)
-            }
-            attempts += attempt
-            if (inferenceShouldPreserveRegion) {
+            val outcome = recognizeAttempt(engine, page, descriptor, cancellation)
+            attempts += outcome.attempt
+            if (outcome.shouldPreserveSource) {
                 return OcrRegionArtifact(
                     candidate = candidate,
                     attempts = attempts,
                     selectedAttemptIndex = null,
                     quality = null,
                     state = OcrRegionState.PRESERVED_SOURCE,
-                    error = attempt.error,
+                    error = outcome.attempt.error,
                 )
             }
             val successfulAttempts = attempts.filter { it.error == null }
@@ -584,9 +556,7 @@ class OcrRunner(
                     candidate.sourceClass,
                     attempts,
                 )
-                if (decision.state == OcrRegionState.RECOGNIZED ||
-                    decision.state == OcrRegionState.NO_TEXT_CONFIRMED
-                ) {
+                if (decision.state == OcrRegionState.RECOGNIZED) {
                     return OcrRegionArtifact(
                         candidate = candidate,
                         attempts = attempts,
@@ -608,6 +578,27 @@ class OcrRunner(
                 error = error,
             )
         }
+        val highDetail = recognizeAttempt(
+            engine = highDetailEngine,
+            page = page,
+            descriptor = cropPolicy.highDetailRetry(
+                candidate,
+                detectionPage.visibleWidth,
+                detectionPage.visibleHeight,
+            ),
+            cancellation = cancellation,
+        )
+        attempts += highDetail.attempt
+        if (highDetail.shouldPreserveSource) {
+            return OcrRegionArtifact(
+                candidate = candidate,
+                attempts = attempts,
+                selectedAttemptIndex = null,
+                quality = null,
+                state = OcrRegionState.PRESERVED_SOURCE,
+                error = highDetail.attempt.error,
+            )
+        }
         val decision = qualityEvaluator.evaluate(
             candidate.detectorConfidence,
             candidate.sourceClass,
@@ -619,8 +610,65 @@ class OcrRunner(
             selectedAttemptIndex = decision.selectedAttemptIndex,
             quality = decision.quality,
             state = decision.state,
+            error = highDetail.attempt.error,
         )
     }
+
+    private fun recognizeAttempt(
+        engine: OcrEngine,
+        page: Bitmap,
+        descriptor: OcrCropDescriptor,
+        cancellation: () -> Boolean,
+    ): RecognitionAttemptOutcome {
+        var rendered: RenderedOcrCrop? = null
+        return try {
+            rendered = cropRenderer.render(page, descriptor)
+            val crop = requireNotNull(rendered)
+            val result = engine.recognize(
+                OcrEngineRequest(
+                    rgb = crop.rgb,
+                    width = crop.width,
+                    height = crop.height,
+                    prompt = dependencies.generation.prompt,
+                    maximumGeneratedTokens = dependencies.generation.maximumGeneratedTokens,
+                    repetitionPenalty = dependencies.generation.repetitionPenalty,
+                    visualDetailProfile = descriptor.visualDetailProfile,
+                    maximumVisualTokens = if (
+                        descriptor.visualDetailProfile == rs.masumi.core.ocr.OcrVisualDetailProfile.HIGH_DETAIL
+                    ) {
+                        dependencies.highDetailRetry.maximumVisualTokens
+                    } else {
+                        0
+                    },
+                    maximumSourcePixels = descriptor.maximumSourcePixels ?: 0,
+                ),
+                cancellation,
+            )
+            if (cancellation()) throw OcrCancellationSignal()
+            RecognitionAttemptOutcome(
+                result.toAttempt(descriptor, qualityEvaluator.normalize(result.rawText), engine.executionBackend),
+                shouldPreserveSource = false,
+            )
+        } catch (failure: Throwable) {
+            if (cancellation() ||
+                (failure is OcrEngineException && failure.code == OcrEngineErrorCode.CANCELLED)
+            ) {
+                throw OcrCancellationSignal()
+            }
+            val shouldPreserve = failure is OcrEngineException &&
+                (failure.code == OcrEngineErrorCode.TIMEOUT ||
+                    failure.code == OcrEngineErrorCode.ACCELERATOR_UNAVAILABLE)
+            RecognitionAttemptOutcome(
+                failure.toFailedAttempt(descriptor, rendered, engine.executionBackend),
+                shouldPreserveSource = shouldPreserve,
+            )
+        }
+    }
+
+    private data class RecognitionAttemptOutcome(
+        val attempt: OcrAttemptArtifact,
+        val shouldPreserveSource: Boolean,
+    )
 
     private fun OcrEngineResult.toAttempt(
         descriptor: OcrCropDescriptor,
@@ -808,37 +856,17 @@ class OcrRunner(
     private fun detectionEntry(run: PublishedDetectionRun, order: Int) =
         run.artifact.entries.single { it.order == order }
 
-    private fun validateSources(projectDirectory: Path, manifest: ProjectManifest) {
-        manifest.pages.distinctBy(PageRecord::pageId).forEach { page ->
+    private fun preflightSources(projectDirectory: Path, manifest: ProjectManifest): Map<String, Path> =
+        manifest.pages.distinctBy(PageRecord::pageId).associate { page ->
             require(SHA256.matches(page.pageId)) { "page ID is not a SHA-256 digest" }
             require(page.pageId == page.sourceSha256) { "page and source digests differ" }
-            val source = resolveSource(projectDirectory, page)
-            if (!Files.isRegularFile(source)) throw FatalOcrException("SOURCE_MISSING")
-            if (Files.size(source) != page.byteLength) throw FatalOcrException("SOURCE_LENGTH_MISMATCH")
-            if (sha256(source) != page.sourceSha256) throw FatalOcrException("SOURCE_HASH_MISMATCH")
-        }
-    }
-
-    private fun resolveSource(projectDirectory: Path, page: PageRecord): Path {
-        require(page.storedPath.isNotBlank() && !page.storedPath.startsWith('/'))
-        require(page.storedPath.split('/').none { it.isBlank() || it == ".." })
-        return projectDirectory.resolve(page.storedPath).normalize().also { source ->
-            require(source.startsWith(projectDirectory)) { "source path escaped project" }
-        }
-    }
-
-    private fun sha256(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).buffered().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read > 0) digest.update(buffer, 0, read)
+            val source = try {
+                SourceFilePreflight.resolve(projectDirectory, page)
+            } catch (failure: SourceFilePreflightException) {
+                throw FatalOcrException(failure.code)
             }
+            page.pageId to source
         }
-        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-    }
 
     private fun OcrJobRecord.toRunArtifact(createdAt: Long): OcrRunArtifact = OcrRunArtifact(
         runArtifactKey = runArtifactKey,
@@ -935,7 +963,7 @@ class OcrRunner(
 
     private fun safeFatalMessage(code: String): String = when (code) {
         "SOURCE_MISSING" -> "An imported source page was missing"
-        "SOURCE_LENGTH_MISMATCH", "SOURCE_HASH_MISMATCH" -> "An imported source page failed integrity checks"
+        "SOURCE_LENGTH_MISMATCH" -> "An imported source page failed integrity checks"
         "DETECTION_PAGE_INVALID" -> "The detection dependency was invalid"
         "COMMITTED_REGION_INVALID", "COMMITTED_PAGE_INVALID" -> "An OCR checkpoint was invalid"
         "MODEL_PACKAGE_DEPENDENCY_MISMATCH" -> "The installed OCR model package was incompatible"
@@ -964,7 +992,7 @@ class OcrRunner(
     }
 }
 
-private fun defaultOcrDependencies(): OcrDependencies {
+internal fun currentOcrDependencies(): OcrDependencies {
     val descriptor = PinnedPaddleOcrVl.descriptor
     return OcrDependencies(
         modelPackage = descriptor.toRef(),

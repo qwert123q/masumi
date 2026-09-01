@@ -37,6 +37,56 @@ class OcrQualityEvaluatorTest {
     }
 
     @Test
+    fun `isolated high confidence dissent cannot replace a passing primary`() {
+        val decision = OcrQualityEvaluator().evaluate(
+            detectorConfidence = 0.8,
+            sourceClass = DetectorClass.TEXT_IN_BUBBLE,
+            attempts = listOf(
+                attempt("今日は", 0.56),
+                attempt("全く別の幻覚", 0.99),
+            ),
+        )
+
+        assertEquals(OcrRegionState.RECOGNIZED, decision.state)
+        assertEquals(0, decision.selectedAttemptIndex)
+        assertEquals("PRIMARY_TOKEN_PROBABILITY", decision.quality.decisionReason)
+    }
+
+    @Test
+    fun `isolated high confidence dissent cannot replace an agreeing pair`() {
+        val decision = OcrQualityEvaluator().evaluate(
+            detectorConfidence = 0.8,
+            sourceClass = DetectorClass.TEXT_IN_BUBBLE,
+            attempts = listOf(
+                attempt("今日は", 0.50),
+                attempt("今日は", 0.48),
+                attempt("全く別の幻覚", 0.99),
+            ),
+        )
+
+        assertEquals(OcrRegionState.RECOGNIZED, decision.state)
+        assertEquals(0, decision.selectedAttemptIndex)
+        assertEquals("ATTEMPT_AGREEMENT", decision.quality.decisionReason)
+    }
+
+    @Test
+    fun `passing high detail evidence outranks an unsupported standard guess`() {
+        val decision = OcrQualityEvaluator().evaluate(
+            detectorConfidence = 0.8,
+            sourceClass = DetectorClass.TEXT_IN_BUBBLE,
+            attempts = listOf(
+                attempt("候補", 0.40),
+                attempt("全く別の幻覚", 0.99),
+                attempt("文脈で認識", 0.70).copy(strategy = OcrCropStrategy.HIGH_DETAIL_CONTEXT),
+            ),
+        )
+
+        assertEquals(OcrRegionState.RECOGNIZED, decision.state)
+        assertEquals(2, decision.selectedAttemptIndex)
+        assertEquals("HIGH_DETAIL_TOKEN_PROBABILITY", decision.quality.decisionReason)
+    }
+
+    @Test
     fun `forced truncation is never recognized`() {
         val decision = OcrQualityEvaluator().evaluate(
             detectorConfidence = 0.9,
@@ -60,15 +110,49 @@ class OcrQualityEvaluatorTest {
     }
 
     @Test
-    fun `two clean empty attempts confirm no text`() {
+    fun `clean empty standard crops remain unresolved until the targeted retry`() {
         val decision = OcrQualityEvaluator().evaluate(
             detectorConfidence = 0.9,
             sourceClass = DetectorClass.TEXT_IN_BUBBLE,
-            attempts = listOf(attempt("", 0.99), attempt("", 0.99)),
+            attempts = listOf(attempt("", 0.99), attempt("", 0.99), attempt("", 0.99)),
         )
 
-        assertEquals(OcrRegionState.NO_TEXT_CONFIRMED, decision.state)
-        assertEquals(null, decision.selectedAttemptIndex)
+        assertEquals(OcrRegionState.NEEDS_FALLBACK, decision.state)
+    }
+
+    @Test
+    fun `high detail retry can recognize after standard crops were empty`() {
+        val decision = OcrQualityEvaluator().evaluate(
+            detectorConfidence = 0.9,
+            sourceClass = DetectorClass.TEXT_IN_BUBBLE,
+            attempts = listOf(
+                attempt("", 0.99),
+                attempt("", 0.99),
+                attempt("", 0.99),
+                attempt("文脈で認識", 0.9).copy(strategy = OcrCropStrategy.HIGH_DETAIL_CONTEXT),
+            ),
+        )
+
+        assertEquals(OcrRegionState.RECOGNIZED, decision.state)
+        assertEquals(3, decision.selectedAttemptIndex)
+        assertEquals("HIGH_DETAIL_TOKEN_PROBABILITY", decision.quality.decisionReason)
+    }
+
+    @Test
+    fun `empty high detail retry remains unresolved for source protection`() {
+        val decision = OcrQualityEvaluator().evaluate(
+            detectorConfidence = 0.9,
+            sourceClass = DetectorClass.TEXT_IN_BUBBLE,
+            attempts = listOf(
+                attempt("", 0.99),
+                attempt("", 0.99),
+                attempt("", 0.99),
+                attempt("", 0.99).copy(strategy = OcrCropStrategy.HIGH_DETAIL_CONTEXT),
+            ),
+        )
+
+        assertEquals(OcrRegionState.NEEDS_FALLBACK, decision.state)
+        assertEquals("HIGH_DETAIL_RETRY_EMPTY", decision.quality.decisionReason)
     }
 
     @Test
@@ -91,6 +175,7 @@ class OcrQualityEvaluatorTest {
         )
 
         assertEquals(OcrRegionState.NEEDS_FALLBACK, decision.state)
+        assertEquals(null, decision.selectedAttemptIndex)
         assertEquals("LOW_CONFIDENCE_FREE_TEXT_SCRIPT_MISMATCH", decision.quality.decisionReason)
     }
 

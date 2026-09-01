@@ -1,6 +1,9 @@
 package rs.masumi.core.translation
 
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -58,6 +61,48 @@ class WorkspaceGlossaryStoreTest {
 
             Files.writeString(root.resolve("series-glossary.json"), "not json")
             assertTrue(WorkspaceGlossaryStore(root).load().isEmpty())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `concurrent stores retain both mappings while earlier mapping stays authoritative`() {
+        val root = Files.createTempDirectory("glossary-concurrent-")
+        try {
+            WorkspaceGlossaryStore(root).record(listOf(TranslationGlossaryEntry("既存", "先到")))
+            val start = CountDownLatch(1)
+            val ready = CountDownLatch(2)
+            val finished = CountDownLatch(2)
+            val first = WorkspaceGlossaryStore(root)
+            val second = WorkspaceGlossaryStore(root)
+            val workers = listOf(
+                thread {
+                    ready.countDown()
+                    start.await()
+                    first.record(listOf(TranslationGlossaryEntry("既存", "后到"), TranslationGlossaryEntry("甲", "甲译")))
+                    finished.countDown()
+                },
+                thread {
+                    ready.countDown()
+                    start.await()
+                    second.record(listOf(TranslationGlossaryEntry("乙", "乙译")))
+                    finished.countDown()
+                },
+            )
+            assertTrue(ready.await(5, TimeUnit.SECONDS))
+            start.countDown()
+            assertTrue(finished.await(5, TimeUnit.SECONDS))
+            workers.forEach(Thread::join)
+
+            assertEquals(
+                listOf(
+                    TranslationGlossaryEntry("乙", "乙译"),
+                    TranslationGlossaryEntry("既存", "先到"),
+                    TranslationGlossaryEntry("甲", "甲译"),
+                ),
+                WorkspaceGlossaryStore(root).load(),
+            )
         } finally {
             root.toFile().deleteRecursively()
         }

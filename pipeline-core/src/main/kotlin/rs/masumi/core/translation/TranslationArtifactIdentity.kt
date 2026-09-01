@@ -67,6 +67,7 @@ object TranslationArtifactIdentity {
         add("maximumEstimatedInputTokens" to value.batching.maximumEstimatedInputTokens.toString())
         add("maximumItemsPerWindow" to value.batching.maximumItemsPerWindow.toString())
         add("maximumContextItems" to value.batching.maximumContextItems.toString())
+        add("outputValidationRevision" to value.outputValidation.revision)
         add("providerProtocol" to value.provider.protocolRevision)
         add("modelId" to value.provider.modelId)
         add("temperature" to value.provider.temperature.toString())

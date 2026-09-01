@@ -3,7 +3,6 @@ package rs.masumi.app.cleanup
 import rs.masumi.app.PageImageEncoder
 import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
-import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.time.Clock
@@ -13,6 +12,9 @@ import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedOcrRun
 import rs.masumi.app.detection.PublishedTranslationRun
+import rs.masumi.app.pipeline.PipelineArtifactFreshness
+import rs.masumi.app.pipeline.SourceFilePreflight
+import rs.masumi.app.pipeline.SourceFilePreflightException
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupDependencies
 import rs.masumi.core.cleanup.CleanupError
@@ -22,6 +24,7 @@ import rs.masumi.core.cleanup.CleanupJobRecord
 import rs.masumi.core.cleanup.CleanupJobReducer
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupMaskModelRef
+import rs.masumi.core.cleanup.CleanupNeuralModelRef
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.cleanup.CleanupPreserveReason
@@ -70,6 +73,7 @@ class CleanupRunner(
     private val engine: SourceCleanupEngine = SourceCleanupEngine(),
     private val policy: CleanupPolicy = CleanupPolicy(),
     private val maskModel: CleanupMaskModelRef? = null,
+    private val neuralModel: CleanupNeuralModelRef? = null,
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
 ) {
@@ -87,7 +91,19 @@ class CleanupRunner(
     ): CleanupRunResult {
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
-        val translationRun = requireNotNull(catalog.latestPublishedTranslationRun(projectId)) {
+        val detectionRun = requireNotNull(catalog.latestPublishedRun(projectId)) {
+            "completed detection run was not found"
+        }
+        val currentOcrRun = requireNotNull(
+            catalog.publishedOcrRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact.runArtifactKey)
+            },
+        ) { "completed OCR run was not found" }
+        val translationRun = requireNotNull(
+            catalog.publishedTranslationRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.translation(it.artifact, currentOcrRun.artifact.runArtifactKey)
+            },
+        ) {
             "completed translation run was not found"
         }
         val ocrRun = requireNotNull(
@@ -98,6 +114,7 @@ class CleanupRunner(
             translationRunArtifactKey = translationRun.artifact.runArtifactKey,
             policy = policy,
             maskModel = maskModel,
+            neuralModel = neuralModel,
         )
         val pageKeys = project.manifest.pages.associate { page ->
             val translationEntry = translationRun.artifact.entries.single { it.pageOrder == page.order }
@@ -225,7 +242,11 @@ class CleanupRunner(
         dependencies: CleanupDependencies,
         cancellation: () -> Boolean,
     ): Pair<PageCleanupArtifact, ByteArray> {
-        validateSource(project.directory, sourcePage)
+        val sourcePath = try {
+            SourceFilePreflight.resolve(project.directory, sourcePage)
+        } catch (failure: SourceFilePreflightException) {
+            throw FatalCleanupException(failure.code)
+        }
         val translationEntry = translationRun.artifact.entries.single { it.pageOrder == sourcePage.order }
         val translationPage = TranslationArtifactStore(project.directory).readPublishedPage(
             translationRun.artifact.runArtifactKey,
@@ -253,7 +274,7 @@ class CleanupRunner(
                     ?.coerceAtLeast(1),
             )
         }
-        val decoded = decoder.decode(resolveSource(project.directory, sourcePage))
+        val decoded = decoder.decode(sourcePath)
         try {
             if (ocrPage != null) {
                 require(decoded.bitmap.width == ocrPage.visibleWidth && decoded.bitmap.height == ocrPage.visibleHeight)
@@ -391,20 +412,6 @@ class CleanupRunner(
         }
     }
 
-    private fun validateSource(projectDirectory: Path, page: PageRecord) {
-        val path = resolveSource(projectDirectory, page)
-        if (!Files.isRegularFile(path)) throw FatalCleanupException("SOURCE_MISSING")
-        if (Files.size(path) != page.byteLength) throw FatalCleanupException("SOURCE_LENGTH_MISMATCH")
-        if (sha256(path) != page.sourceSha256) throw FatalCleanupException("SOURCE_HASH_MISMATCH")
-    }
-
-    private fun resolveSource(projectDirectory: Path, page: PageRecord): Path {
-        require(page.storedPath.isNotBlank() && !page.storedPath.startsWith('/'))
-        val path = projectDirectory.resolve(page.storedPath).normalize()
-        require(path.startsWith(projectDirectory.normalize()))
-        return path
-    }
-
     private fun OcrRegionArtifact.cleanupStrategy(): CleanupStrategy =
         if (candidate.sourceClass == DetectorClass.TEXT_IN_BUBBLE) {
             CleanupStrategy.FLAT_LOCAL_FILL
@@ -475,19 +482,6 @@ class CleanupRunner(
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes).joinToString("") { "%02x".format(it) }
-
-    private fun sha256(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).buffered().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read > 0) digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
 
     private fun Throwable.safePageErrorCode(): String = when (this) {
         is FatalCleanupException -> code

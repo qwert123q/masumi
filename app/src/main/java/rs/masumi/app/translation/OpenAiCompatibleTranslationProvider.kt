@@ -31,7 +31,6 @@ class OpenAiCompatibleTranslationProvider(
     private val baseClient: OkHttpClient = OkHttpClient(),
     private val translationJson: TranslationJson = TranslationJson(),
     private val responseJson: Json = Json { ignoreUnknownKeys = true },
-    private val retryWaiter: TranslationRetryWaiter = TranslationRetryWaiter(::waitWithCancellation),
     private val nanoTime: () -> Long = System::nanoTime,
 ) : TranslationProvider {
     override fun newCall(
@@ -56,77 +55,61 @@ class OpenAiCompatibleTranslationProvider(
             check(executed.compareAndSet(false, true)) { "translation provider calls are one-shot" }
             val started = nanoTime()
             val client = baseClient.newBuilder()
+                .retryOnConnectionFailure(false)
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .connectTimeout(settings.connectTimeoutMillis, TimeUnit.MILLISECONDS)
                 .readTimeout(settings.readTimeoutMillis, TimeUnit.MILLISECONDS)
                 .writeTimeout(settings.writeTimeoutMillis, TimeUnit.MILLISECONDS)
                 .build()
             val request = buildRequest(settings, messages)
-            var attempt = 0
-            while (attempt < settings.maximumAttempts) {
-                attempt += 1
-                if (cancelled.get()) throw cancelled(attempt)
-                try {
-                    val parsed = executeOnce(client, request, attempt)
-                    if (cancelled.get()) throw cancelled(attempt)
-                    return TranslationProviderResult(
-                        response = parsed.response,
-                        usage = parsed.usage,
-                        modelId = parsed.modelId,
-                        attemptCount = attempt,
-                        durationMillis = elapsedMillis(started),
-                    )
-                } catch (error: TranslationProviderException) {
-                    if (!error.retryable || attempt >= settings.maximumAttempts) throw error
-                    if (!retryWaiter.wait(retryDelayMillis(settings, attempt, error.retryAfterMillis), cancelled::get)) {
-                        throw cancelled(attempt)
-                    }
-                } catch (_: SocketTimeoutException) {
-                    val mapped = TranslationProviderException(
-                        code = TranslationProviderErrorCode.TIMEOUT,
-                        retryable = true,
-                        attemptCount = attempt,
-                    )
-                    if (attempt >= settings.maximumAttempts) throw mapped
-                    if (!retryWaiter.wait(retryDelayMillis(settings, attempt), cancelled::get)) {
-                        throw cancelled(attempt)
-                    }
-                } catch (_: IOException) {
-                    if (cancelled.get()) throw cancelled(attempt)
-                    val mapped = TranslationProviderException(
-                        code = TranslationProviderErrorCode.NETWORK,
-                        retryable = true,
-                        attemptCount = attempt,
-                    )
-                    if (attempt >= settings.maximumAttempts) throw mapped
-                    if (!retryWaiter.wait(retryDelayMillis(settings, attempt), cancelled::get)) {
-                        throw cancelled(attempt)
-                    }
-                }
+            if (cancelled.get()) throw cancelled()
+            try {
+                val parsed = executeOnce(client, request)
+                if (cancelled.get()) throw cancelled()
+                return TranslationProviderResult(
+                    response = parsed.response,
+                    usage = parsed.usage,
+                    modelId = parsed.modelId,
+                    attemptCount = 1,
+                    durationMillis = elapsedMillis(started),
+                )
+            } catch (error: TranslationProviderException) {
+                throw error
+            } catch (_: SocketTimeoutException) {
+                throw TranslationProviderException(
+                    code = TranslationProviderErrorCode.TIMEOUT,
+                    attemptCount = 1,
+                )
+            } catch (_: IOException) {
+                if (cancelled.get()) throw cancelled()
+                throw TranslationProviderException(
+                    code = TranslationProviderErrorCode.NETWORK,
+                    attemptCount = 1,
+                )
             }
-            error("attempt loop must return or throw")
         }
 
         private fun executeOnce(
             client: OkHttpClient,
             request: Request,
-            attempt: Int,
         ): ParsedResponse {
             val call = client.newCall(request)
             activeCall.set(call)
             try {
                 call.execute().use { response ->
-                    if (cancelled.get()) throw cancelled(attempt)
-                    if (!response.isSuccessful) throw httpFailure(response, attempt)
+                    if (cancelled.get()) throw cancelled()
+                    if (!response.isSuccessful) throw httpFailure(response)
                     val body = response.body?.string()
-                        ?: throw malformed(attempt)
-                    return parseResponse(body, attempt)
+                        ?: throw malformed()
+                    return parseResponse(body)
                 }
             } finally {
                 activeCall.compareAndSet(call, null)
             }
         }
 
-        private fun parseResponse(body: String, attempt: Int): ParsedResponse {
+        private fun parseResponse(body: String): ParsedResponse {
             try {
                 val root = responseJson.parseToJsonElement(body).jsonObject
                 val content = root["choices"]?.jsonArray
@@ -134,7 +117,7 @@ class OpenAiCompatibleTranslationProvider(
                     ?.get("message")?.jsonObject
                     ?.get("content")?.jsonPrimitive
                     ?.contentOrNull
-                    ?: throw malformed(attempt)
+                    ?: throw malformed()
                 val structured = translationJson.decodeModelResponse(normalizeModelResponseContent(content))
                 return ParsedResponse(
                     response = structured,
@@ -144,13 +127,13 @@ class OpenAiCompatibleTranslationProvider(
             } catch (error: TranslationProviderException) {
                 throw error
             } catch (_: SerializationException) {
-                throw malformed(attempt)
+                throw malformed()
             } catch (_: IllegalArgumentException) {
-                throw malformed(attempt)
+                throw malformed()
             }
         }
 
-        private fun httpFailure(response: Response, attempt: Int): TranslationProviderException {
+        private fun httpFailure(response: Response): TranslationProviderException {
             val transient = response.code == 408 || response.code == 429 || response.code in 500..599
             return TranslationProviderException(
                 code = if (transient) {
@@ -159,22 +142,18 @@ class OpenAiCompatibleTranslationProvider(
                     TranslationProviderErrorCode.HTTP_CLIENT
                 },
                 httpStatus = response.code,
-                retryable = transient,
-                attemptCount = attempt,
-                retryAfterMillis = if (transient) parseRetryAfterMillis(response.header("Retry-After")) else null,
+                attemptCount = 1,
             )
         }
 
-        private fun malformed(attempt: Int) = TranslationProviderException(
+        private fun malformed() = TranslationProviderException(
             code = TranslationProviderErrorCode.MALFORMED_RESPONSE,
-            retryable = true,
-            attemptCount = attempt,
+            attemptCount = 1,
         )
 
-        private fun cancelled(attempt: Int) = TranslationProviderException(
+        private fun cancelled() = TranslationProviderException(
             code = TranslationProviderErrorCode.CANCELLED,
-            retryable = false,
-            attemptCount = attempt,
+            attemptCount = 1,
         )
 
         private fun elapsedMillis(started: Long): Long =
@@ -265,43 +244,7 @@ class OpenAiCompatibleTranslationProvider(
     private companion object {
         const val USER_AGENT = "Masumi/0.1"
         const val NANOS_PER_MILLISECOND = 1_000_000L
-        const val MAX_BACKOFF_DELAY_MILLIS = 30_000L
-        const val MAX_RETRY_AFTER_MILLIS = 60_000L
-        const val MAX_BACKOFF_SHIFT = 10
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
-
-        fun retryDelayMillis(
-            settings: TranslationProviderSettings,
-            attempt: Int,
-            retryAfterMillis: Long? = null,
-        ): Long {
-            if (retryAfterMillis != null) return retryAfterMillis.coerceIn(0L, MAX_RETRY_AFTER_MILLIS)
-            val base = settings.retryDelayMillis
-            if (base >= MAX_BACKOFF_DELAY_MILLIS) return MAX_BACKOFF_DELAY_MILLIS
-            val shift = (attempt - 1).coerceIn(0, MAX_BACKOFF_SHIFT)
-            return (base shl shift).coerceIn(0L, MAX_BACKOFF_DELAY_MILLIS)
-        }
-
-        fun parseRetryAfterMillis(header: String?): Long? = header?.trim()
-            ?.toLongOrNull()
-            ?.takeIf { it >= 0L }
-            ?.let { seconds -> (seconds * 1_000L).coerceAtMost(MAX_RETRY_AFTER_MILLIS) }
-
-        fun waitWithCancellation(delayMillis: Long, isCancelled: () -> Boolean): Boolean {
-            var remaining = delayMillis
-            while (remaining > 0L) {
-                if (isCancelled()) return false
-                val sleepMillis = minOf(remaining, 100L)
-                try {
-                    Thread.sleep(sleepMillis)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    return false
-                }
-                remaining -= sleepMillis
-            }
-            return !isCancelled()
-        }
     }
 }

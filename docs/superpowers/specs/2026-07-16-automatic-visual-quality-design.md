@@ -2,7 +2,9 @@
 
 Date: 2026-07-16
 
-Status: Active
+Status: Superseded
+
+> **Superseded:** This specification records a removed runtime design. Masumi now proceeds directly from `TYPESETTING` to `EXPORT`; renderer checks remain in focused tests rather than an on-device visual-quality stage. See `docs/architecture/foundation.md` for the current architecture.
 
 ## Purpose
 

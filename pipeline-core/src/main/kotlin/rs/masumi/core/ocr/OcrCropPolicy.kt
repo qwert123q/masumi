@@ -6,6 +6,7 @@ import rs.masumi.core.detection.PixelBox
 
 class OcrCropPolicy(
     private val config: OcrCropConfig = OcrCropConfig(),
+    private val highDetailRetry: OcrHighDetailRetryConfig = OcrHighDetailRetryConfig(),
 ) {
     fun attempts(
         candidate: OcrCandidate,
@@ -25,6 +26,26 @@ class OcrCropPolicy(
                 config.contextTextFraction,
                 bubbleBox?.let { intersection(page, it) } ?: page,
             ),
+        )
+    }
+
+    fun highDetailRetry(
+        candidate: OcrCandidate,
+        pageWidth: Int,
+        pageHeight: Int,
+        bubbleBox: PixelBox? = candidate.associatedBubbleBox,
+    ): OcrCropDescriptor {
+        require(pageWidth > 0) { "pageWidth must be positive" }
+        require(pageHeight > 0) { "pageHeight must be positive" }
+        val page = PixelBox(0.0, 0.0, pageWidth.toDouble(), pageHeight.toDouble())
+        return descriptor(
+            OcrCropStrategy.HIGH_DETAIL_CONTEXT,
+            candidate.box,
+            config.contextTextFraction,
+            bubbleBox?.let { intersection(page, it) } ?: page,
+        ).copy(
+            visualDetailProfile = OcrVisualDetailProfile.HIGH_DETAIL,
+            maximumSourcePixels = highDetailRetry.maximumSourcePixels,
         )
     }
 

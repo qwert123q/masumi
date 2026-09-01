@@ -13,6 +13,7 @@ class TranslationArtifactIdentityTest {
             base.copy(provider = base.provider.copy(modelId = "other-model")),
             base.copy(batching = base.batching.copy(maximumContextItems = 12)),
             base.copy(batching = base.batching.copy(maximumItemsPerWindow = 8)),
+            base.copy(outputValidation = base.outputValidation.copy(revision = "changed-validator")),
             base.copy(
                 provider = base.provider.copy(
                     reference = TranslationProviderReference(

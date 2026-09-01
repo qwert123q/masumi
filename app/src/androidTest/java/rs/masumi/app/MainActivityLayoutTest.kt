@@ -129,7 +129,7 @@ class MainActivityLayoutTest {
             root.findViewById<Button>(R.id.saveTranslationSettingsButton).text.toString(),
         )
         assertEquals(
-            "API 地址（HTTPS）",
+            "API 地址（HTTP/HTTPS）",
             root.findViewById<EditText>(R.id.translationApiUrl).hint.toString(),
         )
         assertEquals(
@@ -146,6 +146,18 @@ class MainActivityLayoutTest {
         )
         assertEquals(View.GONE, root.findViewById<Spinner>(R.id.translationModelPreset).visibility)
         assertEquals(View.VISIBLE, root.findViewById<EditText>(R.id.translationModel).visibility)
+        assertEquals(
+            "测试连接与试译",
+            root.findViewById<Button>(R.id.testTranslationConnectionButton).text.toString(),
+        )
+        assertEquals(
+            View.GONE,
+            root.findViewById<ProgressBar>(R.id.translationConnectionProgress).visibility,
+        )
+        assertEquals(
+            "使用当前地址、Key 和模型进行一次日译中试译",
+            root.findViewById<TextView>(R.id.translationConnectionStatus).text.toString(),
+        )
         assertEquals("选择或配置翻译厂商", root.findViewById<Button>(R.id.translationSettingsToggleButton).text.toString())
         assertEquals(View.GONE, root.findViewById<LinearLayout>(R.id.translationSettingsContainer).visibility)
         assertEquals("开始整章翻译", root.findViewById<Button>(R.id.translationButton).text.toString())

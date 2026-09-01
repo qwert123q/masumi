@@ -48,6 +48,42 @@ class TranslationModelCatalogClientTest {
     }
 
     @Test
+    fun endpointResolverAllowsCleartextForLocalNetworkLiterals() {
+        val expectedCompletionUrls = mapOf(
+            "http://localhost:8317/v1" to "http://localhost:8317/v1/chat/completions",
+            "http://127.0.0.1:8317/v1" to "http://127.0.0.1:8317/v1/chat/completions",
+            "http://10.42.0.12:8317/v1" to "http://10.42.0.12:8317/v1/chat/completions",
+            "http://172.16.0.1:8317/v1" to "http://172.16.0.1:8317/v1/chat/completions",
+            "http://172.31.255.254:8317/v1" to "http://172.31.255.254:8317/v1/chat/completions",
+            "http://192.168.50.2:8317/v1" to "http://192.168.50.2:8317/v1/chat/completions",
+            "http://[fd12:3456::1]:8317/v1" to "http://[fd12:3456::1]:8317/v1/chat/completions",
+        )
+
+        expectedCompletionUrls.forEach { (input, expected) ->
+            assertEquals(
+                expected,
+                OpenAiCompatibleEndpointResolver.completionUrl(input, false).toString(),
+            )
+        }
+    }
+
+    @Test
+    fun endpointResolverRejectsCleartextOutsidePrivateAddressRanges() {
+        listOf(
+            "http://example.com/v1",
+            "http://8.8.8.8/v1",
+            "http://172.15.255.255/v1",
+            "http://172.32.0.0/v1",
+            "http://169.254.1.1/v1",
+            "http://[fe80::1]/v1",
+        ).forEach { input ->
+            assertThrows(IllegalArgumentException::class.java) {
+                OpenAiCompatibleEndpointResolver.completionUrl(input, true)
+            }
+        }
+    }
+
+    @Test
     fun fetchesSortsAndDeduplicatesOpenAiCompatibleModels() {
         server.enqueue(
             MockResponse().setResponseCode(200).setBody(

@@ -20,13 +20,12 @@ import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.app.typesetting.TypesettingRunner
 import rs.masumi.app.exporting.DestinationWriteResult
 import rs.masumi.app.exporting.ExportCancellationSignal
+import rs.masumi.app.exporting.ExportDestinationException
 import rs.masumi.app.exporting.ExportRunner
+import rs.masumi.app.exporting.ExpectedDestinationOutput
 import rs.masumi.app.exporting.FolderExportDestination
-import rs.masumi.app.quality.QualityRepairCoordinator
 import rs.masumi.core.exporting.ExportJobStatus
-import rs.masumi.core.quality.QualityJobStatus
 import rs.masumi.core.typesetting.TypesettingJobStatus
-import rs.masumi.core.typesetting.isSuccessful
 import rs.masumi.core.importer.IdSource
 import rs.masumi.core.model.PageRecord
 import rs.masumi.core.model.ProjectManifest
@@ -53,7 +52,6 @@ import rs.masumi.core.detection.VisibleOrientation
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
-import rs.masumi.core.serialization.TypesettingJson
 import rs.masumi.core.translation.PageTranslationArtifact
 import rs.masumi.core.translation.TranslationArtifactIdentity
 import rs.masumi.core.translation.TranslationBatchingConfig
@@ -125,26 +123,11 @@ class CleanupRunnerTest {
             assertEquals(completedTypesetting.runArtifact, cachedTypesetting.runArtifact)
             assertEquals(completedTypesetting.report, cachedTypesetting.report)
 
-            corruptFlattenedPageToCleanedPixels(completed, completedTypesetting)
-            val repairCoordinator = QualityRepairCoordinator(workspace)
-            val repairedQuality = repairCoordinator.run(PROJECT_ID, { false }) { }
-            assertEquals(QualityJobStatus.BLOCKED, repairedQuality.initialQuality.job.status)
-            assertEquals(setOf(0), repairedQuality.repairPlan?.repairPageOrders())
-            assertTrue(repairedQuality.repairedTypesetting?.job?.status?.isSuccessful() == true)
-            assertEquals(1, repairedQuality.repairedTypesetting?.report?.reusedPageCount)
-            assertEquals(QualityJobStatus.SUCCEEDED, repairedQuality.finalQuality?.job?.status)
-            assertEquals(2, repairedQuality.finalQuality?.report?.passedPageCount)
-            assertEquals(0, repairedQuality.finalQuality?.report?.blockingCount)
-
-            val cachedQuality = repairCoordinator.run(PROJECT_ID, { false }) { }
-            assertEquals(repairedQuality.finalQuality?.runArtifact, cachedQuality.initialQuality.runArtifact)
-            assertEquals(null, cachedQuality.repairPlan)
-
             val destination = InMemoryExportDestination()
             val exportIds = AtomicInteger()
             val exporter = ExportRunner(
                 workspaceRoot = workspace,
-                destinationFactory = { _, _ -> destination },
+                destinationFactory = { _, _, _ -> destination },
                 idSource = IdSource { "export-job-${exportIds.incrementAndGet()}" },
             )
             cancel.set(false)
@@ -165,6 +148,24 @@ class CleanupRunnerTest {
             val repeatedExport = exporter.run(PROJECT_ID, DESTINATION_URI, { false }) { }
             assertEquals(ExportJobStatus.SUCCEEDED, repeatedExport.job.status)
             assertEquals(2, repeatedExport.report?.reusedPageCount)
+            val stableOutput = destination.snapshotFiles()
+            val pruneCallsAfterSuccess = destination.pruneCalls
+
+            cancel.set(false)
+            val cancelledOverStableOutput = exporter.run(PROJECT_ID, DESTINATION_URI, cancel::get) { progress ->
+                if (progress.currentPageOrder != null) cancel.set(true)
+            }
+            assertEquals(ExportJobStatus.CANCELLED, cancelledOverStableOutput.job.status)
+            destination.assertFilesEqual(stableOutput)
+            assertEquals(pruneCallsAfterSuccess, destination.pruneCalls)
+
+            cancel.set(false)
+            destination.failNextPublish = true
+            val failedOverStableOutput = exporter.run(PROJECT_ID, DESTINATION_URI, cancel::get) { }
+            assertEquals(ExportJobStatus.FAILED, failedOverStableOutput.job.status)
+            destination.assertFilesEqual(stableOutput)
+            assertEquals(pruneCallsAfterSuccess, destination.pruneCalls)
+
             assertArrayEquals(sourceBytes, Files.readAllBytes(sourcePath(workspace)))
         } finally {
             workspace.toFile().deleteRecursively()
@@ -198,29 +199,6 @@ class CleanupRunnerTest {
         )
         val ocr = publishOcr(project, pages)
         publishTranslation(project, pages, ocr)
-    }
-
-    private fun corruptFlattenedPageToCleanedPixels(
-        cleanup: CleanupRunResult,
-        typesetting: rs.masumi.app.typesetting.TypesettingRunResult,
-    ) {
-        val cleanupRun = requireNotNull(cleanup.runArtifact)
-        val cleanupDirectory = requireNotNull(cleanup.publishedDirectory)
-        val cleanupEntry = cleanupRun.entries.single { it.pageOrder == 0 }
-        val cleanedBytes = Files.readAllBytes(cleanupDirectory.resolve(requireNotNull(cleanupEntry.imagePath)))
-        val typesettingRun = requireNotNull(typesetting.runArtifact)
-        val typesettingDirectory = requireNotNull(typesetting.publishedDirectory)
-        val entry = typesettingRun.entries.single { it.pageOrder == 0 }
-        Files.write(typesettingDirectory.resolve(requireNotNull(entry.imagePath)), cleanedBytes)
-        val json = TypesettingJson()
-        val artifactPath = typesettingDirectory.resolve(requireNotNull(entry.artifactPath))
-        val artifact = Files.newBufferedReader(artifactPath, Charsets.UTF_8).use {
-            json.decodePageArtifact(it.readText())
-        }
-        writeUtf8(
-            artifactPath,
-            json.encodePageArtifact(artifact.copy(renderedImageSha256 = sha256(cleanedBytes))),
-        )
     }
 
     private fun publishOcr(project: Path, pages: List<PageRecord>): OcrFixture {
@@ -464,9 +442,13 @@ class CleanupRunnerTest {
 
     private class InMemoryExportDestination : FolderExportDestination {
         val files = linkedMapOf<String, ByteArray>()
+        private val staged = linkedMapOf<String, ByteArray>()
+        private var previousFiles = linkedMapOf<String, ByteArray>()
+        var failNextPublish = false
+        var pruneCalls = 0
 
         override fun matches(outputName: String, expectedSha256: String, expectedByteLength: Long): Boolean {
-            val bytes = files[outputName] ?: return false
+            val bytes = (staged[outputName] ?: files[outputName]) ?: return false
             return bytes.size.toLong() == expectedByteLength && sha256Static(bytes) == expectedSha256
         }
 
@@ -477,16 +459,40 @@ class CleanupRunnerTest {
             cancellation: () -> Boolean,
         ): DestinationWriteResult {
             if (cancellation()) throw ExportCancellationSignal()
-            val existing = files[outputName]
+            if (failNextPublish) {
+                failNextPublish = false
+                throw ExportDestinationException("DESTINATION_WRITE_FAILED")
+            }
+            val existing = staged[outputName]
             if (existing != null && sha256Static(existing) == expectedSha256) {
                 return DestinationWriteResult(reusedExisting = true)
             }
-            files[outputName] = bytes.copyOf()
+            staged[outputName] = bytes.copyOf()
             return DestinationWriteResult(reusedExisting = false)
         }
 
-        override fun pruneManagedOutputs(expectedNames: Set<String>) {
-            files.keys.removeAll { name -> name.matches(Regex("[0-9]{1,12}\\.(png|webp)")) && name !in expectedNames }
+        override fun commitCompleteSet(expectedOutputs: List<ExpectedDestinationOutput>) {
+            check(staged.keys == expectedOutputs.mapTo(linkedSetOf()) { it.outputName })
+            previousFiles = LinkedHashMap(files)
+            files.clear()
+            files.putAll(staged.mapValues { it.value.copyOf() })
+        }
+
+        override fun rollbackCommittedSet() {
+            files.clear()
+            files.putAll(previousFiles)
+        }
+
+        override fun pruneManagedOutputs() {
+            pruneCalls += 1
+            previousFiles.clear()
+        }
+
+        fun snapshotFiles(): Map<String, ByteArray> = files.mapValues { it.value.copyOf() }
+
+        fun assertFilesEqual(expected: Map<String, ByteArray>) {
+            assertEquals(expected.keys, files.keys)
+            expected.forEach { (name, bytes) -> assertArrayEquals(bytes, files.getValue(name)) }
         }
     }
 

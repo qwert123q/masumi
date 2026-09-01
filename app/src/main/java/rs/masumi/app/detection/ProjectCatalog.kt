@@ -17,15 +17,12 @@ import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupMaskModelRef
+import rs.masumi.core.cleanup.CleanupNeuralModelRef
 import rs.masumi.core.cleanup.CleanupReport
 import rs.masumi.core.cleanup.CleanupPolicy
 import rs.masumi.core.cleanup.CleanupRunArtifact
 import rs.masumi.core.cleanup.PageCleanupArtifact
 import rs.masumi.core.serialization.TypesettingJson
-import rs.masumi.core.quality.QualityArtifactStore
-import rs.masumi.core.quality.QualityPolicy
-import rs.masumi.core.quality.QualityReport
-import rs.masumi.core.quality.QualityRunArtifact
 import rs.masumi.core.typesetting.PageTypesettingArtifact
 import rs.masumi.core.typesetting.TypesettingArtifactStore
 import rs.masumi.core.typesetting.TypesettingPolicy
@@ -70,12 +67,6 @@ data class PublishedTypesettingRun(
     val directory: Path,
     val artifact: TypesettingRunArtifact,
     val report: TypesettingReport,
-)
-
-data class PublishedQualityRun(
-    val directory: Path,
-    val artifact: QualityRunArtifact,
-    val report: QualityReport,
 )
 
 class ProjectCatalog(
@@ -150,8 +141,8 @@ class ProjectCatalog(
         }
     }.getOrNull()
 
-    fun latestPublishedOcrRun(projectId: String): PublishedOcrRun? {
-        val project = openProject(projectId) ?: return null
+    fun publishedOcrRuns(projectId: String): List<PublishedOcrRun> {
+        val project = openProject(projectId) ?: return emptyList()
         val artifactRoot = project.directory.resolve("artifacts/ocr")
         val store = OcrArtifactStore(project.directory)
         return directDirectories(artifactRoot)
@@ -165,11 +156,14 @@ class ProjectCatalog(
                 }
                 PublishedOcrRun(directory, artifact, report)
             }
-            .maxWithOrNull(
-                compareBy<PublishedOcrRun> { it.artifact.createdAtEpochMillis }
-                    .thenBy { it.artifact.runArtifactKey },
+            .sortedWith(
+                compareByDescending<PublishedOcrRun> { it.artifact.createdAtEpochMillis }
+                    .thenByDescending { it.artifact.runArtifactKey },
             )
     }
+
+    fun latestPublishedOcrRun(projectId: String): PublishedOcrRun? =
+        publishedOcrRuns(projectId).firstOrNull()
 
     fun publishedOcrRun(projectId: String, runKey: String): PublishedOcrRun? {
         if (!SHA256.matches(runKey)) return null
@@ -198,8 +192,8 @@ class ProjectCatalog(
         }
     }.getOrNull()
 
-    fun latestPublishedTranslationRun(projectId: String): PublishedTranslationRun? {
-        val project = openProject(projectId) ?: return null
+    fun publishedTranslationRuns(projectId: String): List<PublishedTranslationRun> {
+        val project = openProject(projectId) ?: return emptyList()
         val artifactRoot = project.directory.resolve("artifacts/translation")
         val store = TranslationArtifactStore(project.directory, translationJson)
         return directDirectories(artifactRoot)
@@ -211,11 +205,14 @@ class ProjectCatalog(
                 if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
                 PublishedTranslationRun(directory, artifact, report)
             }
-            .maxWithOrNull(
-                compareBy<PublishedTranslationRun> { it.artifact.createdAtEpochMillis }
-                    .thenBy { it.artifact.runArtifactKey },
+            .sortedWith(
+                compareByDescending<PublishedTranslationRun> { it.artifact.createdAtEpochMillis }
+                    .thenByDescending { it.artifact.runArtifactKey },
             )
     }
+
+    fun latestPublishedTranslationRun(projectId: String): PublishedTranslationRun? =
+        publishedTranslationRuns(projectId).firstOrNull()
 
     fun publishedTranslationRun(projectId: String, runKey: String): PublishedTranslationRun? {
         if (!SHA256.matches(runKey)) return null
@@ -232,6 +229,7 @@ class ProjectCatalog(
         translationRunArtifactKey: String? = null,
         policy: CleanupPolicy? = null,
         maskModel: CleanupMaskModelRef? = null,
+        neuralModel: CleanupNeuralModelRef? = null,
     ): PublishedCleanupRun? {
         val project = openProject(projectId) ?: return null
         val artifactRoot = project.directory.resolve("artifacts/cleanup")
@@ -249,6 +247,9 @@ class ProjectCatalog(
                 ) return@mapNotNull null
                 if (policy != null && artifact.dependencies.policy != policy) return@mapNotNull null
                 if (maskModel != null && artifact.dependencies.maskModel != maskModel) {
+                    return@mapNotNull null
+                }
+                if (neuralModel != null && artifact.dependencies.neuralModel != neuralModel) {
                     return@mapNotNull null
                 }
                 PublishedCleanupRun(directory, artifact, report)
@@ -324,34 +325,6 @@ class ProjectCatalog(
             run.artifact.runArtifactKey,
             entry,
         )
-    }
-
-    fun latestPublishedQualityRun(
-        projectId: String,
-        typesettingRunArtifactKey: String? = null,
-        policy: QualityPolicy? = null,
-    ): PublishedQualityRun? {
-        val project = openProject(projectId) ?: return null
-        val artifactRoot = project.directory.resolve("artifacts/quality")
-        val store = QualityArtifactStore(project.directory)
-        return directDirectories(artifactRoot)
-            .mapNotNull { directory ->
-                val runKey = directory.fileName.toString()
-                if (!SHA256.matches(runKey)) return@mapNotNull null
-                val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
-                val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
-                if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
-                if (
-                    typesettingRunArtifactKey != null &&
-                    artifact.dependencies.typesettingRunArtifactKey != typesettingRunArtifactKey
-                ) return@mapNotNull null
-                if (policy != null && artifact.dependencies.policy != policy) return@mapNotNull null
-                PublishedQualityRun(directory, artifact, report)
-            }
-            .maxWithOrNull(
-                compareBy<PublishedQualityRun> { it.artifact.createdAtEpochMillis }
-                    .thenBy { it.artifact.runArtifactKey },
-            )
     }
 
     private fun readProject(directory: Path): ProjectRef? = runCatching {

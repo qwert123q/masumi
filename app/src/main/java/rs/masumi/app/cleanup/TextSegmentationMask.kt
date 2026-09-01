@@ -70,6 +70,7 @@ internal data class MaskBounds(
 internal data class ResidualTextAudit(
     val auditPixelCount: Int,
     val residualPixelCount: Int,
+    val residualMask: BooleanArray = BooleanArray(0),
 ) {
     val residualRatio: Double
         get() = if (auditPixelCount == 0) 0.0 else residualPixelCount.toDouble() / auditPixelCount
@@ -142,33 +143,53 @@ internal object SegmentationMaskRefiner {
         return BooleanArray(eraseMask.size) { eraseMask[it] || expandedAudit[it] }
     }
 
+    fun residualRetryMask(
+        residualMask: BooleanArray,
+        width: Int,
+        height: Int,
+        dilationRadius: Int,
+    ): BooleanArray {
+        require(residualMask.size == width * height)
+        return BinaryMaskMorphology.dilate(residualMask, width, height, dilationRadius)
+    }
+
     fun auditResidual(
         beforeRoi: IntArray,
         currentPixels: IntArray,
         pageStride: Int,
         roi: MaskBounds,
         auditMask: BooleanArray,
+        background: Int,
         maximumUnchangedDistance: Int,
     ): ResidualTextAudit {
         require(beforeRoi.size == roi.width * roi.height && auditMask.size == beforeRoi.size)
         val maximumDistanceSquared = maximumUnchangedDistance * maximumUnchangedDistance
         var auditPixelCount = 0
         var residualPixelCount = 0
+        val residualMask = BooleanArray(auditMask.size)
         auditMask.indices.forEach { local ->
             if (!auditMask[local]) return@forEach
             auditPixelCount += 1
             val pageX = roi.left + local % roi.width
             val pageY = roi.top + local / roi.width
-            if (
-                colorDistanceSquared(
-                    beforeRoi[local],
-                    currentPixels[pageY * pageStride + pageX],
-                ) <= maximumDistanceSquared
-            ) {
+            val before = beforeRoi[local]
+            val current = currentPixels[pageY * pageStride + pageX]
+            val changedEnough = colorDistanceSquared(before, current) > maximumDistanceSquared
+            // A tiny dark-to-gray shift used to count as erased even though a
+            // Japanese stroke remained plainly visible. Require meaningful
+            // progress toward the sampled local background as well as a raw
+            // pixel change. Later retries stay best-effort, so this tightens
+            // cleanup without blocking the downstream pipeline.
+            val beforeBackgroundDistance = colorDistanceSquared(before, background)
+            val currentBackgroundDistance = colorDistanceSquared(current, background)
+            val closeEnoughToBackground = currentBackgroundDistance.toDouble() <=
+                beforeBackgroundDistance * MAXIMUM_REMAINING_BACKGROUND_DISTANCE_RATIO_SQUARED
+            if (!changedEnough || !closeEnoughToBackground) {
                 residualPixelCount += 1
+                residualMask[local] = true
             }
         }
-        return ResidualTextAudit(auditPixelCount, residualPixelCount)
+        return ResidualTextAudit(auditPixelCount, residualPixelCount, residualMask)
     }
 
     private fun colorDistanceSquared(first: Int, second: Int): Int {
@@ -177,6 +198,8 @@ internal object SegmentationMaskRefiner {
         val blue = (first and 0xff) - (second and 0xff)
         return red * red + green * green + blue * blue
     }
+
+    private const val MAXIMUM_REMAINING_BACKGROUND_DISTANCE_RATIO_SQUARED = 0.49
 }
 
 internal object BinaryMaskMorphology {

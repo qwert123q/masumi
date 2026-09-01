@@ -28,8 +28,6 @@ class TranslationProviderSettings(
     val connectTimeoutMillis: Long = 15_000L,
     val readTimeoutMillis: Long = 90_000L,
     val writeTimeoutMillis: Long = 30_000L,
-    val maximumAttempts: Int = 4,
-    val retryDelayMillis: Long = 1_000L,
     val temperature: Double = 0.2,
     val maximumOutputTokens: Int = 4_096,
     val requestJsonObjectFormat: Boolean = true,
@@ -50,8 +48,6 @@ class TranslationProviderSettings(
         require(connectTimeoutMillis > 0L) { "connectTimeoutMillis must be positive" }
         require(readTimeoutMillis > 0L) { "readTimeoutMillis must be positive" }
         require(writeTimeoutMillis > 0L) { "writeTimeoutMillis must be positive" }
-        require(maximumAttempts in 1..10) { "maximumAttempts must be between 1 and 10" }
-        require(retryDelayMillis >= 0L) { "retryDelayMillis must not be negative" }
         require(temperature in 0.0..2.0) { "temperature must be between 0 and 2" }
         require(maximumOutputTokens > 0) { "maximumOutputTokens must be positive" }
         require(profileId.length <= 64 && profileId.none(Char::isISOControl)) {
@@ -83,8 +79,7 @@ class TranslationProviderSettings(
     }
 
     override fun toString(): String =
-        "TranslationProviderSettings(apiUrl=<redacted>, apiKey=<redacted>, model=<redacted>, " +
-            "maximumAttempts=$maximumAttempts)"
+        "TranslationProviderSettings(apiUrl=<redacted>, apiKey=<redacted>, model=<redacted>)"
 }
 
 data class TranslationProviderUsage(
@@ -113,11 +108,5 @@ enum class TranslationProviderErrorCode {
 class TranslationProviderException(
     val code: TranslationProviderErrorCode,
     val httpStatus: Int? = null,
-    val retryable: Boolean,
     val attemptCount: Int,
-    val retryAfterMillis: Long? = null,
 ) : Exception(code.name)
-
-fun interface TranslationRetryWaiter {
-    fun wait(delayMillis: Long, isCancelled: () -> Boolean): Boolean
-}

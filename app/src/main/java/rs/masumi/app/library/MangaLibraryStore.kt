@@ -9,6 +9,7 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Locale
 import org.json.JSONObject
+import rs.masumi.core.importer.PageMediaType
 import rs.masumi.core.model.PageRecord
 
 data class MangaLibraryProjectMetadata(
@@ -67,6 +68,99 @@ fun mangaSourceFingerprint(pages: List<PageRecord>): String {
         digest.update(0)
     }
     return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
+internal fun mangaArchiveSourceFileName(page: PageRecord): String =
+    mangaArchiveStableFileName(page, alternateOrdinal = null)
+
+internal fun mangaArchiveAlternativeSourceFileName(page: PageRecord, ordinal: Int): String {
+    require(ordinal >= 2)
+    return mangaArchiveStableFileName(page, alternateOrdinal = ordinal)
+}
+
+private fun mangaArchiveStableFileName(page: PageRecord, alternateOrdinal: Int?): String {
+    require(page.order >= 0)
+    require(SHA256.matches(page.sourceSha256))
+    val extension = requireNotNull(PageMediaType.detect(page.originalName, page.mediaType)).extension
+    val sanitizedName = page.originalName
+        .replace(UNSAFE_ARCHIVE_FILE_NAME_CHARACTER, "_")
+        .filterNot(Char::isISOControl)
+    val safeStem = sanitizedName
+        .substringBeforeLast('.', sanitizedName)
+        .trim(' ', '.', '_')
+        .ifBlank { "page" }
+    val order = (page.order.toLong() + 1L).toString().padStart(6, '0')
+    val identityPrefix = "$order-${page.sourceSha256}-"
+    val alternateSuffix = alternateOrdinal?.let { "~$it" }.orEmpty()
+    val extensionSuffix = ".$extension"
+    val maximumStemLength = MAX_ARCHIVE_SOURCE_FILE_NAME_LENGTH -
+        identityPrefix.length -
+        alternateSuffix.length -
+        extensionSuffix.length
+    check(maximumStemLength > 0)
+    return identityPrefix + safeStem.take(maximumStemLength) + alternateSuffix + extensionSuffix
+}
+
+internal fun legacyMangaArchiveSourceFileName(page: PageRecord): String {
+    val extension = page.mediaType.substringAfter('/').let {
+        when (it) {
+            "jpeg", "jpg" -> "jpg"
+            "png" -> "png"
+            "webp" -> "webp"
+            else -> page.storedPath.substringAfterLast('.', "img")
+        }
+    }
+    return page.originalName
+        .replace(UNSAFE_ARCHIVE_FILE_NAME_CHARACTER, "_")
+        .trim(' ', '.')
+        .take(MAX_ARCHIVE_SOURCE_FILE_NAME_LENGTH)
+        .ifBlank { "${(page.order + 1).toString().padStart(4, '0')}.$extension" }
+}
+
+internal enum class LegacyArchiveSourceAction {
+    REUSE_LEGACY,
+    WRITE_STABLE,
+}
+
+internal fun isReusableArchiveSourceCandidate(
+    expectedByteLength: Long,
+    expectedSha256: String,
+    candidateByteLength: Long,
+    candidateSha256: String?,
+    candidateAlreadyClaimed: Boolean,
+    candidateNameReservedForAnotherPage: Boolean = false,
+): Boolean {
+    require(expectedByteLength >= 0L)
+    require(SHA256.matches(expectedSha256))
+    require(candidateByteLength >= -1L)
+    require(candidateSha256 == null || SHA256.matches(candidateSha256))
+    return !candidateAlreadyClaimed &&
+        !candidateNameReservedForAnotherPage &&
+        candidateByteLength == expectedByteLength &&
+        candidateSha256 == expectedSha256
+}
+
+internal fun selectLegacyArchiveSourceAction(
+    expectedByteLength: Long,
+    expectedSha256: String,
+    legacyByteLength: Long,
+    legacySha256: String?,
+    legacyAlreadyClaimed: Boolean,
+    legacyNameReservedForStablePage: Boolean = false,
+): LegacyArchiveSourceAction {
+    return if (isReusableArchiveSourceCandidate(
+            expectedByteLength = expectedByteLength,
+            expectedSha256 = expectedSha256,
+            candidateByteLength = legacyByteLength,
+            candidateSha256 = legacySha256,
+            candidateAlreadyClaimed = legacyAlreadyClaimed,
+            candidateNameReservedForAnotherPage = legacyNameReservedForStablePage,
+        )
+    ) {
+        LegacyArchiveSourceAction.REUSE_LEGACY
+    } else {
+        LegacyArchiveSourceAction.WRITE_STABLE
+    }
 }
 
 private object MangaLibraryCache {
@@ -184,21 +278,98 @@ class MangaLibraryStore(
         val project = requireNotNull(project(projectId)) { "library project was not found" }
         val sourceDirectory = project.sourceDirectoryUri
             ?: ensureDirectory(project.directoryUri, SOURCE_DIRECTORY_NAME)
-        val existing = children(sourceDirectory).associateBy(DocumentRef::displayName).toMutableMap()
-        pages.sortedBy(PageRecord::order).forEach { page ->
+        val sortedPages = pages.sortedBy(PageRecord::order)
+        val reservedStableNames = sortedPages.mapTo(mutableSetOf(), ::mangaArchiveSourceFileName)
+        val existing = children(sourceDirectory)
+            .groupByTo(mutableMapOf(), DocumentRef::displayName)
+            .mapValuesTo(mutableMapOf()) { (_, documents) -> documents.toMutableList() }
+        val claimedDocuments = mutableSetOf<Uri>()
+        val documentDigests = mutableMapOf<Uri, String?>()
+
+        fun digest(candidate: DocumentRef): String? {
+            if (documentDigests.containsKey(candidate.uri)) return documentDigests[candidate.uri]
+            return runCatching { documentSha256(candidate.uri) }.getOrNull().also {
+                documentDigests[candidate.uri] = it
+            }
+        }
+
+        fun reusableCandidate(
+            page: PageRecord,
+            candidate: DocumentRef,
+            nameReservedForAnotherPage: Boolean,
+        ): Boolean {
+            val candidateDigest = if (
+                candidate.byteLength == page.byteLength &&
+                candidate.uri !in claimedDocuments &&
+                !nameReservedForAnotherPage
+            ) {
+                digest(candidate)
+            } else {
+                null
+            }
+            return isReusableArchiveSourceCandidate(
+                expectedByteLength = page.byteLength,
+                expectedSha256 = page.sourceSha256,
+                candidateByteLength = candidate.byteLength,
+                candidateSha256 = candidateDigest,
+                candidateAlreadyClaimed = candidate.uri in claimedDocuments,
+                candidateNameReservedForAnotherPage = nameReservedForAnotherPage,
+            )
+        }
+
+        fun reuseMatching(
+            page: PageRecord,
+            name: String,
+            nameReservedForAnotherPage: Boolean,
+        ): Boolean {
+            val reusable = existing[name]
+                .orEmpty()
+                .firstOrNull { reusableCandidate(page, it, nameReservedForAnotherPage) }
+                ?: return false
+            claimedDocuments += reusable.uri
+            return true
+        }
+
+        sortedPages.forEach { page ->
             val source = resolveInside(privateProjectDirectory, page.storedPath)
             require(Files.isRegularFile(source) && Files.size(source) == page.byteLength)
-            val outputName = safeSourceFileName(page)
-            val current = existing[outputName]
-            if (current?.byteLength == page.byteLength) return@forEach
+            val primaryStableName = mangaArchiveSourceFileName(page)
+            if (reuseMatching(page, primaryStableName, nameReservedForAnotherPage = false)) {
+                return@forEach
+            }
 
-            val target = current?.uri ?: DocumentsContract.createDocument(
+            val legacyName = legacyMangaArchiveSourceFileName(page)
+            if (
+                legacyName !in reservedStableNames &&
+                reuseMatching(page, legacyName, nameReservedForAnotherPage = false)
+            ) {
+                return@forEach
+            }
+
+            var outputName = primaryStableName
+            var alternateOrdinal = 2
+            while (
+                existing[outputName].orEmpty().isNotEmpty() ||
+                (outputName != primaryStableName && outputName in reservedStableNames)
+            ) {
+                outputName = mangaArchiveAlternativeSourceFileName(page, alternateOrdinal)
+                check(alternateOrdinal < Int.MAX_VALUE) { "source archive name space exhausted" }
+                alternateOrdinal += 1
+                if (
+                    outputName !in reservedStableNames &&
+                    reuseMatching(page, outputName, nameReservedForAnotherPage = false)
+                ) {
+                    return@forEach
+                }
+            }
+
+            val target = DocumentsContract.createDocument(
                 resolver,
                 sourceDirectory,
                 page.mediaType,
                 outputName,
             ) ?: error("could not create source archive page")
-            var created = current == null
+            var created = true
             try {
                 Files.newInputStream(source).buffered().use { input ->
                     resolver.openOutputStream(target, "w")?.buffered()?.use { output ->
@@ -208,7 +379,11 @@ class MangaLibraryStore(
                 }
                 require(documentLength(target) == page.byteLength) { "source archive length mismatch" }
                 created = false
-                existing[outputName] = DocumentRef(target, outputName, page.mediaType, page.byteLength)
+                val actualName = displayName(target) ?: outputName
+                existing.getOrPut(actualName, ::mutableListOf) +=
+                    DocumentRef(target, actualName, page.mediaType, page.byteLength)
+                claimedDocuments += target
+                documentDigests[target] = page.sourceSha256
             } finally {
                 if (created) runCatching { DocumentsContract.deleteDocument(resolver, target) }
             }
@@ -351,12 +526,22 @@ class MangaLibraryStore(
         )
     }
 
-    private fun outputPages(directoryUri: Uri): List<MangaLibraryPage> = children(directoryUri)
+    private fun outputPages(directoryUri: Uri): List<MangaLibraryPage> {
+        val publishedGeneration = children(directoryUri)
+            .asSequence()
+            .filter {
+                it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR &&
+                    OutputGeneration.isPublishedDirectory(it.displayName)
+            }
+            .maxByOrNull { it.displayName }
+        val visibleDirectory = publishedGeneration?.uri ?: directoryUri
+        return children(visibleDirectory)
         .asSequence()
         .filter { it.mimeType.startsWith("image/") && OUTPUT_FILE.matches(it.displayName) }
         .sortedWith(compareBy<DocumentRef> { outputOrder(it.displayName) }.thenBy { it.displayName })
         .map { MangaLibraryPage(it.displayName, it.uri) }
         .toList()
+    }
 
     private fun sourcePages(directoryUri: Uri): List<MangaLibraryPage> = children(directoryUri)
         .asSequence()
@@ -459,6 +644,20 @@ class MangaLibraryStore(
         if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
     } ?: -1L
 
+    private fun documentSha256(uri: Uri): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val input = requireNotNull(resolver.openInputStream(uri)) { "source archive stream unavailable" }
+        input.buffered().use { stream ->
+            val buffer = ByteArray(COPY_BUFFER_SIZE)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                if (count > 0) digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun rootDocumentUri(): Uri = DocumentsContract.buildDocumentUriUsingTree(
         rootTreeUri,
         DocumentsContract.getTreeDocumentId(rootTreeUri),
@@ -470,22 +669,6 @@ class MangaLibraryStore(
         .trim(' ', '.')
         .ifBlank { "未命名漫画" }
         .take(MAX_DIRECTORY_NAME_LENGTH)
-
-    private fun safeSourceFileName(page: PageRecord): String {
-        val extension = page.mediaType.substringAfter('/').let {
-            when (it) {
-                "jpeg", "jpg" -> "jpg"
-                "png" -> "png"
-                "webp" -> "webp"
-                else -> page.storedPath.substringAfterLast('.', "img")
-            }
-        }
-        return page.originalName
-            .replace(UNSAFE_DIRECTORY_CHARACTER, "_")
-            .trim(' ', '.')
-            .take(MAX_SOURCE_FILE_NAME_LENGTH)
-            .ifBlank { "${(page.order + 1).toString().padStart(4, '0')}.$extension" }
-    }
 
     private fun uniqueDirectoryName(base: String, occupied: Set<String>): String {
         val occupiedLower = occupied.mapTo(mutableSetOf()) { it.lowercase(Locale.ROOT) }
@@ -528,7 +711,6 @@ class MangaLibraryStore(
         const val JSON_MIME_TYPE = "application/json"
         const val COPY_BUFFER_SIZE = 64 * 1024
         const val MAX_DIRECTORY_NAME_LENGTH = 80
-        const val MAX_SOURCE_FILE_NAME_LENGTH = 180
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         val OUTPUT_FILE = Regex("[0-9]{1,12}\\.(png|webp)", RegexOption.IGNORE_CASE)
         val SOURCE_FILE = Regex(".+\\.(jpe?g|png|webp)", RegexOption.IGNORE_CASE)
@@ -544,4 +726,6 @@ class MangaLibraryStore(
 }
 
 private const val CURRENT_PROJECT_SCHEMA_VERSION = 3
+private const val MAX_ARCHIVE_SOURCE_FILE_NAME_LENGTH = 180
 private val SHA256 = Regex("[0-9a-f]{64}")
+private val UNSAFE_ARCHIVE_FILE_NAME_CHARACTER = Regex("[/\\\\:*?\"<>|]")

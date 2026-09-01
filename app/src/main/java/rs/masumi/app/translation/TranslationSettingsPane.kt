@@ -14,7 +14,6 @@ import android.widget.TextView
 import android.widget.Toast
 import java.util.UUID
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicReference
 import rs.masumi.app.R
 import rs.masumi.app.pipeline.PipelineThreading
 
@@ -23,6 +22,7 @@ class TranslationSettingsPane(
     private val store: TranslationSettingsStore,
     private val onSettingsSaved: () -> Unit,
     private val modelCatalogClient: TranslationModelCatalogClient = TranslationModelCatalogClient(),
+    private val connectivityChecker: TranslationConnectivityChecker = TranslationConnectivityChecker(),
 ) : AutoCloseable {
     private val providerProfile = activity.findViewById<Spinner>(R.id.translationProviderProfile)
     private val activeProviderStatus = activity.findViewById<TextView>(R.id.activeTranslationProviderStatus)
@@ -38,17 +38,24 @@ class TranslationSettingsPane(
     private val fetchModelsButton = activity.findViewById<Button>(R.id.fetchTranslationModelsButton)
     private val fetchProgress = activity.findViewById<ProgressBar>(R.id.translationModelsProgress)
     private val fetchStatus = activity.findViewById<TextView>(R.id.translationModelsStatus)
+    private val testConnectionButton =
+        activity.findViewById<Button>(R.id.testTranslationConnectionButton)
+    private val connectionProgress =
+        activity.findViewById<ProgressBar>(R.id.translationConnectionProgress)
+    private val connectionStatus =
+        activity.findViewById<TextView>(R.id.translationConnectionStatus)
     private val saveButton = activity.findViewById<Button>(R.id.saveTranslationSettingsButton)
     private val executor = Executors.newSingleThreadExecutor(
-        PipelineThreading.factory(MODEL_FETCH_THREAD_NAME),
+        PipelineThreading.factory(SETTINGS_REQUEST_THREAD_NAME),
     )
-    private val activeCall = AtomicReference<TranslationModelCatalogCall?>()
+    private val requestCoordinator = TranslationSettingsRequestCoordinator()
     private val endpointOptions = TranslationProviderCatalog.commonEndpoints + TranslationEndpointPreset(
         activity.getString(R.string.translation_custom_endpoint),
         null,
     )
     private var closed = false
-    private var fetchGeneration = 0
+    private var controlsEnabled = true
+    private var requestInProgress: SettingsRequestKind? = null
     private var modelOptions = emptyList<TranslationModelPreset>()
     private var updatingModelOptions = false
     private var providerProfiles = emptyList<SavedTranslationProvider>()
@@ -67,6 +74,7 @@ class TranslationSettingsPane(
 
         toggleButton.setOnClickListener { setExpanded(container.visibility != View.VISIBLE) }
         fetchModelsButton.setOnClickListener { fetchModels() }
+        testConnectionButton.setOnClickListener { testConnection() }
         newProviderButton.setOnClickListener { prepareNewProvider() }
         saveButton.setOnClickListener { save() }
 
@@ -100,6 +108,7 @@ class TranslationSettingsPane(
             override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
 
             override fun afterTextChanged(value: Editable?) {
+                invalidateRemoteRequestForInputChange()
                 val position = TranslationProviderCatalog.commonEndpoints
                     .indexOfFirst { it.apiUrl == value?.toString()?.trim() }
                     .takeIf { it >= 0 }
@@ -107,6 +116,15 @@ class TranslationSettingsPane(
                 if (endpointPreset.selectedItemPosition != position) {
                     endpointPreset.setSelection(position, false)
                 }
+            }
+        })
+        apiKey.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
+
+            override fun afterTextChanged(value: Editable?) {
+                invalidateRemoteRequestForInputChange()
             }
         })
         modelPreset.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -135,6 +153,7 @@ class TranslationSettingsPane(
             override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
 
             override fun afterTextChanged(value: Editable?) {
+                if (!updatingModelOptions) invalidateRemoteRequestForInputChange()
                 if (updatingModelOptions || modelPreset.visibility != View.VISIBLE) return
                 val position = modelOptions
                     .indexOfFirst { it.modelId == value?.toString()?.trim() }
@@ -196,15 +215,17 @@ class TranslationSettingsPane(
     }
 
     fun setSaveEnabled(enabled: Boolean) {
+        controlsEnabled = enabled
         saveButton.isEnabled = enabled
         newProviderButton.isEnabled = enabled
         providerProfile.isEnabled = enabled && providerProfiles.isNotEmpty()
+        updateRemoteRequestControls()
     }
 
     override fun close() {
         closed = true
-        fetchGeneration += 1
-        activeCall.getAndSet(null)?.cancel()
+        requestCoordinator.cancelActive()
+        requestInProgress = null
         executor.shutdownNow()
     }
 
@@ -221,15 +242,13 @@ class TranslationSettingsPane(
             fetchStatus.setText(R.string.translation_models_invalid_endpoint)
             return
         }
-        activeCall.getAndSet(call)?.cancel()
-        val generation = ++fetchGeneration
-        showFetchInProgress(true)
+        val ticket = requestCoordinator.start(call::cancel)
+        showRequestInProgress(SettingsRequestKind.MODEL_CATALOG)
         executor.execute {
             val result = runCatching { call.execute() }
             activity.runOnUiThread {
-                if (closed || generation != fetchGeneration) return@runOnUiThread
-                activeCall.compareAndSet(call, null)
-                showFetchInProgress(false)
+                if (closed || !requestCoordinator.finish(ticket)) return@runOnUiThread
+                showRequestInProgress(null)
                 result.fold(
                     onSuccess = ::showModels,
                     onFailure = ::showFetchFailure,
@@ -306,10 +325,113 @@ class TranslationSettingsPane(
         )
     }
 
-    private fun showFetchInProgress(inProgress: Boolean) {
-        fetchModelsButton.isEnabled = !inProgress
-        fetchProgress.visibility = if (inProgress) View.VISIBLE else View.GONE
-        if (inProgress) fetchStatus.setText(R.string.translation_models_loading)
+    private fun testConnection() {
+        val call = runCatching {
+            connectivityChecker.newCall(
+                apiUrl = apiUrl.text.toString().trim(),
+                apiKey = apiKey.text.toString().trim(),
+                model = model.text.toString().trim(),
+                allowInsecureLocalhost = true,
+            )
+        }.getOrElse { failure ->
+            showConnectionFailure(failure)
+            return
+        }
+        val ticket = requestCoordinator.start(call::cancel)
+        showRequestInProgress(SettingsRequestKind.CONNECTIVITY)
+        executor.execute {
+            val result = runCatching { call.execute() }
+            activity.runOnUiThread {
+                if (closed || !requestCoordinator.finish(ticket)) return@runOnUiThread
+                showRequestInProgress(null)
+                result.fold(
+                    onSuccess = { success ->
+                        connectionStatus.text = activity.getString(
+                            R.string.translation_connection_success,
+                            success.translation.trim(),
+                        )
+                    },
+                    onFailure = ::showConnectionFailure,
+                )
+            }
+        }
+    }
+
+    private fun showConnectionFailure(failure: Throwable) {
+        val presentation = failure.forUserPresentation()
+        connectionStatus.text = when (presentation.kind) {
+            TranslationConnectivityFailureKind.INVALID_CONFIGURATION ->
+                activity.getString(R.string.translation_connection_invalid_configuration)
+            TranslationConnectivityFailureKind.INVALID_ENDPOINT ->
+                activity.getString(R.string.translation_connection_invalid_endpoint)
+            TranslationConnectivityFailureKind.AUTHENTICATION ->
+                activity.getString(R.string.translation_connection_authentication_failed)
+            TranslationConnectivityFailureKind.ENDPOINT_NOT_FOUND ->
+                activity.getString(R.string.translation_connection_endpoint_not_found)
+            TranslationConnectivityFailureKind.REQUEST_REJECTED ->
+                activity.getString(R.string.translation_connection_request_rejected)
+            TranslationConnectivityFailureKind.RATE_LIMITED ->
+                activity.getString(R.string.translation_connection_rate_limited)
+            TranslationConnectivityFailureKind.SERVICE_UNAVAILABLE ->
+                activity.getString(R.string.translation_connection_service_unavailable)
+            TranslationConnectivityFailureKind.HTTP_FAILURE -> {
+                presentation.httpStatus?.let { status ->
+                    activity.getString(R.string.translation_connection_http_failed_status, status)
+                } ?: activity.getString(R.string.translation_connection_http_failed)
+            }
+            TranslationConnectivityFailureKind.INVALID_RESPONSE ->
+                activity.getString(R.string.translation_connection_invalid_response)
+            TranslationConnectivityFailureKind.RESPONSE_TOO_LARGE ->
+                activity.getString(R.string.translation_connection_response_too_large)
+            TranslationConnectivityFailureKind.TIMEOUT ->
+                activity.getString(R.string.translation_connection_timeout)
+            TranslationConnectivityFailureKind.NETWORK ->
+                activity.getString(R.string.translation_connection_network_failed)
+            TranslationConnectivityFailureKind.CANCELLED ->
+                activity.getString(R.string.translation_connection_cancelled)
+            TranslationConnectivityFailureKind.UNKNOWN ->
+                activity.getString(R.string.translation_connection_failed)
+        }
+    }
+
+    private fun showRequestInProgress(kind: SettingsRequestKind?) {
+        val previous = requestInProgress
+        requestInProgress = kind
+        fetchProgress.visibility =
+            if (kind == SettingsRequestKind.MODEL_CATALOG) View.VISIBLE else View.GONE
+        connectionProgress.visibility =
+            if (kind == SettingsRequestKind.CONNECTIVITY) View.VISIBLE else View.GONE
+        if (previous == SettingsRequestKind.MODEL_CATALOG && kind == SettingsRequestKind.CONNECTIVITY) {
+            fetchStatus.setText(R.string.translation_models_hint)
+        }
+        when (kind) {
+            SettingsRequestKind.MODEL_CATALOG ->
+                fetchStatus.setText(R.string.translation_models_loading)
+            SettingsRequestKind.CONNECTIVITY ->
+                connectionStatus.setText(R.string.translation_connection_testing)
+            null -> Unit
+        }
+        updateRemoteRequestControls()
+    }
+
+    private fun updateRemoteRequestControls() {
+        val availability = TranslationSettingsControlAvailability(
+            saveEnabled = controlsEnabled,
+            remoteRequestInProgress = requestInProgress != null,
+        )
+        fetchModelsButton.isEnabled = availability.remoteRequestEnabled
+        testConnectionButton.isEnabled = availability.remoteRequestEnabled
+    }
+
+    private fun invalidateRemoteRequestForInputChange() {
+        if (closed) return
+        val cancelledKind = requestInProgress
+        requestCoordinator.cancelActive()
+        showRequestInProgress(null)
+        if (cancelledKind == SettingsRequestKind.MODEL_CATALOG) {
+            fetchStatus.setText(R.string.translation_models_hint)
+        }
+        connectionStatus.setText(R.string.translation_connection_hint)
     }
 
     private fun prepareNewProvider() {
@@ -391,9 +513,9 @@ class TranslationSettingsPane(
     }
 
     private fun resetModelFetch() {
-        activeCall.getAndSet(null)?.cancel()
-        fetchGeneration += 1
-        showFetchInProgress(false)
+        requestCoordinator.cancelActive()
+        showRequestInProgress(null)
+        connectionStatus.setText(R.string.translation_connection_hint)
     }
 
     private fun save() {
@@ -439,7 +561,12 @@ class TranslationSettingsPane(
         override fun toString(): String = label
     }
 
+    private enum class SettingsRequestKind {
+        MODEL_CATALOG,
+        CONNECTIVITY,
+    }
+
     private companion object {
-        const val MODEL_FETCH_THREAD_NAME = "masumi-model-catalog"
+        const val SETTINGS_REQUEST_THREAD_NAME = "masumi-translation-settings"
     }
 }

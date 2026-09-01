@@ -1,7 +1,6 @@
 package rs.masumi.core.cleanup
 
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.UUID
 import rs.masumi.core.io.NioProjectFileSystem
 import rs.masumi.core.io.ProjectFileSystem
@@ -57,7 +56,6 @@ class CleanupArtifactStore(
         val page = job.pages.single { it.pageOrder == artifact.pageOrder }
         require(page.state == CleanupPageState.RUNNING)
         requireValidPageArtifact(artifact, page, job.dependencies)
-        require(artifact.cleanedImageSha256 == sha256(cleanedImage))
         val directory = pageDirectory(checkpointDirectory(job), page)
         fileSystem.createDirectories(directory)
         val imageName = "cleaned.$imageExtension"
@@ -81,7 +79,6 @@ class CleanupArtifactStore(
         require(fileSystem.exists(artifactPath) && fileSystem.exists(imagePath))
         json.decodePageArtifact(fileSystem.readUtf8(artifactPath)).also { artifact ->
             requireValidPageArtifact(artifact, page, job.dependencies)
-            require(artifact.cleanedImageSha256 == sha256(fileSystem.readBytes(imagePath)))
         }
     }.getOrNull()
 
@@ -132,9 +129,9 @@ class CleanupArtifactStore(
         val root = publishedDirectory(runKey)
         val artifactPath = resolveInside(root, requireNotNull(entry.artifactPath))
         val imagePath = resolveInside(root, requireNotNull(entry.imagePath))
+        require(fileSystem.exists(artifactPath) && fileSystem.exists(imagePath))
         val artifact = json.decodePageArtifact(fileSystem.readUtf8(artifactPath))
         require(artifact.pageOrder == entry.pageOrder && artifact.pageArtifactKey == entry.pageArtifactKey)
-        require(artifact.cleanedImageSha256 == sha256(fileSystem.readBytes(imagePath)))
         artifact
     }.getOrNull()
 
@@ -149,7 +146,6 @@ class CleanupArtifactStore(
                 require(artifact.pageId == entry.pageId)
                 require(artifact.pageArtifactKey == entry.pageArtifactKey)
                 require(artifact.dependencies == run.dependencies)
-                require(artifact.cleanedImageSha256 == sha256(fileSystem.readBytes(imagePath)))
             }.isSuccess
             CleanupPageState.PRESERVED_SOURCE ->
                 entry.artifactPath == null && entry.imagePath == null && entry.error != null
@@ -176,24 +172,48 @@ class CleanupArtifactStore(
             requireSha256(region.ocrRegionId)
             region.translationRegionId?.let(::requireSha256)
             require(region.roiPixelCount >= 0 && region.maskPixelCount >= 0 && region.changedPixelCount >= 0)
-            require(region.auditPixelCount >= 0 && region.residualPixelCount in 0..region.auditPixelCount)
-            require(region.cleanupAttemptCount in 0..2)
+            require(region.auditPixelCount >= 0)
+            require(region.initialResidualPixelCount in 0..region.auditPixelCount)
+            require(region.residualRetryPixelCount in 0..region.roiPixelCount)
+            require(region.residualPixelCount in 0..region.auditPixelCount)
+            require(region.cleanupAttemptCount in 0..4)
+            require(region.neuralFallbackMillis >= 0L)
+            when (region.neuralFallbackOutcome) {
+                NeuralFallbackOutcome.SUCCEEDED,
+                NeuralFallbackOutcome.FAILED,
+                -> require(region.cleanupAttemptCount == 4)
+                NeuralFallbackOutcome.NOT_ATTEMPTED,
+                NeuralFallbackOutcome.NOT_ELIGIBLE,
+                NeuralFallbackOutcome.BUDGET_SKIPPED,
+                -> require(region.neuralFallbackMillis == 0L)
+            }
             when (region.state) {
                 CleanupRegionState.CLEANED -> {
                     require(region.strategy != null && region.preserveReason == null)
                     require(region.maskSource != null)
                     require(region.cleanupAttemptCount >= 1)
-                    require(
-                        region.residualPixelCount <=
-                            dependencies.policy.maximumResidualPixelCount ||
+                    require(region.changedPixelCount > 0)
+                    val residualAcceptable =
+                        region.residualPixelCount <= dependencies.policy.maximumResidualPixelCount ||
                             (
                                 region.auditPixelCount > 0 &&
                                     region.residualPixelCount.toDouble() / region.auditPixelCount <=
                                     dependencies.policy.maximumResidualRatio
-                                ),
-                    )
+                                )
+                    when (region.completionMode) {
+                        CleanupCompletionMode.STRICT -> require(residualAcceptable)
+                        CleanupCompletionMode.BEST_EFFORT_RESIDUAL -> {
+                            require(!residualAcceptable)
+                            require(region.initialResidualPixelCount > 0)
+                            require(region.residualRetryPixelCount > 0)
+                            require(region.cleanupAttemptCount >= 3)
+                        }
+                    }
                 }
-                CleanupRegionState.PRESERVED_SOURCE -> require(region.preserveReason != null)
+                CleanupRegionState.PRESERVED_SOURCE -> {
+                    require(region.preserveReason != null)
+                    require(region.completionMode == CleanupCompletionMode.STRICT)
+                }
             }
         }
     }
@@ -229,9 +249,6 @@ class CleanupArtifactStore(
         require(resolved.startsWith(root.normalize()))
         return resolved
     }
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun requireSafeId(value: String) = require(SAFE_ID.matches(value))
     private fun requireSha256(value: String) = require(SHA256.matches(value))

@@ -57,6 +57,9 @@ class TranslationModelCatalogClient(
         }
         return TranslationModelCatalogCall(
             client = baseClient.newBuilder()
+                .retryOnConnectionFailure(false)
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .connectTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .readTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .writeTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)

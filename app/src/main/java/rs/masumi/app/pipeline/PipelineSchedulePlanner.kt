@@ -6,7 +6,6 @@ internal enum class PipelineStage {
     TRANSLATION,
     CLEANUP,
     TYPESETTING,
-    QUALITY,
     EXPORT,
 }
 
@@ -34,6 +33,18 @@ internal data class PipelineLaunch(
     val stage: PipelineStage,
 )
 
+internal object PipelineTrackedTaskPolicy {
+    fun shouldRelease(
+        queueActive: Boolean,
+        state: ProjectPipelineState?,
+        expectedStage: PipelineStage,
+    ): Boolean = !queueActive ||
+        state == null ||
+        state.complete ||
+        state.blocked ||
+        state.nextStage != expectedStage
+}
+
 internal object PipelineSchedulePlanner {
     fun lane(stage: PipelineStage): PipelineLane = when (stage) {
         PipelineStage.TRANSLATION -> PipelineLane.NETWORK
@@ -41,7 +52,6 @@ internal object PipelineSchedulePlanner {
         PipelineStage.OCR,
         PipelineStage.CLEANUP,
         PipelineStage.TYPESETTING,
-        PipelineStage.QUALITY,
         PipelineStage.EXPORT,
         -> PipelineLane.LOCAL
     }
@@ -50,11 +60,15 @@ internal object PipelineSchedulePlanner {
         projects: List<ScheduledProject>,
         running: Set<RunningPipelineTask>,
         translationCapacity: Int,
+        readerForeground: Boolean = false,
     ): List<PipelineLaunch> {
         require(translationCapacity >= 1)
         val runnable = projects
             .filter { it.nextStage != null && !it.waitingForSettings && !it.blocked }
             .filterNot { project -> running.any { it.projectId == project.projectId } }
+            .filterNot { project ->
+                readerForeground && project.nextStage in setOf(PipelineStage.TRANSLATION, PipelineStage.CLEANUP)
+            }
         val launches = mutableListOf<PipelineLaunch>()
 
         val networkInUse = running.count { lane(it.stage) == PipelineLane.NETWORK }
@@ -84,10 +98,9 @@ internal object PipelineSchedulePlanner {
             translationsAfterLaunch < translationCapacity && stage == PipelineStage.DETECTION -> 1
             stage == PipelineStage.CLEANUP -> 2
             stage == PipelineStage.TYPESETTING -> 3
-            stage == PipelineStage.QUALITY -> 4
-            stage == PipelineStage.EXPORT -> 5
-            stage == PipelineStage.OCR -> 6
-            else -> 7
+            stage == PipelineStage.EXPORT -> 4
+            stage == PipelineStage.OCR -> 5
+            else -> 6
         }
     }.thenBy { project ->
         if (project.nextStage == PipelineStage.DETECTION || project.nextStage == PipelineStage.OCR) {

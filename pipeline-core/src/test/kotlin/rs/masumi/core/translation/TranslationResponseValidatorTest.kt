@@ -99,4 +99,81 @@ class TranslationResponseValidatorTest {
         assertEquals(TranslationResultState.TRANSLATED, translated.state)
         assertEquals("轰", translated.translatedText)
     }
+
+    @Test
+    fun `invalid Japanese or source echo glossary updates are discarded`() {
+        val result = TranslationResponseValidator().validate(
+            TranslationFixtures.window(emptyList()),
+            TranslationModelResponse(
+                items = emptyList(),
+                glossaryUpdates = linkedMapOf(
+                    "名前" to "ナマエ",
+                    "同じ" to "同じ",
+                    "人物" to "角色",
+                ),
+            ),
+        )
+
+        assertEquals(listOf(TranslationGlossaryEntry("人物", "角色")), result.glossaryUpdates)
+        assertEquals(2, result.discardedGlossaryEntryCount)
+    }
+
+    @Test
+    fun `validator preserves target output containing hiragana or katakana`() {
+        val requested = TranslationFixtures.input("script", 0, source = "今日は")
+
+        val hiragana = TranslationResponseValidator().validate(
+            TranslationFixtures.window(listOf(requested)),
+            TranslationModelResponse(
+                items = listOf(TranslationModelItem("script", TranslationRole.NARRATION, "今日は")),
+            ),
+        ).items.single()
+        val katakana = TranslationResponseValidator().validate(
+            TranslationFixtures.window(listOf(requested)),
+            TranslationModelResponse(
+                items = listOf(TranslationModelItem("script", TranslationRole.NARRATION, "テスト")),
+            ),
+        ).items.single()
+
+        assertEquals(TranslationResultState.PRESERVED_SOURCE, hiragana.state)
+        assertEquals(TranslationResultState.PRESERVED_SOURCE, katakana.state)
+        assertEquals(TranslationPreserveReason.INVALID_TARGET_SCRIPT, hiragana.preserveReason)
+        assertEquals(TranslationPreserveReason.INVALID_TARGET_SCRIPT, katakana.preserveReason)
+    }
+
+    @Test
+    fun `validator preserves a non numeric normalized source echo but accepts numeric and symbol echoes`() {
+        val text = TranslationFixtures.input("text", 0, source = " 日本 ")
+        val number = TranslationFixtures.input("number", 1, source = " １２３－４５ ")
+
+        val result = TranslationResponseValidator().validate(
+            TranslationFixtures.window(listOf(text, number)),
+            TranslationModelResponse(
+                items = listOf(
+                    TranslationModelItem("text", TranslationRole.NARRATION, "日本"),
+                    TranslationModelItem("number", TranslationRole.NARRATION, "１２３－４５"),
+                ),
+            ),
+        )
+
+        assertEquals(TranslationResultState.PRESERVED_SOURCE, result.items[0].state)
+        assertEquals(TranslationPreserveReason.SOURCE_TEXT_ECHO, result.items[0].preserveReason)
+        assertEquals(TranslationResultState.TRANSLATED, result.items[1].state)
+    }
+
+    @Test
+    fun `post normalization output is rechecked for a source echo`() {
+        val validator = TranslationResponseValidator()
+        val source = "回声……"
+        val rawModelOutput = "回声..."
+
+        assertEquals(null, validator.invalidOutputReason(source, rawModelOutput))
+        val locallyNormalized = TranslationTextNormalizer.normalize(source, rawModelOutput, emptyList())
+
+        assertEquals("回声……", locallyNormalized)
+        assertEquals(
+            TranslationPreserveReason.SOURCE_TEXT_ECHO,
+            validator.invalidOutputReason(source, locallyNormalized),
+        )
+    }
 }

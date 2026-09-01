@@ -2,6 +2,7 @@ package rs.masumi.core.translation
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class TranslationJobReducerTest {
     @Test
@@ -45,23 +46,154 @@ class TranslationJobReducerTest {
     }
 
     @Test
-    fun `salvaged window items move preserved counts back to translated`() {
-        val base = TranslationArtifactFixtures.job()
-        val running = base.copy(
-            status = TranslationJobStatus.RUNNING,
-            windows = listOf(
-                base.windows.single().copy(
-                    state = TranslationWindowState.COMMITTED,
-                    translatedItemCount = 0,
-                    preservedItemCount = 1,
+    fun `recovery rewinds legacy provider failure and its glossary dependent suffix`() {
+        listOf(
+            "NETWORK",
+            "TIMEOUT",
+            "HTTP_TRANSIENT",
+            "HTTP_CLIENT",
+            "MALFORMED_RESPONSE",
+        ).forEachIndexed { caseIndex, code ->
+            val base = TranslationArtifactFixtures.job()
+            val prefixRegionId = "1".repeat(64)
+            val failedRegionId = "2".repeat(64)
+            val dependentRegionId = "3".repeat(64)
+            val committedPrefix = base.windows.single().copy(
+                translationRegionIds = listOf(prefixRegionId),
+                state = TranslationWindowState.COMMITTED,
+                checkpointPath = "windows/prefix.json",
+                translatedItemCount = 1,
+                attemptCount = 1,
+            )
+            val retryableFailure = base.windows.single().copy(
+                windowIndex = 1,
+                windowArtifactKey = "d".repeat(64),
+                translationRegionIds = listOf(failedRegionId),
+                state = TranslationWindowState.PRESERVED_SOURCE,
+                checkpointPath = "windows/retryable.json",
+                preservedItemCount = 1,
+                attemptCount = 2,
+                usage = TranslationUsage(10, 5, 15),
+                error = TranslationError(code),
+            )
+            val dependentSuffix = base.windows.single().copy(
+                windowIndex = 2,
+                windowArtifactKey = "e".repeat(64),
+                translationRegionIds = listOf(dependentRegionId),
+                state = TranslationWindowState.COMMITTED,
+                checkpointPath = "windows/dependent.json",
+                translatedItemCount = 1,
+                attemptCount = 1,
+            )
+            val unrelatedCommittedPage = base.pages.single().copy(
+                translationRegionIds = listOf(prefixRegionId),
+                state = TranslationPageState.COMMITTED,
+                artifactPath = "pages/prefix/translation.json",
+            )
+            val failedWindowPage = base.pages.single().copy(
+                pageId = "4".repeat(64),
+                pageOrder = 1,
+                pageArtifactKey = "5".repeat(64),
+                translationRegionIds = listOf(failedRegionId),
+                state = TranslationPageState.COMMITTED,
+                artifactPath = "pages/failed/translation.json",
+                error = TranslationError("STALE_PAGE_ERROR"),
+            )
+            val dependentSuffixPage = base.pages.single().copy(
+                pageId = "6".repeat(64),
+                pageOrder = 2,
+                pageArtifactKey = "7".repeat(64),
+                translationRegionIds = listOf(dependentRegionId),
+                state = TranslationPageState.COMMITTED,
+                artifactPath = "pages/dependent/translation.json",
+                error = TranslationError("STALE_PAGE_ERROR"),
+            )
+            val interrupted = base.copy(
+                status = TranslationJobStatus.CANCELLED,
+                updatedAtEpochMillis = 2L,
+                windows = listOf(committedPrefix, retryableFailure, dependentSuffix),
+                pages = listOf(unrelatedCommittedPage, failedWindowPage, dependentSuffixPage),
+            )
+
+            val recovered = TranslationJobReducer.recoverInterrupted(interrupted, 3L + caseIndex)
+
+            assertEquals(committedPrefix, recovered.windows[0], code)
+            assertEquals(
+                listOf(
+                    TranslationWindowState.COMMITTED,
+                    TranslationWindowState.PENDING,
+                    TranslationWindowState.PENDING,
                 ),
-            ),
+                recovered.windows.map(TranslationJobWindow::state),
+                code,
+            )
+            recovered.windows.drop(1).forEach { window ->
+                assertNull(window.checkpointPath, code)
+                assertEquals(0, window.translatedItemCount, code)
+                assertEquals(0, window.preservedItemCount, code)
+                assertNull(window.usage, code)
+                assertNull(window.error, code)
+            }
+            assertEquals(unrelatedCommittedPage, recovered.pages[0], code)
+            recovered.pages.drop(1).forEach { page ->
+                assertEquals(TranslationPageState.PENDING, page.state, code)
+                assertNull(page.artifactPath, code)
+                assertNull(page.error, code)
+            }
+        }
+    }
+
+    @Test
+    fun `recovery does not rewind a semantic preserved window`() {
+        val base = TranslationArtifactFixtures.job()
+        val semanticFailure = base.windows.single().copy(
+            state = TranslationWindowState.PRESERVED_SOURCE,
+            checkpointPath = "windows/semantic.json",
+            preservedItemCount = 1,
+            attemptCount = 2,
+            error = null,
+        )
+        val interrupted = base.copy(
+            status = TranslationJobStatus.CANCELLED,
+            windows = listOf(semanticFailure),
         )
 
-        val salvaged = TranslationJobReducer.salvageWindowItems(running, 0, 1, 3L)
+        val recovered = TranslationJobReducer.recoverInterrupted(interrupted, 2L)
 
-        assertEquals(1, salvaged.windows.single().translatedItemCount)
-        assertEquals(0, salvaged.windows.single().preservedItemCount)
+        assertEquals(semanticFailure, recovered.windows.single())
+    }
+
+    @Test
+    fun `queued recovery normalizes a terminal suffix after an existing pending gap`() {
+        val base = TranslationArtifactFixtures.job()
+        val prefix = base.windows.single().copy(
+            state = TranslationWindowState.COMMITTED,
+            checkpointPath = "windows/prefix.json",
+            translatedItemCount = 1,
+        )
+        val pending = base.windows.single().copy(
+            windowIndex = 1,
+            windowArtifactKey = "d".repeat(64),
+        )
+        val staleSuffix = base.windows.single().copy(
+            windowIndex = 2,
+            windowArtifactKey = "e".repeat(64),
+            state = TranslationWindowState.COMMITTED,
+            checkpointPath = "windows/stale.json",
+            translatedItemCount = 1,
+        )
+        val queued = base.copy(
+            status = TranslationJobStatus.QUEUED,
+            windows = listOf(prefix, pending, staleSuffix),
+        )
+
+        val recovered = TranslationJobReducer.recoverInterrupted(queued, 2L)
+
+        assertEquals(prefix, recovered.windows[0])
+        assertEquals(TranslationWindowState.PENDING, recovered.windows[1].state)
+        assertEquals(TranslationWindowState.PENDING, recovered.windows[2].state)
+        assertNull(recovered.windows[2].checkpointPath)
+        assertEquals(0, recovered.windows[2].translatedItemCount)
     }
 
     @Test

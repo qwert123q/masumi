@@ -16,9 +16,6 @@
         android:name="${applicationId}.permission.INTERNAL_TYPESETTING_STATUS"
         android:protectionLevel="signature" />
     <permission
-        android:name="${applicationId}.permission.INTERNAL_QUALITY_STATUS"
-        android:protectionLevel="signature" />
-    <permission
         android:name="${applicationId}.permission.INTERNAL_EXPORT_STATUS"
         android:protectionLevel="signature" />
 
@@ -27,7 +24,6 @@
     <uses-permission android:name="${applicationId}.permission.INTERNAL_TRANSLATION_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_CLEANUP_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_TYPESETTING_STATUS" />
-    <uses-permission android:name="${applicationId}.permission.INTERNAL_QUALITY_STATUS" />
     <uses-permission android:name="${applicationId}.permission.INTERNAL_EXPORT_STATUS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -44,7 +40,8 @@
         android:largeHeap="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Masumi">
+        android:theme="@style/Theme.Masumi"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".library.LibraryActivity"
             android:exported="true">
@@ -110,15 +107,6 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-initiated on-device manga translation typesetting" />
-        </service>
-        <service
-            android:name=".quality.QualityForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:stopWithTask="false">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-initiated on-device validation of translated manga pages" />
         </service>
         <service
             android:name=".exporting.ExportForegroundService"

@@ -61,6 +61,22 @@ class ExportArtifactStore(
         fileSystem.replaceUtf8(reportsDirectory.resolve("${report.jobId}.json"), json.encodeReport(report))
     }
 
+    /**
+     * Commits completion with the report first and the successful job as the
+     * final marker. A crash between the writes leaves the older job recoverable;
+     * observing SUCCEEDED therefore guarantees that its matching report exists.
+     */
+    fun commitSuccessfulExport(job: ExportJobRecord, report: ExportReport) {
+        requireValidJob(job)
+        require(job.status == ExportJobStatus.SUCCEEDED)
+        requireValidReport(report)
+        requireReportMatchesJob(report, job)
+        fileSystem.createDirectories(reportsDirectory)
+        fileSystem.createDirectories(jobsDirectory)
+        fileSystem.replaceUtf8(reportsDirectory.resolve("${report.jobId}.json"), json.encodeReport(report))
+        fileSystem.replaceUtf8(jobsDirectory.resolve("${job.jobId}.json"), json.encodeJob(job))
+    }
+
     fun readReport(jobId: String): ExportReport? {
         requireSafeId(jobId)
         val path = reportsDirectory.resolve("$jobId.json")

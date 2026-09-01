@@ -1,6 +1,14 @@
 package rs.masumi.app.pipeline
 
 import rs.masumi.app.detection.ProjectCatalog
+import rs.masumi.app.detection.PublishedCleanupRun
+import rs.masumi.app.detection.PublishedOcrRun
+import rs.masumi.app.detection.PublishedTranslationRun
+import rs.masumi.app.detection.PublishedTypesettingRun
+import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.modelpackage.PinnedAotInpainter
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
+import rs.masumi.core.typesetting.TypesettingPolicy
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -31,23 +39,88 @@ object WorkspaceJanitor {
             runKey?.let { keep.getOrPut(stage) { mutableSetOf() }.add(it) }
         }
 
-        val detection = catalog.latestPublishedRun(projectId)
-        keep(STAGE_DETECTION, detection?.artifact?.runArtifactKey)
-        val ocr = catalog.latestPublishedOcrRun(projectId)
-        keep(STAGE_OCR, ocr?.artifact?.runArtifactKey)
-        keep(STAGE_DETECTION, ocr?.artifact?.detectionRunArtifactKey)
-        val translation = catalog.latestPublishedTranslationRun(projectId)
-        keep(STAGE_TRANSLATION, translation?.artifact?.runArtifactKey)
-        keep(STAGE_OCR, translation?.artifact?.dependencies?.ocrRunArtifactKey)
-        val cleanup = catalog.latestPublishedCleanupRun(projectId)
-        keep(STAGE_CLEANUP, cleanup?.artifact?.runArtifactKey)
-        keep(STAGE_TRANSLATION, cleanup?.artifact?.dependencies?.translationRunArtifactKey)
-        val typesetting = catalog.latestPublishedTypesettingRun(projectId)
-        keep(STAGE_TYPESETTING, typesetting?.artifact?.runArtifactKey)
-        keep(STAGE_CLEANUP, typesetting?.artifact?.dependencies?.cleanupRunArtifactKey)
-        val quality = catalog.latestPublishedQualityRun(projectId)
-        keep(STAGE_QUALITY, quality?.artifact?.runArtifactKey)
-        keep(STAGE_TYPESETTING, quality?.artifact?.dependencies?.typesettingRunArtifactKey)
+        fun keepOcr(run: PublishedOcrRun?) {
+            run ?: return
+            keep(STAGE_OCR, run.artifact.runArtifactKey)
+            keep(STAGE_DETECTION, run.artifact.detectionRunArtifactKey)
+        }
+        fun keepTranslation(run: PublishedTranslationRun?) {
+            run ?: return
+            keep(STAGE_TRANSLATION, run.artifact.runArtifactKey)
+            val ocrKey = run.artifact.dependencies.ocrRunArtifactKey
+            keep(STAGE_OCR, ocrKey)
+            keepOcr(catalog.publishedOcrRun(projectId, ocrKey))
+        }
+        fun keepCleanup(run: PublishedCleanupRun?) {
+            run ?: return
+            keep(STAGE_CLEANUP, run.artifact.runArtifactKey)
+            val translationKey = run.artifact.dependencies.translationRunArtifactKey
+            keep(STAGE_TRANSLATION, translationKey)
+            keepTranslation(catalog.publishedTranslationRun(projectId, translationKey))
+        }
+        fun keepTypesetting(run: PublishedTypesettingRun?) {
+            run ?: return
+            keep(STAGE_TYPESETTING, run.artifact.runArtifactKey)
+            val cleanupKey = run.artifact.dependencies.cleanupRunArtifactKey
+            keep(STAGE_CLEANUP, cleanupKey)
+            keepCleanup(catalog.publishedCleanupRun(projectId, cleanupKey))
+        }
+
+        // Always retain the newest complete artifact in every stage and its
+        // entire dependency lineage. This is the rollback/reference chain when
+        // a schema or policy bump intentionally makes that run non-current.
+        val latestDetection = catalog.latestPublishedRun(projectId)
+        keep(STAGE_DETECTION, latestDetection?.artifact?.runArtifactKey)
+        keepOcr(catalog.latestPublishedOcrRun(projectId))
+        keepTranslation(catalog.latestPublishedTranslationRun(projectId))
+        keepCleanup(catalog.latestPublishedCleanupRun(projectId))
+        keepTypesetting(catalog.latestPublishedTypesettingRun(projectId))
+
+        // Also retain the current compatible lineage. During a staged rerun it
+        // can coexist with a newer timestamped artifact from an old identity.
+        val currentDetection = catalog.latestPublishedRun(projectId)
+        keep(STAGE_DETECTION, currentDetection?.artifact?.runArtifactKey)
+        val currentOcr = currentDetection?.let { detection ->
+            catalog.publishedOcrRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.ocr(
+                    it.artifact,
+                    detection.artifact.runArtifactKey,
+                )
+            }
+        }
+        keepOcr(currentOcr)
+        val currentTranslation = currentOcr?.let { ocr ->
+            catalog.publishedTranslationRuns(projectId).firstOrNull {
+                PipelineArtifactFreshness.translation(
+                    it.artifact,
+                    ocr.artifact.runArtifactKey,
+                )
+            }
+        }
+        keepTranslation(currentTranslation)
+        val currentCleanup = currentTranslation?.let { translation ->
+            catalog.latestPublishedCleanupRun(
+                projectId = projectId,
+                translationRunArtifactKey = translation.artifact.runArtifactKey,
+                policy = CleanupPolicy(),
+                maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
+                neuralModel = PinnedAotInpainter.descriptor.toModelRef(),
+            )?.takeIf {
+                PipelineArtifactFreshness.cleanup(
+                    it.artifact,
+                    translation.artifact.runArtifactKey,
+                )
+            }
+        }
+        keepCleanup(currentCleanup)
+        val currentTypesetting = currentCleanup?.let { cleanup ->
+            catalog.latestPublishedTypesettingRun(
+                projectId = projectId,
+                cleanupRunArtifactKey = cleanup.artifact.runArtifactKey,
+                policy = TypesettingPolicy(),
+            )
+        }
+        keepTypesetting(currentTypesetting)
 
         val cutoff = FileTime.from(
             System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(COLD_RUN_MINUTES),
@@ -158,14 +231,17 @@ object WorkspaceJanitor {
     private const val STAGE_TRANSLATION = "translation"
     private const val STAGE_CLEANUP = "cleanup"
     private const val STAGE_TYPESETTING = "typesetting"
-    private const val STAGE_QUALITY = "quality"
+
+    // No current lineage depends on this retired stage; keeping its directory
+    // name in the sweep list reclaims cold artifacts left by older installs.
+    private const val LEGACY_STAGE_QUALITY = "quality"
     private val STAGES = listOf(
         STAGE_DETECTION,
         STAGE_OCR,
         STAGE_TRANSLATION,
         STAGE_CLEANUP,
         STAGE_TYPESETTING,
-        STAGE_QUALITY,
+        LEGACY_STAGE_QUALITY,
     )
     private val SHA256 = Regex("[0-9a-f]{64}")
     private const val COLD_RUN_MINUTES = 30L

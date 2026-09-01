@@ -30,6 +30,16 @@ Release APK 必须签名，否则 Android 直接拒绝安装。签名配置从 G
 
 ## 出包
 
+模型二进制不进入普通 Git 历史。新 checkout 先安装 `onnx==1.22.0`，再按固定
+来源、长度和 SHA-256 准备两个 assets：
+
+```bash
+python3 -m pip install onnx==1.22.0
+tools/prepare-bundled-models.sh
+```
+
+Gradle 的 `preBuild` 会再次逐字节核验；缺失或不匹配时拒绝出包。
+
 ```bash
 ./gradlew :app:assembleRelease
 ```

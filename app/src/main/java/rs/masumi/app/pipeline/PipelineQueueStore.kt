@@ -1,8 +1,16 @@
 package rs.masumi.app.pipeline
 
 import android.content.Context
-import org.json.JSONArray
-import org.json.JSONObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
 
 internal enum class PipelineQueueStatus {
     ACTIVE,
@@ -14,15 +22,31 @@ internal data class PipelineQueueEntry(
     val enqueuedAtEpochMillis: Long,
     val status: PipelineQueueStatus = PipelineQueueStatus.ACTIVE,
     val errorCode: String? = null,
-    val consecutiveFailureCount: Int = 0,
-    val retryNotBeforeEpochMillis: Long = 0L,
 )
 
-internal class PipelineQueueStore(context: Context) {
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+internal interface PipelineQueuePersistence {
+    fun read(): String?
+
+    fun write(value: String): Boolean
+}
+
+internal class PipelineQueueStore internal constructor(
+    private val persistence: PipelineQueuePersistence,
+) {
+    constructor(context: Context) : this(
+        object : PipelineQueuePersistence {
+            private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+
+            override fun read(): String? = preferences.getString(KEY_ENTRIES, null)
+
+            override fun write(value: String): Boolean = preferences.edit()
+                .putString(KEY_ENTRIES, value)
+                .commit()
+        },
+    )
 
     fun entries(): List<PipelineQueueEntry> = synchronized(GLOBAL_LOCK) {
-        decode(preferences.getString(KEY_ENTRIES, null))
+        decode(persistence.read())
     }
 
     fun enqueue(projectId: String, now: Long = System.currentTimeMillis()): PipelineQueueEntry =
@@ -34,8 +58,6 @@ internal class PipelineQueueStore(context: Context) {
                 entries[existingIndex].copy(
                     status = PipelineQueueStatus.ACTIVE,
                     errorCode = null,
-                    consecutiveFailureCount = 0,
-                    retryNotBeforeEpochMillis = 0L,
                 )
                     .also { entries[existingIndex] = it }
             } else {
@@ -45,60 +67,52 @@ internal class PipelineQueueStore(context: Context) {
             entry
         }
 
+    fun enqueueIfAbsent(
+        projectIds: List<String>,
+        firstEnqueuedAtEpochMillis: Long = System.currentTimeMillis(),
+    ): List<PipelineQueueEntry> = synchronized(GLOBAL_LOCK) {
+        val distinctProjectIds = projectIds.distinct()
+        require(distinctProjectIds.all(SAFE_ID::matches))
+        require(firstEnqueuedAtEpochMillis >= 0L)
+        val entries = entries().toMutableList()
+        val existingIds = entries.mapTo(mutableSetOf(), PipelineQueueEntry::projectId)
+        val added = distinctProjectIds.mapIndexedNotNull { index, projectId ->
+            if (!existingIds.add(projectId)) return@mapIndexedNotNull null
+            PipelineQueueEntry(
+                projectId = projectId,
+                enqueuedAtEpochMillis = firstEnqueuedAtEpochMillis
+                    .coerceAtMost(Long.MAX_VALUE - index) + index,
+            ).also(entries::add)
+        }
+        if (added.isNotEmpty()) persist(entries)
+        added
+    }
+
     fun pause(projectId: String, errorCode: String? = null) = synchronized(GLOBAL_LOCK) {
         require(SAFE_ID.matches(projectId))
         update(projectId) {
             it.copy(
                 status = PipelineQueueStatus.PAUSED,
                 errorCode = errorCode?.takeIf(ERROR_CODE::matches),
-                retryNotBeforeEpochMillis = 0L,
             )
         }
     }
 
-    fun scheduleRetry(
-        projectId: String,
-        errorCode: String,
-        now: Long = System.currentTimeMillis(),
-    ): PipelineQueueEntry? = synchronized(GLOBAL_LOCK) {
+    /** Records a stage failure without racing an explicit user pause. */
+    fun fail(projectId: String, errorCode: String): Boolean = synchronized(GLOBAL_LOCK) {
         require(SAFE_ID.matches(projectId))
         require(ERROR_CODE.matches(errorCode))
-        require(now >= 0L)
         val entries = entries().toMutableList()
-        val index = entries.indexOfFirst { it.projectId == projectId }
-        if (index < 0 || entries[index].status != PipelineQueueStatus.ACTIVE) return@synchronized null
-        val failureCount = (entries[index].consecutiveFailureCount + 1)
-            .coerceAtMost(MAXIMUM_RECORDED_FAILURE_COUNT)
-        val retryAt = now + PipelineRetryPolicy.delayMillis(failureCount)
-        val updated = entries[index].copy(
-            errorCode = errorCode,
-            consecutiveFailureCount = failureCount,
-            retryNotBeforeEpochMillis = retryAt.coerceAtLeast(now),
-        )
-        entries[index] = updated
-        persist(entries)
-        updated
-    }
-
-    fun clearRetry(projectId: String) = synchronized(GLOBAL_LOCK) {
-        require(SAFE_ID.matches(projectId))
-        val entries = entries().toMutableList()
-        val index = entries.indexOfFirst { it.projectId == projectId }
-        if (index < 0) return@synchronized
-        val current = entries[index]
-        if (
-            current.errorCode == null &&
-            current.consecutiveFailureCount == 0 &&
-            current.retryNotBeforeEpochMillis == 0L
-        ) {
-            return@synchronized
+        val index = entries.indexOfFirst {
+            it.projectId == projectId && it.status == PipelineQueueStatus.ACTIVE
         }
-        entries[index] = current.copy(
-            errorCode = null,
-            consecutiveFailureCount = 0,
-            retryNotBeforeEpochMillis = 0L,
+        if (index < 0) return@synchronized false
+        entries[index] = entries[index].copy(
+            status = PipelineQueueStatus.PAUSED,
+            errorCode = errorCode,
         )
         persist(entries)
+        true
     }
 
     fun remove(projectId: String) = synchronized(GLOBAL_LOCK) {
@@ -125,53 +139,59 @@ internal class PipelineQueueStore(context: Context) {
     }
 
     private fun persist(entries: List<PipelineQueueEntry>) {
-        val encoded = JSONArray().apply {
+        val encoded = buildJsonArray {
             entries.sortedWith(
                 compareBy(PipelineQueueEntry::enqueuedAtEpochMillis)
                     .thenBy(PipelineQueueEntry::projectId),
             ).forEach { entry ->
-                put(
-                    JSONObject()
-                        .put("projectId", entry.projectId)
-                        .put("enqueuedAtEpochMillis", entry.enqueuedAtEpochMillis)
-                        .put("status", entry.status.name)
-                        .put("errorCode", entry.errorCode)
-                        .put("consecutiveFailureCount", entry.consecutiveFailureCount)
-                        .put("retryNotBeforeEpochMillis", entry.retryNotBeforeEpochMillis),
+                add(
+                    buildJsonObject {
+                        put("projectId", entry.projectId)
+                        put("enqueuedAtEpochMillis", entry.enqueuedAtEpochMillis)
+                        put("status", entry.status.name)
+                        entry.errorCode?.let { errorCode -> put("errorCode", errorCode) }
+                    },
                 )
             }
         }.toString()
-        check(preferences.edit().putString(KEY_ENTRIES, encoded).commit())
+        check(persistence.write(encoded))
     }
 
     private fun decode(raw: String?): List<PipelineQueueEntry> {
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching {
-            val values = JSONArray(raw)
-            buildList {
-                repeat(values.length()) { index ->
-                    val value = values.getJSONObject(index)
-                    val projectId = value.getString("projectId")
-                    val timestamp = value.getLong("enqueuedAtEpochMillis")
-                    val status = PipelineQueueStatus.valueOf(value.getString("status"))
-                    val error = value.optString("errorCode").takeIf(String::isNotBlank)
-                    val failureCount = value.optInt("consecutiveFailureCount", 0)
-                    val retryAt = value.optLong("retryNotBeforeEpochMillis", 0L)
+            val values = Json.parseToJsonElement(raw).jsonArray
+            buildList(values.size) {
+                values.forEach { element ->
+                    val value = element.jsonObject
+                    val projectId = requireNotNull(
+                        value.getValue("projectId").jsonPrimitive.contentOrNull,
+                    )
+                    val timestamp = requireNotNull(
+                        value.getValue("enqueuedAtEpochMillis").jsonPrimitive.longOrNull,
+                    )
+                    val status = PipelineQueueStatus.valueOf(
+                        requireNotNull(value.getValue("status").jsonPrimitive.contentOrNull),
+                    )
+                    val error = value["errorCode"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf(String::isNotBlank)
+                    val legacyFailureCount = value["consecutiveFailureCount"]?.jsonPrimitive?.intOrNull
+                    val legacyRetryAt = value["retryNotBeforeEpochMillis"]?.jsonPrimitive?.longOrNull
                     if (
                         SAFE_ID.matches(projectId) &&
                         timestamp >= 0L &&
-                        failureCount in 0..MAXIMUM_RECORDED_FAILURE_COUNT &&
-                        retryAt >= 0L &&
+                        (legacyFailureCount == null || legacyFailureCount in 0..MAXIMUM_RECORDED_FAILURE_COUNT) &&
+                        (legacyRetryAt == null || legacyRetryAt >= 0L) &&
                         (error == null || ERROR_CODE.matches(error))
                     ) {
+                        val legacyFailurePending = status == PipelineQueueStatus.ACTIVE &&
+                            (error != null || (legacyFailureCount ?: 0) > 0 || (legacyRetryAt ?: 0L) > 0L)
                         add(
                             PipelineQueueEntry(
                                 projectId = projectId,
                                 enqueuedAtEpochMillis = timestamp,
-                                status = status,
-                                errorCode = error,
-                                consecutiveFailureCount = failureCount,
-                                retryNotBeforeEpochMillis = retryAt,
+                                status = if (legacyFailurePending) PipelineQueueStatus.PAUSED else status,
+                                errorCode = if (legacyFailurePending) error ?: "STAGE_FAILED" else error,
                             ),
                         )
                     }

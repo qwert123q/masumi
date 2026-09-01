@@ -112,9 +112,12 @@ class ContinuousReaderView @JvmOverloads constructor(
         val oldAspect = aspects[index]
         if (oldAspect == aspect) return
         val anchor = pageAt(scrollOffset)
-        val offsetInsideAnchor = scrollOffset - pageTop(anchor)
+        val anchorAspect = aspectAt(anchor)
+        val previousHeight = (width * anchorAspect).coerceAtLeast(1f)
+        val offsetFraction = ((scrollOffset - pageTop(anchor)) / previousHeight).coerceIn(0f, 0.9999f)
         aspects = aspects.toMutableList().also { it[index] = aspect }
-        scrollOffset = (pageTop(anchor) + offsetInsideAnchor).coerceIn(0f, maximumScroll())
+        scrollOffset = (pageTop(anchor) + width * aspectAt(anchor) * offsetFraction)
+            .coerceIn(0f, maximumScroll())
         invalidate()
     }
 
@@ -130,6 +133,25 @@ class ContinuousReaderView @JvmOverloads constructor(
     }
 
     fun firstVisiblePage(): Int = pageAt(scrollOffset)
+
+    fun captureReadingLocation(): ReadingLocation {
+        val page = pageAt(scrollOffset)
+        val pageHeight = (width * aspectAt(page)).coerceAtLeast(1f)
+        return ReadingLocation(page, ((scrollOffset - pageTop(page)) / pageHeight).coerceIn(0f, 0.9999f))
+    }
+
+    fun restoreReadingLocation(location: ReadingLocation, onApplied: () -> Unit = {}) {
+        if (!isLaidOut || width <= 0 || height <= 0 || aspects.isEmpty()) {
+            post { restoreReadingLocation(location, onApplied) }
+            return
+        }
+        val normalized = location.clamped(aspects.size)
+        scroller.forceFinished(true)
+        scrollOffset = (pageTop(normalized.pageIndex) + width * aspectAt(normalized.pageIndex) * normalized.intraPageFraction)
+            .coerceIn(0f, maximumScroll())
+        invalidate()
+        onApplied()
+    }
 
     @Suppress("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean =
@@ -206,6 +228,9 @@ class ContinuousReaderView @JvmOverloads constructor(
         for (position in 0 until min(index, aspects.size)) top += width * aspects[position]
         return top
     }
+
+    private fun aspectAt(index: Int): Float = aspects.getOrNull(index)?.takeIf { it.isFinite() && it > 0f }
+        ?: 1f
 
     private fun pageAt(offset: Float): Int {
         var top = 0f

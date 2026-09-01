@@ -1,5 +1,7 @@
 # Quality-Directed Repair Implementation Plan
 
+> **Superseded:** This plan records a removed runtime design. Masumi no longer runs a production quality audit or schedules quality-directed typesetting repair; `TYPESETTING` proceeds directly to `EXPORT`. See `docs/architecture/foundation.md` for the current architecture.
+
 **Goal:** Automatically repair only quality-blocked typesetting pages once, then rerun the deterministic quality gate.
 
 ## Task 1: Freeze repair contracts

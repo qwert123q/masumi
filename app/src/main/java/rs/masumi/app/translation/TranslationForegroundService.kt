@@ -16,7 +16,9 @@ import rs.masumi.app.MainActivity
 import rs.masumi.app.R
 import rs.masumi.app.ForegroundTaskWakeLock
 import rs.masumi.app.describePipelineError
+import rs.masumi.app.forUserPresentation
 import rs.masumi.app.pipeline.PipelineDeviceCapacity
+import rs.masumi.app.pipeline.PipelineQueueStore
 import rs.masumi.app.pipeline.PipelineThreading
 import rs.masumi.core.translation.TranslationJobStatus
 import rs.masumi.core.translation.WorkspaceGlossaryStore
@@ -51,6 +53,7 @@ class TranslationForegroundService : Service() {
                 }
                 val settings = TranslationSettingsStore(this).loadProviderSettings()
                 if (settings == null) {
+                    PipelineQueueStore(this).fail(projectId, "TRANSLATION_SETTINGS_MISSING")
                     notificationManager.notify(NOTIFICATION_ID, settingsMissingNotification())
                     stopForeground(STOP_FOREGROUND_DETACH)
                     stopSelf(startId)
@@ -114,6 +117,7 @@ class TranslationForegroundService : Service() {
                 active.runner = activeRunner
                 activeRunner.run(projectId, settings, active.cancellation::get, ::publishProgress)
             } catch (_: Throwable) {
+                PipelineQueueStore(this).fail(projectId, "STAGE_UNEXPECTED_FAILURE")
                 notificationManager.notify(NOTIFICATION_ID, unexpectedFailureNotification())
             } finally {
                 active.runner = null
@@ -152,18 +156,16 @@ class TranslationForegroundService : Service() {
     }
 
     private fun progressNotification(progress: TranslationProgress): Notification {
-        val text = when (progress.status) {
+        val text = when (progress.status.forUserPresentation()) {
             TranslationJobStatus.QUEUED -> getString(R.string.translation_notification_starting)
             TranslationJobStatus.RUNNING -> getString(
                 R.string.translation_notification_progress,
                 progress.terminalWindowCount,
                 progress.totalWindowCount,
             )
-            TranslationJobStatus.SUCCEEDED -> getString(R.string.translation_notification_succeeded)
-            TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS -> getString(
-                R.string.translation_notification_succeeded_protected,
-                progress.preservedItemCount + progress.protectedOcrCount,
-            )
+            TranslationJobStatus.SUCCEEDED,
+            TranslationJobStatus.SUCCEEDED_WITH_PROTECTED_ITEMS,
+            -> getString(R.string.translation_notification_succeeded)
             TranslationJobStatus.CANCELLED -> getString(R.string.translation_notification_cancelled)
             TranslationJobStatus.FAILED -> getString(
                 R.string.translation_notification_failed,

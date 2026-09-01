@@ -2,7 +2,9 @@
 
 Date: 2026-07-18
 
-Status: Active
+Status: Superseded
+
+> **Superseded:** This specification records a removed runtime design. Masumi no longer runs a production quality audit or quality-directed repair; `TYPESETTING` proceeds directly to `EXPORT`. See `docs/architecture/foundation.md` for the current architecture.
 
 ## Purpose
 

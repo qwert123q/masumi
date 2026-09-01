@@ -14,8 +14,7 @@ class TranslationArtifactStore(
     private val projectDirectory = projectDirectory.toAbsolutePath().normalize()
 
     fun writeJob(job: TranslationJobRecord) {
-        requireSafeId(job.jobId)
-        requireSha256(job.runArtifactKey)
+        requireValidJobStorageIdentity(job)
         val directory = projectDirectory.resolve("jobs")
         fileSystem.createDirectories(directory)
         fileSystem.replaceUtf8(directory.resolve("${job.jobId}.json"), json.encodeJob(job))
@@ -25,13 +24,25 @@ class TranslationArtifactStore(
         requireSafeId(jobId)
         val path = projectDirectory.resolve("jobs/$jobId.json")
         if (!fileSystem.exists(path)) return null
-        return json.decodeJob(fileSystem.readUtf8(path)).also { require(it.jobId == jobId) }
+        return json.decodeJob(fileSystem.readUtf8(path)).also {
+            require(it.jobId == jobId)
+            requireValidJobStorageIdentity(it)
+        }
     }
 
     fun findResumableJob(): TranslationJobRecord? = fileSystem.list(projectDirectory.resolve("jobs"))
         .asSequence()
         .filter { it.fileName.toString().endsWith(".json") }
-        .mapNotNull { runCatching { json.decodeJob(fileSystem.readUtf8(it)) }.getOrNull() }
+        .mapNotNull { path ->
+            runCatching {
+                val fileJobId = path.fileName.toString().removeSuffix(".json")
+                requireSafeId(fileJobId)
+                json.decodeJob(fileSystem.readUtf8(path)).also { job ->
+                    require(job.jobId == fileJobId)
+                    requireValidJobStorageIdentity(job)
+                }
+            }.getOrNull()
+        }
         .filter { it.status in setOf(TranslationJobStatus.QUEUED, TranslationJobStatus.RUNNING, TranslationJobStatus.CANCELLED) }
         .maxWithOrNull(compareBy<TranslationJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
 
@@ -80,13 +91,35 @@ class TranslationArtifactStore(
     }.getOrNull()
 
     fun cleanInterruptedWindow(job: TranslationJobRecord, index: Int) {
+        requireValidJobStorageIdentity(job)
         val window = job.windows.single { it.windowIndex == index }
         require(window.state == TranslationWindowState.RUNNING)
-        fileSystem.deleteIfExists(
-            checkpointDirectory(job).resolve(
-                "windows/${index.toString().padStart(4, '0')}-${window.windowArtifactKey}.json",
-            ),
-        )
+        fileSystem.deleteIfExists(defaultWindowCheckpointPath(job, window))
+    }
+
+    /**
+     * Discards a no-longer-trusted glossary-dependent suffix before its job
+     * journal is rewritten for recovery. Deletions are deliberately
+     * idempotent so a process death during recovery can safely repeat them.
+     */
+    fun discardWindowSuffix(job: TranslationJobRecord, firstWindowIndex: Int) {
+        // Validate the complete journal before the first deletion. In
+        // particular, a damaged page later in the suffix must not be able to
+        // leave an earlier checkpoint half-deleted.
+        requireValidJobStorageIdentity(job)
+        require(job.windows.any { it.windowIndex == firstWindowIndex })
+        val discardedWindows = job.windows.filter { it.windowIndex >= firstWindowIndex }
+        val discardedRegionIds = discardedWindows
+            .flatMapTo(mutableSetOf(), TranslationJobWindow::translationRegionIds)
+
+        discardedWindows.forEach { window ->
+            fileSystem.deleteIfExists(defaultWindowCheckpointPath(job, window))
+        }
+        job.pages
+            .filter { page -> page.translationRegionIds.any(discardedRegionIds::contains) }
+            .forEach { page ->
+                fileSystem.deleteIfExists(defaultPageCheckpointPath(job, page))
+            }
     }
 
     fun commitPage(job: TranslationJobRecord, artifact: PageTranslationArtifact): String {
@@ -186,11 +219,34 @@ class TranslationArtifactStore(
         }.getOrNull()
     }
 
-    private fun checkpointDirectory(job: TranslationJobRecord): Path = projectDirectory
-        .resolve("staging/translation/${job.jobId}/${job.runArtifactKey}").normalize()
+    private fun checkpointDirectory(job: TranslationJobRecord): Path {
+        requireSafeId(job.jobId)
+        requireSha256(job.runArtifactKey)
+        val root = projectDirectory.resolve("staging/translation").normalize()
+        val directory = root.resolve(job.jobId).resolve(job.runArtifactKey).normalize()
+        require(directory.startsWith(root) && directory.parent?.parent == root) {
+            "translation checkpoint root escaped staging"
+        }
+        return directory
+    }
 
-    private fun publishedDirectory(runKey: String): Path =
-        projectDirectory.resolve("artifacts/translation/$runKey").normalize()
+    private fun defaultWindowCheckpointPath(job: TranslationJobRecord, window: TranslationJobWindow): Path {
+        require(window.windowIndex >= 0)
+        requireSha256(window.windowArtifactKey)
+        return resolveInside(checkpointDirectory(job), defaultWindowCheckpointRelative(window))
+    }
+
+    private fun defaultPageCheckpointPath(job: TranslationJobRecord, page: TranslationJobPage): Path {
+        require(page.pageOrder >= 0)
+        requireSha256(page.pageId)
+        return resolveInside(checkpointDirectory(job), defaultPageCheckpointRelative(page))
+    }
+
+    private fun publishedDirectory(runKey: String): Path {
+        requireSha256(runKey)
+        val root = projectDirectory.resolve("artifacts/translation").normalize()
+        return resolveInside(root, runKey)
+    }
 
     private fun replaceUnique(target: Path, content: String) {
         fileSystem.createDirectories(target.parent)
@@ -217,6 +273,49 @@ class TranslationArtifactStore(
 
     private fun requireSafeId(value: String) = require(SAFE_ID.matches(value)) { "unsafe id" }
     private fun requireSha256(value: String) = require(SHA256.matches(value)) { "invalid SHA-256" }
+
+    private fun requireValidJobStorageIdentity(job: TranslationJobRecord) {
+        require(job.schemaVersion == TRANSLATION_SCHEMA_VERSION)
+        requireSafeId(job.jobId)
+        requireSafeId(job.projectId)
+        requireSha256(job.runArtifactKey)
+        checkpointDirectory(job)
+
+        require(job.windows.map(TranslationJobWindow::windowIndex).distinct().size == job.windows.size)
+        job.windows.forEach { window ->
+            require(window.windowIndex >= 0)
+            requireSha256(window.windowArtifactKey)
+            require(window.translationRegionIds.all(SHA256::matches))
+            require(window.attemptCount >= 0)
+            require(window.translatedItemCount >= 0 && window.preservedItemCount >= 0)
+            window.checkpointPath?.let { relative ->
+                require(relative == defaultWindowCheckpointRelative(window)) {
+                    "window checkpoint path does not match its identity"
+                }
+            }
+        }
+
+        require(job.pages.map(TranslationJobPage::pageOrder).distinct().size == job.pages.size)
+        job.pages.forEach { page ->
+            require(page.pageOrder >= 0)
+            requireSha256(page.pageId)
+            requireSha256(page.ocrPageArtifactKey)
+            requireSha256(page.pageArtifactKey)
+            require(page.translationRegionIds.all(SHA256::matches))
+            require(page.protectedOcrRegionCount >= 0)
+            page.artifactPath?.let { relative ->
+                require(relative == defaultPageCheckpointRelative(page)) {
+                    "page checkpoint path does not match its identity"
+                }
+            }
+        }
+    }
+
+    private fun defaultWindowCheckpointRelative(window: TranslationJobWindow): String =
+        "windows/${window.windowIndex.toString().padStart(4, '0')}-${window.windowArtifactKey}.json"
+
+    private fun defaultPageCheckpointRelative(page: TranslationJobPage): String =
+        "pages/${page.pageOrder.toString().padStart(4, '0')}-${page.pageId}/translation.json"
 
     private fun requireValidOutcome(item: ValidatedTranslationItem) {
         requireSha256(item.translationRegionId)

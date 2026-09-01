@@ -13,6 +13,9 @@ import rs.masumi.app.detection.ProjectCatalog
 import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedCleanupRun
 import rs.masumi.app.detection.PublishedTypesettingRun
+import rs.masumi.app.pipeline.SourceFilePreflight
+import rs.masumi.app.pipeline.SourceFilePreflightException
+import rs.masumi.app.pipeline.CurrentPipelineArtifactsReader
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.exporting.ExportArtifactStore
@@ -55,13 +58,18 @@ data class ExportRunResult(
 
 class ExportRunner(
     workspaceRoot: Path,
-    private val destinationFactory: (destinationUri: String, jobId: String) -> FolderExportDestination,
+    private val destinationFactory: (
+        destinationUri: String,
+        jobId: String,
+        generationName: String,
+    ) -> FolderExportDestination,
     private val decoder: PageBitmapDecoder = PageBitmapDecoder(),
     private val policy: ExportPolicy = ExportPolicy(),
     private val clock: Clock = Clock.systemUTC(),
     private val idSource: IdSource = UuidIdSource,
 ) {
     private val catalog = ProjectCatalog(workspaceRoot.toAbsolutePath().normalize())
+    private val currentArtifacts = CurrentPipelineArtifactsReader(catalog)
     private val externallyCancelled = AtomicBoolean(false)
 
     fun cancel() {
@@ -75,16 +83,12 @@ class ExportRunner(
         onProgress: (ExportProgress) -> Unit,
     ): ExportRunResult {
         externallyCancelled.set(false)
-        val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
-        val typesettingRun = requireNotNull(
-            catalog.latestPublishedTypesettingRun(projectId),
-        ) { "completed typesetting run was not found" }
-        val cleanupRun = requireNotNull(
-            catalog.publishedCleanupRun(
-                projectId,
-                typesettingRun.artifact.dependencies.cleanupRunArtifactKey,
-            ),
-        ) { "typesetting cleanup dependency was not found" }
+        val current = requireNotNull(currentArtifacts.read(projectId)) { "project was not found" }
+        val project = current.project
+        val cleanupRun = requireNotNull(current.cleanup) { "completed current cleanup run was not found" }
+        val typesettingRun = requireNotNull(current.typesetting) {
+            "completed current typesetting run was not found"
+        }
         validateDependencies(project, typesettingRun, cleanupRun)
         val dependencies = ExportDependencies(
             typesettingRunArtifactKey = typesettingRun.artifact.runArtifactKey,
@@ -99,6 +103,9 @@ class ExportRunner(
             dependencies,
             destinationUri,
         )
+        var destination: FolderExportDestination? = null
+        var generationPublished = false
+        var completionDurable = false
 
         fun isCancelled(): Boolean = externallyCancelled.get() || cancellation()
         fun persist(updated: ExportJobRecord, currentPageOrder: Int? = null): ExportJobRecord {
@@ -109,7 +116,14 @@ class ExportRunner(
 
         try {
             job = persist(ExportJobReducer.start(job, clock.millis()))
-            val destination = destinationFactory(job.destinationUri, job.jobId)
+            destination = destinationFactory(
+                job.destinationUri,
+                job.jobId,
+                rs.masumi.app.library.OutputGeneration.publishedName(
+                    job.startedAtEpochMillis,
+                    job.exportKey,
+                ),
+            )
             project.manifest.pages.sortedBy(PageRecord::order).forEach { sourcePage ->
                 var checkpoint = job.pages.single { it.pageOrder == sourcePage.order }
                 if (checkpoint.state == ExportPageState.COMMITTED) {
@@ -155,30 +169,35 @@ class ExportRunner(
                 )
             }
             if (isCancelled()) throw ExportCancellationSignal()
-            val expectedNames = job.pages.mapTo(linkedSetOf()) { it.outputName }
-            destination.pruneManagedOutputs(expectedNames)
-            job.pages.forEach { page ->
-                if (!destination.matches(
-                        page.outputName,
-                        requireNotNull(page.outputSha256),
-                        page.byteLength,
-                    )
-                ) {
-                    throw FatalExportException("DESTINATION_FINAL_SET_INVALID")
-                }
+            val expectedOutputs = job.pages.map { page ->
+                ExpectedDestinationOutput(
+                    outputName = page.outputName,
+                )
             }
+            destination.commitCompleteSet(expectedOutputs)
+            generationPublished = true
             val finishedAt = clock.millis()
-            job = persist(ExportJobReducer.finishSuccess(job, finishedAt))
-            val report = job.toReport(finishedAt)
-            store.writeReport(report)
+            val successfulJob = ExportJobReducer.finishSuccess(job, finishedAt)
+            val report = successfulJob.toReport(finishedAt)
+            store.commitSuccessfulExport(successfulJob, report)
+            job = successfulJob
+            completionDurable = true
+            onProgress(job.toProgress())
+            runCatching { destination.pruneManagedOutputs() }
             return ExportRunResult(job, report)
         } catch (_: ExportCancellationSignal) {
+            if (generationPublished && !completionDurable) {
+                runCatching { destination?.rollbackCommittedSet() }
+            }
             if (job.status == ExportJobStatus.RUNNING) {
                 if (!job.cancelRequested) job = persist(ExportJobReducer.requestCancellation(job, clock.millis()))
                 job = persist(ExportJobReducer.finishCancellation(job, clock.millis()))
             }
             return ExportRunResult(job)
         } catch (failure: Throwable) {
+            if (generationPublished && !completionDurable) {
+                runCatching { destination?.rollbackCommittedSet() }
+            }
             val error = ExportError(failure.safeErrorCode())
             if (job.status == ExportJobStatus.RUNNING || job.status == ExportJobStatus.QUEUED) {
                 job = ExportJobReducer.fail(job, error, clock.millis())
@@ -267,32 +286,30 @@ class ExportRunner(
     ): ResolvedExportPage {
         val typesettingEntry = typesettingRun.artifact.entries.single { it.pageOrder == sourcePage.order }
         if (typesettingEntry.state == TypesettingPageState.COMMITTED) {
-            val artifact = TypesettingArtifactStore(project.directory).readPublishedPage(
+            TypesettingArtifactStore(project.directory).readPublishedPage(
                 typesettingRun.artifact.runArtifactKey,
                 typesettingEntry,
             ) ?: throw FatalExportException("TYPESETTING_PAGE_INVALID")
             val path = resolveInside(typesettingRun.directory, requireNotNull(typesettingEntry.imagePath))
             val bytes = Files.readAllBytes(path)
-            if (sha256(bytes) != artifact.renderedImageSha256) {
-                throw FatalExportException("TYPESETTING_IMAGE_INVALID")
-            }
             return ResolvedExportPage(bytes, ExportPageSource.FLATTENED)
         }
         val cleanupEntry = cleanupRun.artifact.entries.single { it.pageOrder == sourcePage.order }
         if (cleanupEntry.state == CleanupPageState.COMMITTED) {
-            val artifact = CleanupArtifactStore(project.directory).readPublishedPage(
+            CleanupArtifactStore(project.directory).readPublishedPage(
                 cleanupRun.artifact.runArtifactKey,
                 cleanupEntry,
             ) ?: throw FatalExportException("CLEANUP_PAGE_INVALID")
             val path = resolveInside(cleanupRun.directory, requireNotNull(cleanupEntry.imagePath))
             val bytes = Files.readAllBytes(path)
-            if (sha256(bytes) != artifact.cleanedImageSha256) {
-                throw FatalExportException("CLEANUP_IMAGE_INVALID")
-            }
             return ResolvedExportPage(bytes, ExportPageSource.CLEANED_FALLBACK)
         }
-        validateSource(project.directory, sourcePage)
-        val decoded = decoder.decode(resolveInside(project.directory, sourcePage.storedPath))
+        val sourcePath = try {
+            SourceFilePreflight.resolve(project.directory, sourcePage)
+        } catch (failure: SourceFilePreflightException) {
+            throw FatalExportException(failure.code)
+        }
+        val decoded = decoder.decode(sourcePath)
         return try {
             ResolvedExportPage(PageImageEncoder.encode(decoded.bitmap), ExportPageSource.SOURCE_FALLBACK)
         } finally {
@@ -313,15 +330,6 @@ class ExportRunner(
         project.manifest.pages.forEach { page ->
             require(typesetting.artifact.entries.single { it.pageOrder == page.order }.pageId == page.pageId)
             require(cleanup.artifact.entries.single { it.pageOrder == page.order }.pageId == page.pageId)
-        }
-    }
-
-    private fun validateSource(projectDirectory: Path, page: PageRecord) {
-        val path = resolveInside(projectDirectory, page.storedPath)
-        if (!Files.isRegularFile(path)) throw FatalExportException("SOURCE_MISSING")
-        if (Files.size(path) != page.byteLength) throw FatalExportException("SOURCE_LENGTH_MISMATCH")
-        if (sha256(Files.readAllBytes(path)) != page.sourceSha256) {
-            throw FatalExportException("SOURCE_HASH_MISMATCH")
         }
     }
 

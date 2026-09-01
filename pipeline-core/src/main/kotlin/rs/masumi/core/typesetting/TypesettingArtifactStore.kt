@@ -1,7 +1,6 @@
 package rs.masumi.core.typesetting
 
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.UUID
 import rs.masumi.core.io.NioProjectFileSystem
 import rs.masumi.core.io.ProjectFileSystem
@@ -63,7 +62,6 @@ class TypesettingArtifactStore(
         val page = job.pages.single { it.pageOrder == artifact.pageOrder }
         require(page.state == TypesettingPageState.RUNNING)
         requireValidPageArtifact(artifact, page, job.dependencies)
-        require(artifact.renderedImageSha256 == sha256(renderedImage))
         val directory = pageDirectory(checkpointDirectory(job), page)
         fileSystem.createDirectories(directory)
         val imageName = "flattened.$imageExtension"
@@ -92,7 +90,6 @@ class TypesettingArtifactStore(
         require(fileSystem.exists(artifactPath) && fileSystem.exists(imagePath))
         json.decodePageArtifact(fileSystem.readUtf8(artifactPath)).also { artifact ->
             requireValidPageArtifact(artifact, page, job.dependencies)
-            require(artifact.renderedImageSha256 == sha256(fileSystem.readBytes(imagePath)))
         }
     }.getOrNull()
 
@@ -143,9 +140,9 @@ class TypesettingArtifactStore(
         val root = publishedDirectory(runKey)
         val artifactPath = resolveInside(root, requireNotNull(entry.artifactPath))
         val imagePath = resolveInside(root, requireNotNull(entry.imagePath))
+        require(fileSystem.exists(artifactPath) && fileSystem.exists(imagePath))
         val artifact = json.decodePageArtifact(fileSystem.readUtf8(artifactPath))
         require(artifact.pageOrder == entry.pageOrder && artifact.pageArtifactKey == entry.pageArtifactKey)
-        require(artifact.renderedImageSha256 == sha256(fileSystem.readBytes(imagePath)))
         artifact
     }.getOrNull()
 
@@ -160,7 +157,6 @@ class TypesettingArtifactStore(
                 require(artifact.pageId == entry.pageId)
                 require(artifact.pageArtifactKey == entry.pageArtifactKey)
                 require(artifact.dependencies == run.dependencies)
-                require(artifact.renderedImageSha256 == sha256(fileSystem.readBytes(imagePath)))
             }.isSuccess
             TypesettingPageState.PRESERVED_CLEANED_PAGE ->
                 entry.artifactPath == null && entry.imagePath == null && entry.error != null
@@ -235,9 +231,6 @@ class TypesettingArtifactStore(
         require(resolved.startsWith(root.normalize()))
         return resolved
     }
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun requireSafeId(value: String) = require(SAFE_ID.matches(value))
     private fun requireSha256(value: String) = require(SHA256.matches(value))

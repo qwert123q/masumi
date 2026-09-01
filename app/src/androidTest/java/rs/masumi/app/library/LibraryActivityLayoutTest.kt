@@ -10,6 +10,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -34,8 +35,11 @@ class LibraryActivityLayoutTest {
         assertEquals("导入漫画", root.findViewById<Button>(R.id.libraryHomeImport).text.toString())
         assertEquals("我的漫画", root.findViewById<TextView>(R.id.libraryHomeProjectsTitle).text.toString())
         assertEquals(6, item.findViewById<ProgressBar>(R.id.libraryProjectProgress).max)
-        assertEquals("阅读成品", item.findViewById<Button>(R.id.libraryProjectReadButton).text.toString())
+        val readButton = item.findViewById<Button>(R.id.libraryProjectReadButton)
+        assertEquals("阅读", readButton.text.toString())
+        assertTrue(readButton.minimumHeight >= (48 * readButton.resources.displayMetrics.density).toInt())
         assertEquals("管理", item.findViewById<Button>(R.id.libraryProjectOpenButton).text.toString())
+        assertFalse(item.isClickable)
     }
 
     @Test

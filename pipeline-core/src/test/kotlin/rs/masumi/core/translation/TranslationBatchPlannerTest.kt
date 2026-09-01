@@ -96,6 +96,33 @@ class TranslationBatchPlannerTest {
     }
 
     @Test
+    fun `initial glossary participates in token budgeting and can split a window`() {
+        val inputs = listOf(
+            TranslationFixtures.input("one", 0, source = "あ".repeat(40)),
+            TranslationFixtures.input("two", 1, source = "い".repeat(40)),
+        )
+        val page = TranslationFixtures.page(0, inputs)
+        val promptBuilder = TranslationPromptBuilder()
+        val baseline = TranslationBatchPlanner(
+            TranslationBatchingConfig(maximumEstimatedInputTokens = 100_000),
+            promptBuilder,
+        ).plan(listOf(page))
+        val glossary = mapOf("登場人物" to "主角".repeat(100))
+        val budget = promptBuilder.estimateInputTokens(
+            baseline.single().copy(glossary = glossary.map { TranslationGlossaryEntry(it.key, it.value) }),
+        ) - 1
+
+        val planned = TranslationBatchPlanner(
+            TranslationBatchingConfig(maximumEstimatedInputTokens = budget),
+            promptBuilder,
+        ).plan(listOf(page), glossary)
+
+        assertEquals(2, planned.size)
+        assertEquals(listOf("one"), planned[0].items.map { it.input.translationRegionId })
+        assertEquals(listOf("two"), planned[1].items.map { it.input.translationRegionId })
+    }
+
+    @Test
     fun `planner rejects duplicate ids and inconsistent chapter policy`() {
         val duplicate = TranslationFixtures.input("same", 0)
         assertFailsWith<IllegalArgumentException> {

@@ -1,14 +1,21 @@
 package rs.masumi.app.cleanup
 
+import ai.onnxruntime.NodeInfo
+import ai.onnxruntime.OnnxJavaType
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
 import android.graphics.Color
 import java.nio.FloatBuffer
+import java.security.MessageDigest
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import rs.masumi.core.modelpackage.PinnedAotInpainter
 
 /**
  * AOT-GAN inpainting (manga-image-translator / koharu lineage) exported to
@@ -25,12 +32,7 @@ class OnnxAotInpainter(
     modelBytes: ByteArray,
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment(),
 ) : NeuralInpainter, AutoCloseable {
-    private val session: OrtSession = OrtSession.SessionOptions().use { options ->
-        options.setIntraOpNumThreads(
-            (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, MAX_INTRA_OP_THREADS),
-        )
-        environment.createSession(modelBytes, options)
-    }
+    private val session: OrtSession = createValidatedSession(environment, modelBytes)
     private val inferenceLock = Any()
 
     override fun inpaint(
@@ -42,11 +44,13 @@ class OnnxAotInpainter(
         roiRight: Int,
         roiBottom: Int,
         roiMask: BooleanArray,
+        control: NeuralRunControl,
     ): Boolean {
         val roiWidth = roiRight - roiLeft
         val roiHeight = roiBottom - roiTop
         if (roiWidth <= 0 || roiHeight <= 0 || roiMask.size != roiWidth * roiHeight) return false
         if (roiMask.none { it }) return true
+        if (control.shouldStop()) return false
 
         val tiles = InpaintTilePlanner.plan(
             width = roiWidth,
@@ -69,6 +73,7 @@ class OnnxAotInpainter(
         }
         return try {
             val succeeded = tiles.all { tile ->
+                if (control.shouldStop()) return@all false
                 val tileMask = BooleanArray(tile.width * tile.height)
                 for (y in tile.top until tile.bottom) for (x in tile.left until tile.right) {
                     tileMask[(y - tile.top) * tile.width + x - tile.left] = roiMask[y * roiWidth + x]
@@ -82,6 +87,12 @@ class OnnxAotInpainter(
                     roiRight = roiLeft + tile.right,
                     roiBottom = roiTop + tile.bottom,
                     roiMask = tileMask,
+                    contextMaskLeft = roiLeft,
+                    contextMaskTop = roiTop,
+                    contextMaskWidth = roiWidth,
+                    contextMaskHeight = roiHeight,
+                    contextMask = roiMask,
+                    control = control,
                 )
             }
             if (!succeeded) maskedPageIndexes.indices.forEach { pixels[maskedPageIndexes[it]] = originalColors[it] }
@@ -101,7 +112,14 @@ class OnnxAotInpainter(
         roiRight: Int,
         roiBottom: Int,
         roiMask: BooleanArray,
+        contextMaskLeft: Int,
+        contextMaskTop: Int,
+        contextMaskWidth: Int,
+        contextMaskHeight: Int,
+        contextMask: BooleanArray,
+        control: NeuralRunControl,
     ): Boolean {
+        if (control.shouldStop()) return false
         val roiWidth = roiRight - roiLeft
         val roiHeight = roiBottom - roiTop
         val context = (min(roiWidth, roiHeight) * CONTEXT_FRACTION).roundToInt()
@@ -122,27 +140,28 @@ class OnnxAotInpainter(
 
         // Model-space hole mask: mark every input pixel whose source footprint
         // touches a masked ROI pixel, so downscaling never shrinks the hole.
-        val holeMask = FloatArray(inputWidth * inputHeight)
         val scaleX = scaledWidth.toDouble() / cropWidth
         val scaleY = scaledHeight.toDouble() / cropHeight
-        for (localY in 0 until roiHeight) {
-            for (localX in 0 until roiWidth) {
-                if (!roiMask[localY * roiWidth + localX]) continue
-                val pageX = roiLeft + localX
-                val pageY = roiTop + localY
-                val startX = ((pageX - cropLeft) * scaleX).toInt().coerceIn(0, inputWidth - 1)
-                val endX = ((pageX + 1 - cropLeft) * scaleX).toInt().coerceIn(0, inputWidth - 1)
-                val startY = ((pageY - cropTop) * scaleY).toInt().coerceIn(0, inputHeight - 1)
-                val endY = ((pageY + 1 - cropTop) * scaleY).toInt().coerceIn(0, inputHeight - 1)
-                for (y in startY..endY) for (x in startX..endX) {
-                    holeMask[y * inputWidth + x] = 1f
-                }
-            }
-        }
+        val holeMask = InpaintContextMask.project(
+            mask = contextMask,
+            maskLeft = contextMaskLeft,
+            maskTop = contextMaskTop,
+            maskWidth = contextMaskWidth,
+            maskHeight = contextMaskHeight,
+            cropLeft = cropLeft,
+            cropTop = cropTop,
+            cropRight = cropRight,
+            cropBottom = cropBottom,
+            scaleX = scaleX,
+            scaleY = scaleY,
+            inputWidth = inputWidth,
+            inputHeight = inputHeight,
+        )
 
         val image = FloatArray(3 * inputWidth * inputHeight)
         val planeSize = inputWidth * inputHeight
         for (y in 0 until inputHeight) {
+            if (control.shouldStop()) return false
             for (x in 0 until inputWidth) {
                 val index = y * inputWidth + x
                 if (holeMask[index] > 0f) continue
@@ -163,22 +182,53 @@ class OnnxAotInpainter(
         }
 
         val output = synchronized(inferenceLock) {
+            if (control.shouldStop()) return false
             val shape = longArrayOf(1, 3, inputHeight.toLong(), inputWidth.toLong())
             val maskShape = longArrayOf(1, 1, inputHeight.toLong(), inputWidth.toLong())
             OnnxTensor.createTensor(environment, FloatBuffer.wrap(image), shape).use { imageTensor ->
                 OnnxTensor.createTensor(environment, FloatBuffer.wrap(holeMask), maskShape).use { maskTensor ->
-                    session.run(mapOf("image" to imageTensor, "mask" to maskTensor)).use { result ->
-                        val tensor = result.get(0) as? OnnxTensor ?: return false
-                        val buffer = tensor.floatBuffer ?: return false
-                        if (buffer.remaining() != 3 * planeSize) return false
-                        FloatArray(3 * planeSize).also(buffer::get)
+                    OrtSession.RunOptions().use { runOptions ->
+                        val timeoutGuard = Any()
+                        var timeoutActive = true
+                        val remaining = control.remainingMillis()
+                        if (remaining <= 0L) return false
+                        val firstStopCheck = minOf(STOP_CHECK_INTERVAL_MILLIS, remaining)
+                        val timeout = TIMEOUT_EXECUTOR.scheduleWithFixedDelay(
+                            {
+                                if (!control.shouldStop()) return@scheduleWithFixedDelay
+                                synchronized(timeoutGuard) {
+                                    if (timeoutActive) runCatching { runOptions.setTerminate(true) }
+                                }
+                            },
+                            firstStopCheck,
+                            STOP_CHECK_INTERVAL_MILLIS,
+                            TimeUnit.MILLISECONDS,
+                        )
+                        try {
+                            session.run(
+                                mapOf("image" to imageTensor, "mask" to maskTensor),
+                                runOptions,
+                            ).use { result ->
+                                val tensor = result.get(0) as? OnnxTensor ?: return false
+                                val buffer = tensor.floatBuffer ?: return false
+                                if (buffer.remaining() != 3 * planeSize) return false
+                                FloatArray(3 * planeSize).also(buffer::get)
+                            }
+                        } finally {
+                            synchronized(timeoutGuard) {
+                                timeoutActive = false
+                                timeout?.cancel(false)
+                            }
+                        }
                     }
                 }
             }
         }
+        if (control.shouldStop()) return false
         if (output.any { !it.isFinite() }) return false
 
         for (localY in 0 until roiHeight) {
+            if (control.shouldStop()) return false
             for (localX in 0 until roiWidth) {
                 if (!roiMask[localY * roiWidth + localX]) continue
                 val pageX = roiLeft + localX
@@ -200,7 +250,9 @@ class OnnxAotInpainter(
     }
 
     override fun close() {
-        session.close()
+        synchronized(inferenceLock) {
+            session.close()
+        }
     }
 
     private fun FloatArray.sampleChannel(
@@ -253,8 +305,8 @@ class OnnxAotInpainter(
     }
 
     companion object {
-        const val ASSET_PATH = "models/aot-inpainting.onnx"
-        const val REVISION = "aot-inpainting-mit-v1"
+        val ASSET_PATH: String = PinnedAotInpainter.descriptor.assetPath
+        val REVISION: String = PinnedAotInpainter.descriptor.revision
         private const val MAX_SIDE = 512
         private const val PAD_MULTIPLE = 8
         private const val CONTEXT_FRACTION = 0.75
@@ -265,5 +317,53 @@ class OnnxAotInpainter(
         private const val MINIMUM_MASK_TILE_SPAN = 128
         private const val TILE_CUT_SEARCH_RADIUS = 64
         private const val MAX_INTRA_OP_THREADS = 6
+        private const val STOP_CHECK_INTERVAL_MILLIS = 25L
+        private val TIMEOUT_EXECUTOR = Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "masumi-aot-timeout").apply { isDaemon = true }
+        }
+
+        private fun createValidatedSession(
+            environment: OrtEnvironment,
+            modelBytes: ByteArray,
+        ): OrtSession {
+            val descriptor = PinnedAotInpainter.descriptor
+            require(modelBytes.size.toLong() == descriptor.byteLength) { "AOT_MODEL_LENGTH_MISMATCH" }
+            val digest = MessageDigest.getInstance("SHA-256").digest(modelBytes)
+                .joinToString("") { byte -> "%02x".format(byte) }
+            require(digest == descriptor.sha256) { "AOT_MODEL_HASH_MISMATCH" }
+            val session = OrtSession.SessionOptions().use { options ->
+                options.setIntraOpNumThreads(
+                    (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, MAX_INTRA_OP_THREADS),
+                )
+                environment.createSession(modelBytes, options)
+            }
+            try {
+                session.inputInfo.requireFloatImageTensor("image", channels = 3)
+                session.inputInfo.requireFloatImageTensor("mask", channels = 1)
+                require(session.inputInfo.size == 2) { "AOT_MODEL_INPUT_SIGNATURE_MISMATCH" }
+                require(session.outputInfo.size == 1) { "AOT_MODEL_OUTPUT_SIGNATURE_MISMATCH" }
+                val output = session.outputInfo.values.single().info as? TensorInfo
+                    ?: error("AOT_MODEL_OUTPUT_SIGNATURE_MISMATCH")
+                require(output.type == OnnxJavaType.FLOAT && output.shape.isImageShape(3)) {
+                    "AOT_MODEL_OUTPUT_SIGNATURE_MISMATCH"
+                }
+                return session
+            } catch (failure: Throwable) {
+                runCatching { session.close() }
+                throw failure
+            }
+        }
+
+        private fun Map<String, NodeInfo>.requireFloatImageTensor(name: String, channels: Long) {
+            val tensor = get(name)?.info as? TensorInfo
+                ?: error("AOT_MODEL_INPUT_SIGNATURE_MISMATCH")
+            require(tensor.type == OnnxJavaType.FLOAT && tensor.shape.isImageShape(channels)) {
+                "AOT_MODEL_INPUT_SIGNATURE_MISMATCH"
+            }
+        }
+
+        private fun LongArray.isImageShape(channels: Long): Boolean =
+            size == 4 && (this[0] == 1L || this[0] == -1L) && this[1] == channels &&
+                this[2] != 0L && this[3] != 0L
     }
 }

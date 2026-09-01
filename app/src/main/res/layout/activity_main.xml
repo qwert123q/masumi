@@ -964,6 +964,31 @@
                             android:singleLine="true" />
 
                         <Button
+                            android:id="@+id/testTranslationConnectionButton"
+                            style="@style/Widget.Masumi.Button.Secondary"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="@string/test_translation_connection" />
+
+                        <ProgressBar
+                            android:id="@+id/translationConnectionProgress"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:indeterminate="true"
+                            android:visibility="gone" />
+
+                        <TextView
+                            android:id="@+id/translationConnectionStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/translation_connection_hint"
+                            android:textAppearance="@style/TextAppearance.Masumi.Caption" />
+
+                        <Button
                             android:id="@+id/saveTranslationSettingsButton"
                             style="@style/Widget.Masumi.Button.Primary"
                             android:layout_width="match_parent"

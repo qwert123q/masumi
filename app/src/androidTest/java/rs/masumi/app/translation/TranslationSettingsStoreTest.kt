@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -103,6 +104,57 @@ class TranslationSettingsStoreTest {
 
             assertEquals(first, store.loadActiveProvider())
             assertEquals(first.apiKey, store.loadProviderSettings()?.apiKey)
+        } finally {
+            context.deleteSharedPreferences(preferencesName)
+            backup.delete()
+        }
+    }
+
+    @Test
+    fun privateLanHttpProviderRoundTripsThroughPrivateStorage() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferencesName = "translation_provider_lan_test_${System.nanoTime()}"
+        val backup = context.noBackupFilesDir.resolve("$preferencesName.providers.json")
+        val store = TranslationSettingsStore(context, preferencesName)
+        val provider = SavedTranslationProvider(
+            id = "cpa-lan",
+            name = "CPA LAN",
+            apiUrl = "http://192.168.50.2:8317/v1",
+            apiKey = "private-lan-test-secret",
+            model = "gpt-test",
+        )
+
+        try {
+            store.saveProvider(provider)
+
+            assertEquals(provider, store.loadActiveProvider())
+            assertEquals(provider.apiUrl, store.loadProviderSettings()?.apiUrl)
+        } finally {
+            context.deleteSharedPreferences(preferencesName)
+            backup.delete()
+        }
+    }
+
+    @Test
+    fun publicCleartextProviderIsRejectedBeforePersistence() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferencesName = "translation_provider_public_http_test_${System.nanoTime()}"
+        val backup = context.noBackupFilesDir.resolve("$preferencesName.providers.json")
+        val store = TranslationSettingsStore(context, preferencesName)
+
+        try {
+            assertThrows(IllegalArgumentException::class.java) {
+                store.saveProvider(
+                    SavedTranslationProvider(
+                        id = "public-http",
+                        name = "Public HTTP",
+                        apiUrl = "http://203.0.113.8:8317/v1",
+                        apiKey = "public-http-test-secret",
+                        model = "gpt-test",
+                    ),
+                )
+            }
+            assertNull(store.loadActiveProvider())
         } finally {
             context.deleteSharedPreferences(preferencesName)
             backup.delete()

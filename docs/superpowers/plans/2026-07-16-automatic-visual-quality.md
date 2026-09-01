@@ -1,5 +1,7 @@
 # Automatic Visual Quality Implementation Plan
 
+> **Superseded:** This plan records a removed runtime design. Masumi now proceeds directly from `TYPESETTING` to `EXPORT`; it does not run a production visual-quality audit or gate export on a quality report. See `docs/architecture/foundation.md` for the current architecture.
+
 **Goal:** Add a deterministic, resumable visual quality gate between typesetting and folder export.
 
 ## Task 1: Freeze quality contracts

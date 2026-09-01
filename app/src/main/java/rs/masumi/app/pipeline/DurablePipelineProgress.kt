@@ -15,11 +15,10 @@ import rs.masumi.app.typesetting.TypesettingProgress
 import rs.masumi.core.cleanup.CleanupArtifactStore
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
-import rs.masumi.core.cleanup.CleanupPolicy
-import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.detection.DetectionArtifactStore
 import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.exporting.ExportArtifactStore
+import rs.masumi.core.exporting.ExportJobStatus
 import rs.masumi.core.exporting.ExportPageSource
 import rs.masumi.core.exporting.ExportPageState
 import rs.masumi.core.ocr.OcrArtifactStore
@@ -208,9 +207,7 @@ internal object DurablePipelineProgress {
     ): Boolean {
         val job = CleanupArtifactStore(project.directory).readJob(progress.jobId) ?: return false
         return job.runArtifactKey == progress.runArtifactKey &&
-            job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
-            job.dependencies.policy == CleanupPolicy() &&
-            job.dependencies.maskModel == PinnedComicTextSegmenter.descriptor.toModelRef()
+            job.dependencies == currentCleanupDependencies(translationRunArtifactKey)
     }
 
     fun cleanup(
@@ -222,9 +219,7 @@ internal object DurablePipelineProgress {
         if (
             job != null &&
             job.projectId == project.manifest.projectId &&
-            job.dependencies.translationRunArtifactKey == translationRunArtifactKey &&
-            job.dependencies.policy == CleanupPolicy() &&
-            job.dependencies.maskModel == PinnedComicTextSegmenter.descriptor.toModelRef() &&
+            job.dependencies == currentCleanupDependencies(translationRunArtifactKey) &&
             (
                 job.status == CleanupJobStatus.QUEUED ||
                     job.status == CleanupJobStatus.RUNNING ||
@@ -327,9 +322,11 @@ internal object DurablePipelineProgress {
         typesettingRunArtifactKey: String,
         progressOverride: ExportProgress?,
     ): ExportProgress? {
-        val job = ExportArtifactStore(project.directory).findLatestJob()?.takeIf {
+        val exportStore = ExportArtifactStore(project.directory)
+        val job = exportStore.findLatestJob()?.takeIf {
             it.projectId == project.manifest.projectId &&
-                it.dependencies.typesettingRunArtifactKey == typesettingRunArtifactKey
+                it.dependencies.typesettingRunArtifactKey == typesettingRunArtifactKey &&
+                (it.status != ExportJobStatus.SUCCEEDED || exportStore.readReport(it.jobId) != null)
         }
         return progressOverride
             ?.takeIf { progress ->

@@ -115,6 +115,44 @@ class PipelineSchedulePlannerTest {
         assertTrue(launches.isEmpty())
     }
 
+    @Test
+    fun `foreground reader retains running work but admits no new translation or cleanup`() {
+        val launches = PipelineSchedulePlanner.plan(
+            projects = listOf(
+                project("translate", 1, PipelineStage.TRANSLATION),
+                project("cleanup", 2, PipelineStage.CLEANUP),
+                project("ocr", 3, PipelineStage.OCR),
+            ),
+            running = setOf(RunningPipelineTask("already-running", PipelineStage.TRANSLATION)),
+            translationCapacity = 2,
+            readerForeground = true,
+        )
+
+        assertTrue(launches.none { it.stage == PipelineStage.TRANSLATION || it.stage == PipelineStage.CLEANUP })
+        assertEquals(listOf(PipelineLaunch("ocr", PipelineStage.OCR)), launches)
+    }
+
+    @Test
+    fun `translation and cleanup admission resumes after reader leaves`() {
+        val launches = PipelineSchedulePlanner.plan(
+            projects = listOf(
+                project("translate", 1, PipelineStage.TRANSLATION),
+                project("cleanup", 2, PipelineStage.CLEANUP),
+            ),
+            running = emptySet(),
+            translationCapacity = 1,
+            readerForeground = false,
+        )
+
+        assertEquals(
+            listOf(
+                PipelineLaunch("translate", PipelineStage.TRANSLATION),
+                PipelineLaunch("cleanup", PipelineStage.CLEANUP),
+            ),
+            launches,
+        )
+    }
+
     private fun project(
         id: String,
         order: Long,

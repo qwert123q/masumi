@@ -46,6 +46,7 @@ class OcrIdentityTest {
             OcrIdentity.pageArtifactKey("a".repeat(64), "b".repeat(64), dependencies.copy(runtime = dependencies.runtime.copy(buildContract = "mtmd-v2"))),
             OcrIdentity.pageArtifactKey("a".repeat(64), "b".repeat(64), dependencies.copy(consolidation = dependencies.consolidation.copy(minimumFreeTextWidthFraction = 0.04))),
             OcrIdentity.pageArtifactKey("a".repeat(64), "b".repeat(64), dependencies.copy(crop = dependencies.crop.copy(contextTextFraction = 0.25))),
+            OcrIdentity.pageArtifactKey("a".repeat(64), "b".repeat(64), dependencies.copy(highDetailRetry = dependencies.highDetailRetry.copy(maximumVisualTokens = 193))),
             OcrIdentity.pageArtifactKey("a".repeat(64), "b".repeat(64), dependencies.copy(quality = dependencies.quality.copy(primaryTokenProbabilityThreshold = 0.56))),
             OcrIdentity.pageArtifactKey("a".repeat(64), "b".repeat(64), dependencies.copy(quality = dependencies.quality.copy(lowConfidenceFreeTextThreshold = 0.49))),
             OcrIdentity.pageArtifactKey("a".repeat(64), "b".repeat(64), dependencies.copy(generation = dependencies.generation.copy(prompt = "Read:"))),

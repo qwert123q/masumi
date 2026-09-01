@@ -115,44 +115,44 @@ object TranslationJobReducer {
     }
 
     fun recoverInterrupted(job: TranslationJobRecord, now: Long): TranslationJobRecord {
-        require(job.status == TranslationJobStatus.RUNNING || job.status == TranslationJobStatus.CANCELLED)
+        require(
+            job.status == TranslationJobStatus.QUEUED ||
+                job.status == TranslationJobStatus.RUNNING ||
+                job.status == TranslationJobStatus.CANCELLED,
+        )
+        val rewindFromWindowIndex = job.windows
+            .filterNot(::isTrustedRecoveryPrefixWindow)
+            .minOfOrNull(TranslationJobWindow::windowIndex)
+        val rewoundRegionIds = rewindFromWindowIndex?.let { rewindFrom ->
+            job.windows
+                .filter { it.windowIndex >= rewindFrom }
+                .flatMapTo(mutableSetOf(), TranslationJobWindow::translationRegionIds)
+        }.orEmpty()
         return job.updated(now).copy(
             status = TranslationJobStatus.QUEUED,
             cancelRequested = false,
             windows = job.windows.map {
-                if (it.state == TranslationWindowState.RUNNING) it.copy(
+                if (rewindFromWindowIndex != null && it.windowIndex >= rewindFromWindowIndex) it.copy(
                     state = TranslationWindowState.PENDING,
                     checkpointPath = null,
+                    translatedItemCount = 0,
+                    preservedItemCount = 0,
+                    usage = null,
                     error = null,
                 ) else it
             },
-            error = null,
-        )
-    }
-
-    /**
-     * Records that a salvage pass recovered [recovered] items of a terminal
-     * window after its checkpoint was committed, so the final status and
-     * progress counters describe the published outcome instead of the first
-     * attempt.
-     */
-    fun salvageWindowItems(job: TranslationJobRecord, windowIndex: Int, recovered: Int, now: Long): TranslationJobRecord {
-        require(job.status == TranslationJobStatus.RUNNING)
-        require(recovered > 0)
-        val window = job.windows.single { it.windowIndex == windowIndex }
-        require(window.state.isTerminal())
-        require(window.preservedItemCount >= recovered)
-        return job.updated(now).copy(
-            windows = job.windows.map { candidate ->
-                if (candidate.windowIndex != windowIndex) {
-                    candidate
-                } else {
-                    candidate.copy(
-                        translatedItemCount = candidate.translatedItemCount + recovered,
-                        preservedItemCount = candidate.preservedItemCount - recovered,
+            pages = job.pages.map { page ->
+                if (page.translationRegionIds.any(rewoundRegionIds::contains)) {
+                    page.copy(
+                        state = TranslationPageState.PENDING,
+                        artifactPath = null,
+                        error = null,
                     )
+                } else {
+                    page
                 }
             },
+            error = null,
         )
     }
 
@@ -178,4 +178,15 @@ object TranslationJobReducer {
         require(now >= updatedAtEpochMillis)
         return copy(updatedAtEpochMillis = now)
     }
+
+    private fun isTrustedRecoveryPrefixWindow(window: TranslationJobWindow): Boolean =
+        window.state.isTerminal() && window.error?.code !in LEGACY_UNTRUSTED_PROVIDER_ERROR_CODES
+
+    private val LEGACY_UNTRUSTED_PROVIDER_ERROR_CODES = setOf(
+        "NETWORK",
+        "TIMEOUT",
+        "HTTP_TRANSIENT",
+        "HTTP_CLIENT",
+        "MALFORMED_RESPONSE",
+    )
 }

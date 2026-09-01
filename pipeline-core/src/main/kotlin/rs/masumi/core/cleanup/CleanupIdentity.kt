@@ -50,6 +50,8 @@ object CleanupIdentity {
         "maximumResidualRatio" to value.policy.maximumResidualRatio.toString(),
         "maximumResidualPixelCount" to value.policy.maximumResidualPixelCount.toString(),
         "residualRetryDilationPixels" to value.policy.residualRetryDilationPixels.toString(),
+        "maximumNeuralFallbackAttempts" to value.policy.maximumNeuralFallbackAttempts.toString(),
+        "maximumNeuralFallbackMillis" to value.policy.maximumNeuralFallbackMillis.toString(),
     ) + value.maskModel?.let { model ->
         listOf(
             "maskModelId" to model.modelId,
@@ -61,6 +63,18 @@ object CleanupIdentity {
             "maskModelLicense" to model.license,
             "maskModelOpset" to model.opset.toString(),
             "maskModelRuntimeRevision" to model.runtimeRevision,
+        )
+    }.orEmpty() + value.neuralModel?.let { model ->
+        listOf(
+            "neuralModelId" to model.modelId,
+            "neuralModelRepository" to model.repository,
+            "neuralModelRevision" to model.revision,
+            "neuralModelFileName" to model.fileName,
+            "neuralModelSha256" to model.sha256,
+            "neuralModelByteLength" to model.byteLength.toString(),
+            "neuralModelLicense" to model.license,
+            "neuralModelOpset" to model.opset.toString(),
+            "neuralModelRuntimeRevision" to model.runtimeRevision,
         )
     }.orEmpty()
 

@@ -2,6 +2,7 @@ package rs.masumi.app.ocr
 
 import java.nio.file.Path
 import rs.masumi.core.ocr.OcrExecutionBackend
+import rs.masumi.core.ocr.OcrVisualDetailProfile
 
 data class OcrEngineRequest(
     val rgb: ByteArray,
@@ -10,6 +11,9 @@ data class OcrEngineRequest(
     val prompt: String = "OCR:",
     val maximumGeneratedTokens: Int = 256,
     val repetitionPenalty: Double = 1.2,
+    val visualDetailProfile: OcrVisualDetailProfile = OcrVisualDetailProfile.STANDARD,
+    val maximumVisualTokens: Int = 0,
+    val maximumSourcePixels: Int = 0,
 )
 
 data class OcrEngineResult(

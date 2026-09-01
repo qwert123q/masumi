@@ -82,6 +82,11 @@ object OcrIdentity {
                     add("contextTextFraction" to contextTextFraction.toString())
                     add("minimumPaddingPixels" to minimumPaddingPixels.toString())
                 }
+                with(dependencies.highDetailRetry) {
+                    add("highDetailRetryRevision" to revision)
+                    add("highDetailMaximumVisualTokens" to maximumVisualTokens.toString())
+                    add("highDetailMaximumSourcePixels" to maximumSourcePixels.toString())
+                }
                 add("normalizationRevision" to dependencies.normalization.revision)
                 with(dependencies.quality) {
                     add("qualityRevision" to revision)

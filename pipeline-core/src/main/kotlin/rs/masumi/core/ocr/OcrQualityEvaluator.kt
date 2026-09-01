@@ -41,32 +41,51 @@ class OcrQualityEvaluator(
             )
         }
         val validNonEmpty = evaluated.filter(EvaluatedAttempt::isValidNonEmpty)
-        val similarities = validNonEmpty.indices.flatMap { first ->
-            (first + 1 until validNonEmpty.size).map { second ->
-                similarity(validNonEmpty[first].normalizedText, validNonEmpty[second].normalizedText)
+        val similarities = mutableListOf<Double>()
+        val agreementIndexes = mutableSetOf<Int>()
+        validNonEmpty.indices.forEach { first ->
+            (first + 1 until validNonEmpty.size).forEach { second ->
+                val similarity = similarity(
+                    validNonEmpty[first].normalizedText,
+                    validNonEmpty[second].normalizedText,
+                )
+                similarities += similarity
+                if (similarity >= config.agreementSimilarityThreshold) {
+                    agreementIndexes += validNonEmpty[first].index
+                    agreementIndexes += validNonEmpty[second].index
+                }
             }
         }
         val maximumSimilarity = similarities.maxOrNull()
-        val selected = validNonEmpty.maxWithOrNull(
-            compareBy<EvaluatedAttempt> { it.tokenProbability ?: Double.NEGATIVE_INFINITY }
-                .thenBy { -it.index },
-        )
-        val cleanEmptyCount = evaluated.count { it.isCleanEmpty() }
-        val hasAgreement = maximumSimilarity != null && maximumSimilarity >= config.agreementSimilarityThreshold
+        val allCleanEmpty = evaluated.all { it.isCleanEmpty() }
         val primary = evaluated.first()
         val primaryPasses = primary.isValidNonEmpty() &&
             (primary.tokenProbability ?: Double.NEGATIVE_INFINITY) >= config.primaryTokenProbabilityThreshold
+        val highDetail = evaluated.lastOrNull {
+            it.attempt.strategy == OcrCropStrategy.HIGH_DETAIL_CONTEXT
+        }
+        val highDetailPasses = highDetail?.isValidNonEmpty() == true &&
+            (highDetail.tokenProbability ?: Double.NEGATIVE_INFINITY) >= config.primaryTokenProbabilityThreshold
+        // Confidence ranks candidates only inside evidence that actually
+        // passed a quality gate. A lone high-confidence hallucination must not
+        // replace a lower-confidence primary, agreement pair, or high-detail
+        // result that justified recognition.
+        val selected = validNonEmpty.filter { candidate ->
+            candidate.index in agreementIndexes ||
+                (candidate.index == primary.index && primaryPasses) ||
+                (candidate.index == highDetail?.index && highDetailPasses)
+        }.maxWithOrNull(
+            compareBy<EvaluatedAttempt> { it.tokenProbability ?: Double.NEGATIVE_INFINITY }
+                .thenBy { -it.index },
+        )
         val selectedScriptCounts = scriptCounts(selected?.normalizedText.orEmpty())
         val lowConfidenceFreeTextScriptMismatch = sourceClass == DetectorClass.TEXT_FREE &&
             detectorConfidence < config.lowConfidenceFreeTextThreshold &&
             selected != null &&
             selectedScriptCounts.keys.none(JAPANESE_SCRIPTS::contains)
         val state = when {
-            validNonEmpty.isEmpty() && cleanEmptyCount >= config.emptyConfirmationAttemptCount -> {
-                OcrRegionState.NO_TEXT_CONFIRMED
-            }
             lowConfidenceFreeTextScriptMismatch -> OcrRegionState.NEEDS_FALLBACK
-            hasAgreement || primaryPasses -> OcrRegionState.RECOGNIZED
+            selected != null -> OcrRegionState.RECOGNIZED
             else -> OcrRegionState.NEEDS_FALLBACK
         }
         val selectedForQuality = selected ?: evaluated.first()
@@ -82,17 +101,20 @@ class OcrQualityEvaluator(
             abnormalLength = evaluated.any(EvaluatedAttempt::abnormalLength),
             aggregateScore = selected?.tokenProbability ?: maximumSimilarity,
             decisionReason = when {
-                state == OcrRegionState.NO_TEXT_CONFIRMED -> "TWO_CLEAN_EMPTY_ATTEMPTS"
+                allCleanEmpty && attempts.any { it.strategy == OcrCropStrategy.HIGH_DETAIL_CONTEXT } ->
+                    "HIGH_DETAIL_RETRY_EMPTY"
+                allCleanEmpty -> "STANDARD_CROPS_EMPTY"
                 lowConfidenceFreeTextScriptMismatch -> "LOW_CONFIDENCE_FREE_TEXT_SCRIPT_MISMATCH"
-                hasAgreement -> "ATTEMPT_AGREEMENT"
-                primaryPasses -> "PRIMARY_TOKEN_PROBABILITY"
+                selected != null && selected.index in agreementIndexes -> "ATTEMPT_AGREEMENT"
+                selected?.index == primary.index && primaryPasses -> "PRIMARY_TOKEN_PROBABILITY"
+                selected?.index == highDetail?.index && highDetailPasses -> "HIGH_DETAIL_TOKEN_PROBABILITY"
                 selectedForQuality.attempt.error != null -> "ATTEMPT_ERROR"
                 else -> "QUALITY_BELOW_THRESHOLD"
             },
         )
         return OcrQualityDecision(
             state = state,
-            selectedAttemptIndex = if (state == OcrRegionState.NO_TEXT_CONFIRMED) null else selected?.index,
+            selectedAttemptIndex = selected?.index.takeIf { state == OcrRegionState.RECOGNIZED },
             quality = quality,
         )
     }

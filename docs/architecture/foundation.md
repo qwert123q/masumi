@@ -2,11 +2,11 @@
 
 ## Scope
 
-The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, removes source glyphs from accepted translation regions, lays accepted Chinese text onto flattened pages, automatically validates those pages, and exports the complete ordered page set to a user-selected folder. Every stage has strict JSON, resumable job state, and a terminal report.
+The foundation slice imports an immutable manga chapter, analyzes every page with a pinned local comic detector, recognizes the resulting text candidates with pinned PaddleOCR-VL 1.6 model files, translates trusted Japanese text through an OpenAI-compatible provider, removes source glyphs from accepted translation regions, lays accepted Chinese text onto flattened pages, and exports the complete ordered page set to a user-selected folder. Every runtime stage has strict JSON, resumable job state, and a terminal report. The terminal runtime edge is `TYPESETTING -> EXPORT`; there is no on-device visual-quality audit or automatic quality-directed repair stage.
 
 The design has three goals:
 
-1. Every later stage reads stable, hash-verified sources and versioned detection/OCR artifacts.
+1. Import hashes source bytes once for immutable identity and deduplication; later stages use bounded source preflight and exact versioned artifact lineage instead of repeated whole-file hashing.
 2. Cancellation, process loss, or one bad region never requires reimporting or repeating committed work.
 3. Source images, credentials, filesystem details, and raw exception text never enter public artifacts or status broadcasts.
 
@@ -23,11 +23,10 @@ The design has three goals:
 - resumable acquisition and capability validation of the two-file OCR model package;
 - source crop rendering and an arm64 llama.cpp `mtmd` JNI runtime;
 - foreground execution, cancellation, notifications, and package-scoped status broadcasts;
-- the cancellable OpenAI-compatible translation provider, transient retry policy, safe error mapping, and usage parsing;
+- the cancellable single-attempt OpenAI-compatible translation provider, safe error mapping, and usage parsing;
 - conservative adaptive glyph masking, bubble fill, and free-text boundary inpainting;
 - horizontal and vertical Chinese layout, deterministic maximum-readable-size fitting, and adaptive free-text contrast;
-- deterministic cleanup-to-flattened pixel auditing and Android quality-task execution;
-- Android document-tree write permission, staged page replacement, and final destination read-back verification;
+- Android document-tree write permission, staged generation publication, one final-file read-back for each new output, and exact filename-set verification at directory promotion;
 - progress display, safe preview navigation, and recognized-text details.
 
 `pipeline-core` owns portable behavior:
@@ -38,7 +37,7 @@ The design has three goals:
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
 - the strict OCR-to-translation input boundary, translation policy identity, and structured model-response contracts;
-- cleanup, typesetting, automatic-quality, and folder-export dependency, policy, job/report, identity, and recovery contracts;
+- cleanup, typesetting, and folder-export dependency, policy, job/report, identity, and recovery contracts;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
 - model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
@@ -57,9 +56,16 @@ No Android class is referenced by `pipeline-core`.
 
 If a source read or storage operation fails, staging is removed and no project directory is published. A sanitized failure report is retained when storage remains available.
 
+## Runtime validation and hashing boundary
+
+- Import is the only stage that reads every source byte to establish its SHA-256 identity. The digest remains part of immutable page and cache identities.
+- Later source consumers validate the project-relative path, root containment, regular-file existence, recorded byte length, successful image decode when pixels are needed, and the exact page/dependency lineage. They do not recompute the source SHA-256 during ordinary processing.
+- Ordinary reads of locally and atomically published artifacts validate strict metadata, safe relative paths, file presence, and dependency lineage without rehashing image bytes. Creation-time digests may remain recorded in the contracts for identity and diagnostics.
+- Full-content verification remains where it protects a distinct trust boundary: downloaded model packages retain length and SHA-256 checks, and each newly written SAF output receives one final-file read-back before its page checkpoint is committed.
+
 ## Detection flow
 
-1. Strictly read the manifest, validate contiguous order, and recompute every unique source digest.
+1. Strictly read the manifest, validate contiguous order and page lineage, and preflight each unique source by safe relative path, regular-file existence, and recorded byte length without recomputing its digest.
 2. Derive each page artifact key from source SHA, schema, pinned model, runtime, preprocessing, and thresholds; derive the run key from ordered page keys.
 3. Reuse a complete published run, or recover a compatible cancelled/interrupted job.
 4. Acquire the model through a job-owned staging directory and verify byte length, SHA-256, and tensor signature before publication.
@@ -69,7 +75,7 @@ If a source read or storage operation fails, staging is removed and no project d
 8. Honour cancellation only at a page boundary so committed checkpoints remain valid.
 9. Publish the complete run directory atomically before writing the terminal job state.
 
-Source integrity, model-package, checkpoint-write, and final-publication failures are fatal to the run. Page decode, inference, output, and preview failures use the one-retry preservation policy.
+Source-preflight, model-package, checkpoint-write, and final-publication failures are fatal to the run. Page decode, inference, output, and preview failures use the one-retry preservation policy.
 
 ## OCR flow
 
@@ -87,7 +93,7 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 
 ## Cleanup flow
 
-1. Load the latest published translation run and its exact published OCR dependency; verify every ordered page and source digest before decoding.
+1. Load the latest published translation run and its exact published OCR dependency; validate every ordered page's lineage and bounded source preflight before decoding, without recomputing source digests.
 2. Join accepted translation items to OCR geometry by stable region ID. Preserved translations and protected OCR regions are never cleanup targets.
 3. Estimate a local background from each target perimeter, select high-contrast glyph pixels, dilate small gaps, and reject empty or implausibly large masks.
 4. Fill in-bubble glyph masks with the local background. Repair translated free-text masks by propagating colors inward from their boundary.
@@ -106,23 +112,17 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 
 ## Folder export flow
 
-1. Select a writable Android document tree. The selected tree is the final output directory; no archive or additional directory is created.
-2. Bind the job to the exact published typesetting run, its passed or warning-only quality run, and a one-way destination key. The private job journal retains the URI only for recovery.
-3. Name pages by manifest order as zero-padded PNG files. Prefer the flattened page, then a committed cleanup fallback, then a PNG-normalized immutable source.
-4. Reuse an existing final name only after its length and SHA-256 match. Otherwise write and verify a job-scoped temporary document before replacing matching final names.
-5. Read the promoted final document back and verify it before checkpointing the page. After the whole expected set is valid, remove stale numeric PNG page names outside the current range while leaving non-page files untouched.
-6. Recover cancellation or process loss at the active page, revalidate earlier outputs, then write a sanitized internal report with source-kind and reuse counts.
+1. Select a writable Android document tree. Export writes into a job-scoped staging directory and publishes that complete directory as a named output generation.
+2. Bind the job directly to the exact published typesetting run and a one-way destination key. Resolve its cleanup dependency only for per-page fallback; no runtime quality artifact gates export. The private job journal retains the URI only for recovery.
+3. Name pages by manifest order with zero-padded image filenames. Prefer the flattened page, then a committed cleanup fallback, then an encoded immutable source fallback.
+4. Ordinary local artifact resolution validates metadata, safe paths, presence, decode where required, and exact lineage without rehashing the stored artifact. The export job hashes the output bytes it is about to publish so an external copy can be checked or resumed safely.
+5. Reuse an existing destination page only after its recorded length and SHA-256 match. For a newly written page, promote or create the final document and read that final file back exactly once to verify length and SHA-256 before checkpointing it.
+6. Before promoting the staging directory, compare the complete set of image filenames with the expected set. Directory promotion does not reread or rehash page contents.
+7. Recover cancellation or process loss at the active page, revalidate earlier external checkpoints as needed, then write a sanitized internal report with source-kind and reuse counts. Best-effort pruning runs only after the published export job and report are durable.
 
-## Automatic quality flow
+## Runtime quality boundary
 
-1. Bind the job to one exact published typesetting run and resolve its immutable cleanup dependency.
-2. Compare the committed cleanup and flattened PNG dimensions and pixels without invoking any upstream model.
-3. Verify that every declared typeset region changed at least one pixel inside its layout box and that layout geometry remains inside the visible page.
-4. Count changes outside the union of declared layout boxes. Changes beyond the versioned anti-aliasing tolerance are blocking defects.
-5. Record OCR-protected or deliberately preserved artwork as warnings. Warning-only pages pass without human approval; deterministic pixel or geometry defects block export.
-6. Checkpoint strict quality JSON per page, recover only the interrupted page, and atomically publish the run and terminal issue report.
-7. If the report is blocked, route current deterministic issue codes only to typesetting, render the blocked pages once under the conservative repair policy, copy verified unaffected pages into the new run, and audit that exact run again.
-8. If the single repair attempt remains blocked, publish the final report and keep export disabled. Never escalate automatically to OCR, translation, or cleanup.
+Renderer correctness is enforced by focused tests and strict typesetting contracts, not by a production page-audit stage. The app does not compare every cleaned page with its flattened page at runtime, block export on a visual-quality report, or schedule automatic quality-directed re-typesetting. The earlier automatic-quality and quality-directed-repair documents are retained only as superseded design history.
 
 ## Project artifacts
 
@@ -146,15 +146,14 @@ workspace/
 │       │   ├── <import-job-id>.txt
 │       │   └── export/<export-job-id>.json
 │       ├── jobs/
-│       │   ├── <detection-ocr-translation-cleanup-typesetting-or-quality-job-id>.json
+│       │   ├── <detection-ocr-translation-cleanup-or-typesetting-job-id>.json
 │       │   └── export/<export-job-id>.json
 │       ├── staging/
 │       │   ├── detection/<detection-job-id>/<run-key>/
 │       │   ├── ocr/<ocr-job-id>/<run-key>/
 │       │   ├── translation/<translation-job-id>/<run-key>/
 │       │   ├── cleanup/<cleanup-job-id>/<run-key>/
-│       │   ├── typesetting/<typesetting-job-id>/<run-key>/
-│       │   └── quality/<quality-job-id>/<run-key>/
+│       │   └── typesetting/<typesetting-job-id>/<run-key>/
 │       └── artifacts/
 │           ├── detection/<run-key>/
 │           │   ├── artifact.json
@@ -178,16 +177,12 @@ workspace/
 │           │   └── pages/<order>-<page-id>/
 │           │       ├── cleanup.json
 │           │       └── cleaned.png
-│           ├── typesetting/<run-key>/
+│           └── typesetting/<run-key>/
 │               ├── artifact.json
 │               ├── report.json
 │               └── pages/<order>-<page-id>/
 │                   ├── typesetting.json
 │                   └── flattened.png
-│           └── quality/<run-key>/
-│               ├── artifact.json
-│               ├── report.json
-│               └── pages/<order>-<page-id>/quality.json
 ├── staging/
 └── failed-reports/
 ```
@@ -225,15 +220,15 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Prompt context IDs are read-only. Only IDs from the current item array may appear in a response, exactly once each.
 - Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
 - Android stores the endpoint, key, and model in application-private preferences and runs translation in its own foreground service with structured progress, cancellation, and automatic interrupted-job recovery.
-- Detection, OCR, translation, cleanup, typesetting, quality repair, and export foreground services hold a bounded partial wake lock only while work is active. Before new work, the UI requests Android's battery-optimization exemption because some OEM schedulers disable ordinary wake locks for non-exempt apps. Every service releases its lock on terminal completion, cancellation teardown, or destruction.
-- Translation network calls use bounded OkHttp timeouts, retry network/timeout/`408`/`429`/`5xx` and malformed structured responses within the configured attempt limit, and expose no raw response or underlying exception text on failure.
-- A chapter with no successful provider window fails without publication so a later retry cannot reuse a terminal all-source-preserved cache. Isolated provider or validation failures remain protected while valid sibling results publish normally.
-- Translation windows are checkpointed before their job journal advances; recovery discards only an unjournaled active window and retains all earlier committed results and token usage.
+- Detection, OCR, translation, cleanup, typesetting, and export foreground services hold a bounded partial wake lock only while work is active. Before new work, the UI requests Android's battery-optimization exemption because some OEM schedulers disable ordinary wake locks for non-exempt apps. Every service releases its lock on terminal completion, cancellation teardown, or destruction.
+- Translation network calls use bounded OkHttp timeouts and exactly one transport attempt. Network, timeout, HTTP, and malformed-response failures expose only safe metadata and stop the stage immediately.
+- Missing, duplicate, invalid-role, or blank required responses fail without publication and do not trigger batch salvage. Only Japanese-bearing or source-echo items receive one isolated semantic quality repair; a second semantically invalid result remains protected while valid siblings publish normally.
+- Translation windows are checkpointed before their job journal advances. Process recovery retains the continuous trusted terminal prefix and invalidates the active or pending glossary-dependent suffix. Legacy provider-failed checkpoints are treated as untrusted and are never published.
 - A published translation run atomically contains strict page artifacts, its final normalized glossary, dependency record, and terminal usage/protection report.
 
 ## Invariants
 
-- Imported source objects are immutable and reverified before detection.
+- Imported source objects are immutable and receive their full-content SHA-256 identity during import. Downstream source preflight validates safe path, existence, recorded length, decode when consumed, and lineage without routine rehashing.
 - A visible imported project and a visible detection run are each complete atomic publications.
 - Repeated bytes may share source and detection work while remaining separate ordered pages.
 - A committed page has validated region JSON and one preview for every referenced order.
@@ -248,20 +243,16 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Unknown OCR JSON fields are rejected, and all stored paths remain inside the project or model-package roots.
 - Cleanup changes pixels only inside an accepted glyph mask for a region with a valid translation; protected or unsafe regions retain source pixels.
 - Cleanup releases the decoded source immediately after creating its mutable page copy, bounds inpainting frontier allocations with primitive buffers, and runs with the Android large-image heap to avoid high-resolution page OOM fallback.
-- Cleanup identity includes the exact translation run and every policy field. A committed cleanup page has validated JSON and a digest-verified PNG.
+- Cleanup identity includes the exact translation run and every policy field. A committed cleanup page has validated JSON and an atomically published PNG with a creation-time digest; ordinary reads do not recompute it.
 - Cleanup cancellation and process recovery discard only the active page and never repeat OCR or translation.
 - Typesetting changes only regions with accepted translation and committed cleanup. A layout below the readability floor preserves its cleaned pixels.
-- Typesetting identity includes the exact cleanup, translation, and OCR dependencies plus every layout policy field. A committed page has validated JSON and a digest-verified flattened PNG.
+- Typesetting identity includes the exact cleanup, translation, and OCR dependencies plus every layout policy field. A committed page has validated JSON and an atomically published flattened image with a creation-time digest; ordinary reads do not recompute it.
 - Typesetting cancellation and process recovery discard only the active page and never repeat cleanup or any earlier stage.
-- Automatic quality identity includes the exact typesetting run, rendered page digests, and every policy field. It compares only immutable published inputs.
-- Protected artwork produces warning-only quality results; proven geometry, dimension, missing-pixel, or outside-layout defects block export without requesting manual review.
-- Quality cancellation and recovery discard only the active audit page and never repeat typesetting or any earlier stage.
-- Quality-directed repair has one versioned attempt per typesetting lineage. Its policy revision participates in artifact identity, and unaffected pages record the prior page key they reused.
-- Folder export publishes exactly one verified PNG per manifest page. Its report contains a destination digest, never the document-tree URI.
-- Folder export requires the exact quality run recorded in its dependency identity and rejects blocked reports.
-- Export may overwrite deterministic page names after a verified temporary write and removes stale numeric PNG pages only after the current complete set is valid; other destination documents are never deleted.
+- Folder export follows typesetting directly and publishes exactly one image per manifest page. Its report contains a destination digest, never the document-tree URI.
+- Each newly written SAF final file receives exactly one content read-back. Publishing the complete generation validates the exact filename set without an additional content pass.
+- Export may replace deterministic page names inside its staging generation and prunes older managed outputs only after the new generation and its durable success record are complete; unrelated destination documents are never deleted.
 - Export cancellation and recovery revalidate committed external outputs and never repeat any localization stage.
 
 ## Next slices
 
-The full import-to-folder-export path is now represented by independently resumable stages, including a deterministic automatic quality gate and bounded typesetting-page repair. Later quality signals may route to OCR, translation, or cleanup only after those defects can be proved without guessing.
+The full import-to-folder-export path is represented by independently resumable stages and ends with the direct `TYPESETTING -> EXPORT` edge. Runtime visual auditing and automatic quality repair have been retired; future quality work should stay in focused tests unless a separately justified production-stage design is approved.

@@ -78,9 +78,28 @@ class TextSegmentationMaskTest {
             width,
             bounds,
             auditMask,
+            background = white,
             maximumUnchangedDistance = 8,
         )
         assertEquals(6, unchanged.residualPixelCount)
+        assertEquals(
+            setOf(11, 19, 27, 35, 43, 51),
+            unchanged.residualMask.indices.filterTo(mutableSetOf()) { unchanged.residualMask[it] },
+        )
+
+        val graySmear = before.copyOf().also { pixels ->
+            for (y in 1..6) pixels[y * width + 3] = rgb(32, 32, 32)
+        }
+        val stillVisible = SegmentationMaskRefiner.auditResidual(
+            before,
+            graySmear,
+            width,
+            bounds,
+            auditMask,
+            background = white,
+            maximumUnchangedDistance = 8,
+        )
+        assertEquals(6, stillVisible.residualPixelCount)
 
         val cleaned = before.copyOf().also { pixels ->
             for (y in 1..6) pixels[y * width + 3] = white
@@ -91,9 +110,32 @@ class TextSegmentationMaskTest {
             width,
             bounds,
             auditMask,
+            background = white,
             maximumUnchangedDistance = 8,
         )
         assertEquals(0, passed.residualPixelCount)
+        assertTrue(passed.residualMask.none { it })
+    }
+
+    @Test
+    fun `residual retry expands only unchanged glyph pixels without restoring the original erase mask`() {
+        val width = 9
+        val height = 5
+        val residualMask = BooleanArray(width * height).also { mask ->
+            mask[2 * width + 7] = true
+        }
+
+        val retry = SegmentationMaskRefiner.residualRetryMask(
+            residualMask = residualMask,
+            width = width,
+            height = height,
+            dilationRadius = 1,
+        )
+
+        assertFalse("already-cleaned artwork was selected again", retry[2 * width + 1])
+        assertTrue(retry[2 * width + 7])
+        assertTrue(retry[2 * width + 6])
+        assertFalse(retry[2 * width + 4])
     }
 
     private fun rgb(red: Int, green: Int, blue: Int): Int =
