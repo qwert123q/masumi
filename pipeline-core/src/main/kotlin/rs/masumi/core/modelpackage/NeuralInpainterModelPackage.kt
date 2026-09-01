@@ -9,7 +9,6 @@ data class NeuralInpainterModelDescriptor(
     val fileName: String,
     val assetPath: String,
     val byteLength: Long,
-    val sha256: String,
     val license: String,
     val opset: Int,
     val runtimeRevision: String,
@@ -19,7 +18,6 @@ data class NeuralInpainterModelDescriptor(
         repository = repository,
         revision = revision,
         fileName = fileName,
-        sha256 = sha256,
         byteLength = byteLength,
         license = license,
         opset = opset,
@@ -27,7 +25,7 @@ data class NeuralInpainterModelDescriptor(
     )
 }
 
-/** Exact bundled AOT-GAN artifact; changing any byte invalidates cleanup reuse. */
+/** Bundled AOT-GAN artifact identified by its explicit upstream and runtime revisions. */
 object PinnedAotInpainter {
     val descriptor = NeuralInpainterModelDescriptor(
         modelId = "lemon-aot-folded",
@@ -36,7 +34,6 @@ object PinnedAotInpainter {
         fileName = "aot-inpainting.onnx",
         assetPath = "models/aot-inpainting.onnx",
         byteLength = 23_009_155L,
-        sha256 = "e0d8f438ca9567eccc9d358963427601b6f64a650cbe6189ec82fc43830a0390",
         license = "GPL-3.0-only",
         opset = 17,
         runtimeRevision = "onnxruntime-android:1.27.0",

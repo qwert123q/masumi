@@ -1,6 +1,7 @@
 package rs.masumi.app.ocr
 
 import android.content.Intent
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.ocr.OcrJobStatus
 
 object OcrStatusBroadcast {
@@ -39,11 +40,11 @@ object OcrStatusBroadcast {
 
     fun create(packageName: String, progress: OcrProgress): Intent {
         require(PACKAGE_NAME.matches(packageName))
-        require(SAFE_ID.matches(progress.projectId))
-        require(SAFE_ID.matches(progress.jobId))
-        require(SHA256.matches(progress.runArtifactKey))
-        require(progress.currentPageId == null || SHA256.matches(progress.currentPageId))
-        require(progress.currentRegionId == null || SHA256.matches(progress.currentRegionId))
+        require(SafeOpaqueId.isValid(progress.projectId))
+        require(SafeOpaqueId.isValid(progress.jobId))
+        require(SafeOpaqueId.isValid(progress.runArtifactKey))
+        require(progress.currentPageId == null || SafeOpaqueId.isValid(progress.currentPageId))
+        require(progress.currentRegionId == null || SafeOpaqueId.isValid(progress.currentRegionId))
         require(progress.errorCode == null || ERROR_CODE.matches(progress.errorCode))
         return Intent(ACTION).apply {
             setPackage(packageName)
@@ -76,10 +77,10 @@ object OcrStatusBroadcast {
         val pageId = intent.getStringExtra(EXTRA_CURRENT_PAGE_ID)
         val regionId = intent.getStringExtra(EXTRA_CURRENT_REGION_ID)
         val errorCode = intent.getStringExtra(EXTRA_ERROR_CODE)
-        require(SAFE_ID.matches(projectId) && SAFE_ID.matches(jobId) && SHA256.matches(runKey))
+        require(SafeOpaqueId.isValid(projectId) && SafeOpaqueId.isValid(jobId) && SafeOpaqueId.isValid(runKey))
         require(currentOrder >= NO_CURRENT_ORDER)
-        require(pageId == null || SHA256.matches(pageId))
-        require(regionId == null || SHA256.matches(regionId))
+        require(pageId == null || SafeOpaqueId.isValid(pageId))
+        require(regionId == null || SafeOpaqueId.isValid(regionId))
         require(errorCode == null || ERROR_CODE.matches(errorCode))
         OcrProgress(
             projectId = projectId,
@@ -109,7 +110,5 @@ object OcrStatusBroadcast {
     private const val INVALID_INT = Int.MIN_VALUE
     private const val INVALID_LONG = Long.MIN_VALUE
     private val PACKAGE_NAME = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
-    private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-    private val SHA256 = Regex("[0-9a-f]{64}")
     private val ERROR_CODE = Regex("[A-Z][A-Z0-9_]{0,127}")
 }

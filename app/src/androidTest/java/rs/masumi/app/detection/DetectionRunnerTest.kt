@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -21,7 +22,6 @@ import rs.masumi.core.serialization.DetectionJson
 import rs.masumi.core.serialization.ProjectJson
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -39,19 +39,19 @@ class DetectionRunnerTest {
                 acceptedQueries(page)
             }
             val source = project.resolve("sources").toFile().listFiles()!!.single().toPath()
-            val before = sha256(Files.readAllBytes(source))
+            val before = Files.readAllBytes(source)
 
             val result = runner.run(PROJECT_ID, { false }) { }
 
             assertEquals(1, detectionCount)
             assertEquals(DetectionJobStatus.SUCCEEDED, result.job.status)
             assertEquals(2, result.runArtifact!!.entries.size)
-            assertEquals(before, sha256(Files.readAllBytes(source)))
+            assertArrayEquals(before, Files.readAllBytes(source))
             assertNotNull(result.publishedDirectory)
             val published = result.publishedDirectory!!
-            assertTrue(Files.exists(published.resolve("pages/${before}/regions.json")))
+            assertTrue(Files.exists(published.resolve("pages/source-0/regions.json")))
             val artifact = DetectionJson().decodePageArtifact(
-                Files.newBufferedReader(published.resolve("pages/${before}/regions.json")).use { it.readText() },
+                Files.newBufferedReader(published.resolve("pages/source-0/regions.json")).use { it.readText() },
             )
             assertEquals(300, artifact.rawQueries.size)
             assertEquals(1, artifact.textRegions.size)
@@ -144,28 +144,15 @@ class DetectionRunnerTest {
     }
 
     @Test
-    fun sourceWithRecordedLengthRunsWhenContentsDoNotMatchManifestHash() {
+    fun sourceWithRecordedLengthRunsWhenBytesChangeAtTheSamePath() {
         withWorkspace { workspace ->
             val project = createProject(workspace, listOf(Color.RED), orderToSource = listOf(0))
             val source = project.resolve("sources").toFile().listFiles()!!.single().toPath()
-            val json = ProjectJson()
-            val manifestPath = project.resolve("manifest.json")
-            val manifest = Files.newBufferedReader(manifestPath).use { reader ->
-                json.decodeManifest(reader.readText())
-            }
-            val recordedSha = "0".repeat(64)
-            assertTrue(sha256(Files.readAllBytes(source)) != recordedSha)
-            Files.newBufferedWriter(manifestPath).use { writer ->
-                writer.write(
-                    json.encodeManifest(
-                        manifest.copy(
-                            pages = manifest.pages.map { page ->
-                                page.copy(pageId = recordedSha, sourceSha256 = recordedSha)
-                            },
-                        ),
-                    ),
-                )
-            }
+            val original = Files.readAllBytes(source)
+            val replacement = png(Color.BLUE)
+            assertEquals(original.size, replacement.size)
+            assertTrue(!original.contentEquals(replacement))
+            Files.write(source, replacement)
             var detectionCount = 0
             val runner = runner(workspace) { page ->
                 detectionCount += 1
@@ -232,20 +219,19 @@ class DetectionRunnerTest {
         Files.createDirectories(sources)
         val sourceRecords = colors.mapIndexed { index, color ->
             val bytes = png(color)
-            val sha = sha256(bytes)
-            Files.write(sources.resolve("$sha.png"), bytes)
-            Triple(index, sha, bytes.size.toLong())
+            val pageId = "source-$index"
+            Files.write(sources.resolve("$pageId.png"), bytes)
+            Triple(index, pageId, bytes.size.toLong())
         }
         val pages = orderToSource.mapIndexed { order, sourceIndex ->
-            val (_, sha, byteLength) = sourceRecords[sourceIndex]
+            val (_, pageId, byteLength) = sourceRecords[sourceIndex]
             PageRecord(
                 order = order,
-                pageId = sha,
-                sourceSha256 = sha,
+                pageId = pageId,
                 originalName = order.toString().padStart(3, '0') + ".png",
                 mediaType = "image/png",
                 byteLength = byteLength,
-                storedPath = "sources/$sha.png",
+                storedPath = "sources/$pageId.png",
             )
         }
         Files.newBufferedWriter(project.resolve("manifest.json")).use { writer ->
@@ -279,16 +265,11 @@ class DetectionRunnerTest {
         repository = "test/detector",
         revision = "revision-1",
         fileName = "detector.onnx",
-        sha256 = "c".repeat(64),
         byteLength = 1,
         license = "Apache-2.0",
         opset = 18,
         runtimeRevision = "runtime:1",
     )
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes)
-        .joinToString("") { "%02x".format(it) }
 
     private fun withWorkspace(block: (Path) -> Unit) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

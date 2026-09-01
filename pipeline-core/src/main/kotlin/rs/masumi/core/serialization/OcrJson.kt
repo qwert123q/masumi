@@ -15,7 +15,7 @@ class OcrJson(
         prettyPrint = true
         encodeDefaults = true
         explicitNulls = true
-        ignoreUnknownKeys = false
+        ignoreUnknownKeys = true
     },
 ) {
     fun encodePageArtifact(artifact: PageOcrArtifact): String = json.encodeToString(artifact)

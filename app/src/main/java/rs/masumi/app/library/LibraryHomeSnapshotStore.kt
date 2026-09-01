@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
+import rs.masumi.core.identity.SafeOpaqueId
 
 internal data class LibraryHomeSnapshot(
     val rootDisplayName: String?,
@@ -56,7 +57,6 @@ internal class LibraryHomeSnapshotStore(context: Context) {
         .put(JSON_TITLE, project.metadata.title)
         .put(JSON_CREATED_AT, project.metadata.createdAtEpochMillis)
         .put(JSON_SOURCE_TREE_URI, project.metadata.sourceTreeUri)
-        .put(JSON_SOURCE_FINGERPRINT, project.metadata.sourceFingerprint)
         .put(JSON_DIRECTORY_URI, project.directoryUri.toString())
         .put(JSON_SOURCE_DIRECTORY_URI, project.sourceDirectoryUri?.toString())
         .put(JSON_OUTPUT_DIRECTORY_URI, project.outputDirectoryUri?.toString())
@@ -65,11 +65,9 @@ internal class LibraryHomeSnapshotStore(context: Context) {
     private fun decodeProject(value: JSONObject): MangaLibraryProject {
         val projectId = value.getString(JSON_PROJECT_ID)
         val title = value.getString(JSON_TITLE)
-        val fingerprint = value.getString(JSON_SOURCE_FINGERPRINT)
         val outputPageCount = value.getInt(JSON_OUTPUT_PAGE_COUNT)
-        require(SAFE_PROJECT_ID.matches(projectId))
+        require(SafeOpaqueId.isValid(projectId))
         require(title.isNotBlank() && title.length <= MAXIMUM_TITLE_LENGTH)
-        require(SHA256.matches(fingerprint))
         require(outputPageCount in 0..MAXIMUM_PAGE_COUNT)
         val directory = contentUri(value.getString(JSON_DIRECTORY_URI))
         return MangaLibraryProject(
@@ -79,7 +77,6 @@ internal class LibraryHomeSnapshotStore(context: Context) {
                 title = title,
                 createdAtEpochMillis = value.getLong(JSON_CREATED_AT),
                 sourceTreeUri = value.getString(JSON_SOURCE_TREE_URI),
-                sourceFingerprint = fingerprint,
             ),
             directoryUri = directory,
             mangaDirectoryUri = directory,
@@ -112,12 +109,9 @@ internal class LibraryHomeSnapshotStore(context: Context) {
         const val JSON_TITLE = "title"
         const val JSON_CREATED_AT = "created_at"
         const val JSON_SOURCE_TREE_URI = "source_tree_uri"
-        const val JSON_SOURCE_FINGERPRINT = "source_fingerprint"
         const val JSON_DIRECTORY_URI = "directory_uri"
         const val JSON_SOURCE_DIRECTORY_URI = "source_directory_uri"
         const val JSON_OUTPUT_DIRECTORY_URI = "output_directory_uri"
         const val JSON_OUTPUT_PAGE_COUNT = "output_page_count"
-        val SAFE_PROJECT_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA256 = Regex("[0-9a-f]{64}")
     }
 }

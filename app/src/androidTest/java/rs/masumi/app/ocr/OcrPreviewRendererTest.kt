@@ -82,7 +82,6 @@ class OcrPreviewRendererTest {
         val descriptor = PinnedPaddleOcrVl.descriptor
         return PageOcrArtifact(
             pageId = "page",
-            sourceSha256 = "a".repeat(64),
             detectionPageArtifactKey = "b".repeat(64),
             pageArtifactKey = "c".repeat(64),
             visibleWidth = 180,

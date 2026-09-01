@@ -1,15 +1,13 @@
 package rs.masumi.core.translation
 
-import kotlinx.serialization.SerializationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNotEquals
 import rs.masumi.core.serialization.TranslationJson
 
 class TranslationJsonTest {
     @Test
-    fun `translation input JSON is strict and round trips`() {
+    fun `translation input JSON ignores legacy fields and round trips`() {
         val input = PageTranslationInput(
             pageId = "page-1",
             pageOrder = 0,
@@ -30,30 +28,32 @@ class TranslationJsonTest {
         val encoded = TranslationJson().encodePageInput(input)
 
         assertEquals(input, TranslationJson().decodePageInput(encoded))
-        assertFailsWith<SerializationException> {
-            TranslationJson().decodePageInput(encoded.dropLast(2) + ",\"unexpected\":true\n}")
-        }
+        assertEquals(
+            input,
+            TranslationJson().decodePageInput(encoded.dropLast(2) + ",\"inputGlossarySha256\":\"legacy\"\n}"),
+        )
     }
 
     @Test
-    fun `region identity changes with sound-effect policy and prompt revision`() {
-        val baseline = TranslationIdentity.regionId("page", "region", TranslationPolicy(), TranslationPromptRef())
-        val soundEffects = TranslationIdentity.regionId(
-            "page",
-            "region",
-            TranslationPolicy(translateSoundEffects = false),
-            TranslationPromptRef(),
-        )
-        val prompt = TranslationIdentity.regionId(
-            "page",
-            "region",
-            TranslationPolicy(),
-            TranslationPromptRef(revision = "chapter-structured-v2"),
+    fun `legacy provider host is retained as migration evidence when endpoint is absent`() {
+        val codec = TranslationJson()
+        val job = TranslationArtifactFixtures.job()
+        val encoded = codec.encodeJob(job).replace(
+            "\"endpoint\": \"https://example.invalid/v1\"",
+            "\"endpointHost\": \"example.invalid\"",
         )
 
-        assertEquals(64, baseline.length)
-        assertNotEquals(baseline, soundEffects)
-        assertNotEquals(baseline, prompt)
+        val decoded = codec.decodeJob(encoded)
+
+        assertEquals(
+            "legacy-host:example.invalid",
+            decoded.dependencies.provider.reference.endpoint,
+        )
+    }
+
+    @Test
+    fun `translation region identity inherits OCR lineage`() {
+        assertEquals("ocr-run.page.0000.region.0001", TranslationIdentity.regionId("ocr-run.page.0000.region.0001"))
     }
 
     @Test

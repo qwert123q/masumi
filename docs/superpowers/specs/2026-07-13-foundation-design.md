@@ -14,7 +14,7 @@ The slice is successful when a user can choose a chapter folder, Masumi can copy
 
 ### 1. Android application plus a pure Kotlin core module — selected
 
-The Android module owns Storage Access Framework integration and a minimal screen. A pure Kotlin/JVM module owns ordering, hashing, immutable import, manifest records, atomic persistence, and report generation.
+The Android module owns Storage Access Framework integration and a minimal screen. A pure Kotlin/JVM module owns ordering, opaque ID allocation, immutable import, manifest records, atomic persistence, and report generation.
 
 This creates an installable product immediately while keeping the correctness-critical logic fast to test on the host. Later Android services and model runners can depend on the same core without coupling it to an Activity or `ContentResolver`.
 
@@ -33,8 +33,8 @@ This would make local iteration easy, but it would postpone the real Android sto
 `pipeline-core` is a Kotlin/JVM library with no Android imports. It owns:
 
 - supported page filtering and deterministic natural ordering;
-- streaming SHA-256 calculation;
-- immutable, content-addressed source storage;
+- single-pass source copying with exact byte-length accounting;
+- immutable, ID-addressed source storage;
 - manifest and report domain records;
 - JSON encoding and decoding;
 - atomic file replacement;
@@ -64,7 +64,7 @@ Each import creates a random UUID `projectId`. A future resume entry point opens
 
 ### Page identity
 
-`pageId` is the lowercase SHA-256 digest of the exact source bytes. Filenames are metadata and never define identity. Two ordered entries with identical bytes may share a `pageId`; they remain separate entries in page order while reusing the same immutable source object.
+`pageId` is an opaque safe ID allocated by `IdSource` before a page is copied. Filenames and file contents do not define identity. Two ordered entries with identical bytes remain independent pages with distinct IDs and immutable source objects.
 
 ### Manifest schema
 
@@ -79,7 +79,6 @@ Each page record contains:
 
 - zero-based `order`;
 - `pageId`;
-- `sourceSha256`;
 - `originalName`;
 - normalized `mediaType`;
 - exact `byteLength`;
@@ -104,9 +103,9 @@ Ordering uses a deterministic natural comparator. Numeric runs compare numerical
 1. Enumerate and adapt source candidates without opening their streams.
 2. Filter unsupported or hidden entries and natural-sort accepted candidates.
 3. Create a staged project directory containing `sources/`, `reports/`, and a temporary import directory.
-4. For each accepted candidate, stream bytes once into a temporary file while calculating SHA-256 and exact length.
-5. Flush the temporary file, then atomically move it to `sources/<sha256>.<extension>`.
-6. If that content-addressed target already exists, discard the duplicate temporary file and reuse the existing object.
+4. For each accepted candidate, allocate a page ID and stream the bytes once into a temporary file while counting the exact length.
+5. Flush the temporary file, then atomically move it to `sources/<pageId>.<extension>`.
+6. Treat duplicate byte sequences as independent ordered entries; import does not compare source contents.
 7. Build the ordered page records only from completed source objects.
 8. Encode `manifest.json` only after every accepted page has completed.
 9. Write JSON and text reports inside the staged project.
@@ -142,8 +141,8 @@ Host unit tests use synthetic byte streams and temporary directories. They cover
 
 - natural ordering and deterministic tie-breaking;
 - supported file filtering;
-- SHA-256 identity and byte counts;
-- duplicate-content storage reuse with duplicate ordered entries retained;
+- opaque page IDs and exact byte counts;
+- independent source objects for duplicate ordered entries;
 - manifest JSON round trips;
 - success report aggregation;
 - failure report error codes;

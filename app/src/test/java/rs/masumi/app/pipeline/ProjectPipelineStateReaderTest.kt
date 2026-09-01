@@ -8,18 +8,23 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import rs.masumi.app.ocr.currentOcrDependencies
-import rs.masumi.core.cleanup.CleanupIdentity
 import rs.masumi.core.cleanup.CleanupJobStatus
+import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupReport
 import rs.masumi.core.cleanup.CleanupRunArtifact
+import rs.masumi.core.cleanup.CleanupRunEntry
+import rs.masumi.core.cleanup.PageCleanupArtifact
+import rs.masumi.core.detection.DetectionError
 import rs.masumi.core.detection.DetectionJobStatus
+import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.detection.DetectionPreprocessingConfig
 import rs.masumi.core.detection.DetectionReport
 import rs.masumi.core.detection.DetectionRunArtifact
+import rs.masumi.core.detection.DetectionRunEntry
 import rs.masumi.core.detection.DetectionThresholdConfig
+import rs.masumi.core.detection.VisibleOrientation
 import rs.masumi.core.exporting.ExportArtifactStore
 import rs.masumi.core.exporting.ExportDependencies
-import rs.masumi.core.exporting.ExportIdentity
 import rs.masumi.core.exporting.ExportJobPage
 import rs.masumi.core.exporting.ExportJobRecord
 import rs.masumi.core.exporting.ExportJobStatus
@@ -30,21 +35,18 @@ import rs.masumi.core.exporting.ExportReport
 import rs.masumi.core.model.PageRecord
 import rs.masumi.core.model.ProjectManifest
 import rs.masumi.core.modelpackage.PinnedComicDetector
-import rs.masumi.core.ocr.OcrIdentity
 import rs.masumi.core.ocr.OcrJobStatus
 import rs.masumi.core.ocr.OcrPageState
 import rs.masumi.core.ocr.OcrReport
 import rs.masumi.core.ocr.OcrRunArtifact
 import rs.masumi.core.ocr.OcrRunEntry
 import rs.masumi.core.ocr.PageOcrArtifact
-import rs.masumi.core.detection.VisibleOrientation
 import rs.masumi.core.serialization.CleanupJson
 import rs.masumi.core.serialization.DetectionJson
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
 import rs.masumi.core.serialization.TypesettingJson
-import rs.masumi.core.translation.TranslationArtifactIdentity
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationDependencies
 import rs.masumi.core.translation.TranslationGlossaryArtifact
@@ -55,12 +57,16 @@ import rs.masumi.core.translation.TranslationPromptRef
 import rs.masumi.core.translation.TranslationProviderDependency
 import rs.masumi.core.translation.TranslationReport
 import rs.masumi.core.translation.TranslationRunArtifact
+import rs.masumi.core.translation.TranslationRunEntry
+import rs.masumi.core.translation.PageTranslationArtifact
 import rs.masumi.core.typesetting.TypesettingDependencies
-import rs.masumi.core.typesetting.TypesettingIdentity
 import rs.masumi.core.typesetting.TypesettingJobStatus
+import rs.masumi.core.typesetting.TypesettingPageState
 import rs.masumi.core.typesetting.TypesettingPolicy
 import rs.masumi.core.typesetting.TypesettingReport
 import rs.masumi.core.typesetting.TypesettingRunArtifact
+import rs.masumi.core.typesetting.TypesettingRunEntry
+import rs.masumi.core.typesetting.PageTypesettingArtifact
 
 class ProjectPipelineStateReaderTest {
     @Test
@@ -76,7 +82,7 @@ class ProjectPipelineStateReaderTest {
                 assertFalse(state.complete)
             }
 
-            publishExport(chain.project, chain.typesettingRunKey)
+            publishExport(chain.project, chain.typesetting)
             reader.read(PROJECT_ID).requireState().also { state ->
                 assertNull(state.nextStage)
                 assertTrue(state.complete)
@@ -92,23 +98,28 @@ class ProjectPipelineStateReaderTest {
         val workspace = Files.createTempDirectory("masumi-current-chain")
         try {
             val chain = publishThroughTypesetting(workspace)
-            val stalePolicyKey = publishTypesetting(
+            val stalePolicy = publishTypesetting(
                 project = chain.project,
-                cleanupRunKey = chain.cleanupRunKey,
+                cleanupRunId = chain.cleanupRunId,
                 policy = TypesettingPolicy(revision = "legacy-typesetting-policy"),
                 createdAt = 7L,
+                runId = "typesetting-run-stale-policy",
+                pageId = "typesetting-page-stale-policy",
             )
             publishTypesetting(
                 project = chain.project,
-                cleanupRunKey = sha('c'),
+                cleanupRunId = "cleanup-run-stale",
+                cleanupPageId = "cleanup-page-stale",
                 policy = TypesettingPolicy(),
                 createdAt = 8L,
+                runId = "typesetting-run-stale-cleanup",
+                pageId = "typesetting-page-stale-cleanup",
             )
 
             val current = CurrentPipelineArtifactsReader(workspace).read(PROJECT_ID)
 
-            assertEquals(chain.typesettingRunKey, current?.typesetting?.artifact?.runArtifactKey)
-            publishExport(chain.project, stalePolicyKey)
+            assertEquals(chain.typesetting.runId, current?.typesetting?.artifact?.runArtifactKey)
+            publishExport(chain.project, stalePolicy)
             assertEquals(
                 PipelineStage.EXPORT,
                 ProjectPipelineStateReader(workspace).read(PROJECT_ID).requireState().nextStage,
@@ -120,6 +131,9 @@ class ProjectPipelineStateReaderTest {
 
     private fun publishThroughTypesetting(workspace: Path): CurrentChain {
         val project = Files.createDirectories(workspace.resolve("projects/$PROJECT_ID"))
+        val source = project.resolve("source/page.png")
+        Files.createDirectories(source.parent)
+        Files.write(source, byteArrayOf(1))
         Files.write(
             project.resolve("manifest.json"),
             ProjectJson().encodeManifest(
@@ -129,8 +143,7 @@ class ProjectPipelineStateReaderTest {
                     pages = listOf(
                         PageRecord(
                             order = 0,
-                            pageId = SOURCE_SHA,
-                            sourceSha256 = SOURCE_SHA,
+                            pageId = PAGE_ID,
                             originalName = "page.png",
                             mediaType = "image/png",
                             byteLength = 1L,
@@ -141,66 +154,72 @@ class ProjectPipelineStateReaderTest {
             ).toByteArray(),
         )
 
-        val detectionKey = sha('1')
+        val detectionRunId = DETECTION_RUN_ID
+        val detectionPageId = DETECTION_PAGE_ID
+        val detectionModel = PinnedComicDetector.descriptor.toModelRef()
+        val detectionPreprocessing = DetectionPreprocessingConfig()
+        val detectionThresholds = DetectionThresholdConfig()
         val detectionJson = DetectionJson()
         writePublished(
             project,
             "detection",
-            detectionKey,
+            detectionRunId,
             detectionJson.encodeRun(
                 DetectionRunArtifact(
-                    runArtifactKey = detectionKey,
+                    runArtifactKey = detectionRunId,
                     projectId = PROJECT_ID,
                     createdAtEpochMillis = 2L,
-                    model = PinnedComicDetector.descriptor.toModelRef(),
-                    preprocessing = DetectionPreprocessingConfig(),
-                    thresholds = DetectionThresholdConfig(),
-                    entries = emptyList(),
+                    model = detectionModel,
+                    preprocessing = detectionPreprocessing,
+                    thresholds = detectionThresholds,
+                    entries = listOf(
+                        DetectionRunEntry(
+                            order = 0,
+                            pageId = PAGE_ID,
+                            pageArtifactKey = detectionPageId,
+                            state = DetectionPageState.PRESERVED_SOURCE,
+                            error = DetectionError("TEST_PRESERVED", "fixture has no detector output"),
+                        ),
+                    ),
                 ),
             ),
             detectionJson.encodeReport(
                 DetectionReport(
                     jobId = "detection-job",
                     projectId = PROJECT_ID,
-                    runArtifactKey = detectionKey,
+                    runArtifactKey = detectionRunId,
                     startedAtEpochMillis = 1L,
                     finishedAtEpochMillis = 2L,
-                    status = DetectionJobStatus.SUCCEEDED,
-                    totalPageCount = 0,
+                    status = DetectionJobStatus.SUCCEEDED_WITH_PRESERVED_PAGES,
+                    totalPageCount = 1,
                     committedPageCount = 0,
-                    preservedPageCount = 0,
+                    preservedPageCount = 1,
                     retryCount = 0,
                 ),
             ),
         )
 
         val ocrDependencies = currentOcrDependencies()
-        val detectionPageKey = sha('d')
-        val ocrPageKey = OcrIdentity.pageArtifactKey(
-            SOURCE_SHA,
-            detectionPageKey,
-            ocrDependencies,
-        )
-        val ocrKey = OcrIdentity.runArtifactKey(listOf(0 to ocrPageKey))
+        val ocrPageId = OCR_PAGE_ID
+        val ocrRunId = OCR_RUN_ID
         val ocrJson = OcrJson()
         val ocrDirectory = writePublished(
             project,
             "ocr",
-            ocrKey,
+            ocrRunId,
             ocrJson.encodeRun(
                 OcrRunArtifact(
-                    runArtifactKey = ocrKey,
+                    runArtifactKey = ocrRunId,
                     projectId = PROJECT_ID,
-                    detectionRunArtifactKey = detectionKey,
+                    detectionRunArtifactKey = detectionRunId,
                     createdAtEpochMillis = 3L,
                     dependencies = ocrDependencies,
                     entries = listOf(
                         OcrRunEntry(
                             order = 0,
-                            pageId = SOURCE_SHA,
-                            sourceSha256 = SOURCE_SHA,
-                            detectionPageArtifactKey = detectionPageKey,
-                            pageArtifactKey = ocrPageKey,
+                            pageId = PAGE_ID,
+                            detectionPageArtifactKey = detectionPageId,
+                            pageArtifactKey = ocrPageId,
                             state = OcrPageState.COMMITTED,
                             artifactPath = "pages/0000/ocr.json",
                             previewPath = "pages/0000/preview.png",
@@ -212,7 +231,7 @@ class ProjectPipelineStateReaderTest {
                 OcrReport(
                     jobId = "ocr-job",
                     projectId = PROJECT_ID,
-                    runArtifactKey = ocrKey,
+                    runArtifactKey = ocrRunId,
                     startedAtEpochMillis = 2L,
                     finishedAtEpochMillis = 3L,
                     status = OcrJobStatus.SUCCEEDED,
@@ -232,10 +251,9 @@ class ProjectPipelineStateReaderTest {
             ocrDirectory.resolve("pages/0000/ocr.json"),
             ocrJson.encodePageArtifact(
                 PageOcrArtifact(
-                    pageId = SOURCE_SHA,
-                    sourceSha256 = SOURCE_SHA,
-                    detectionPageArtifactKey = detectionPageKey,
-                    pageArtifactKey = ocrPageKey,
+                    pageId = PAGE_ID,
+                    detectionPageArtifactKey = detectionPageId,
+                    pageArtifactKey = ocrPageId,
                     visibleWidth = 1,
                     visibleHeight = 1,
                     orientation = VisibleOrientation.NORMAL,
@@ -244,11 +262,10 @@ class ProjectPipelineStateReaderTest {
                 ),
             ).toByteArray(),
         )
-        Files.write(ocrDirectory.resolve("pages/0000/preview.png"), byteArrayOf(0))
+        Files.write(ocrDirectory.resolve("pages/0000/preview.png"), byteArrayOf(1))
 
-        val glossarySha = TranslationArtifactIdentity.glossarySha256(emptyList())
         val translationDependencies = TranslationDependencies(
-            ocrRunArtifactKey = ocrKey,
+            ocrRunArtifactKey = ocrRunId,
             policy = TranslationPolicy(),
             prompt = TranslationPromptRef(),
             batching = TranslationBatchingConfig(),
@@ -259,21 +276,30 @@ class ProjectPipelineStateReaderTest {
                 maximumOutputTokens = 1,
                 requestJsonObjectFormat = true,
             ),
-            initialGlossarySha256 = glossarySha,
+            initialGlossary = emptyList(),
         )
-        val translationKey = TranslationArtifactIdentity.runArtifactKey(emptyList(), translationDependencies)
+        val translationRunId = TRANSLATION_RUN_ID
+        val translationPageId = TRANSLATION_PAGE_ID
         val translationJson = TranslationJson()
         val translationDirectory = writePublished(
             project,
             "translation",
-            translationKey,
+            translationRunId,
             translationJson.encodeRun(
                 TranslationRunArtifact(
-                    runArtifactKey = translationKey,
+                    runArtifactKey = translationRunId,
                     projectId = PROJECT_ID,
                     createdAtEpochMillis = 4L,
                     dependencies = translationDependencies,
-                    entries = emptyList(),
+                    entries = listOf(
+                        TranslationRunEntry(
+                            pageId = PAGE_ID,
+                            pageOrder = 0,
+                            ocrPageArtifactKey = ocrPageId,
+                            pageArtifactKey = translationPageId,
+                            artifactPath = "pages/0000/translation.json",
+                        ),
+                    ),
                     glossaryPath = "glossary.json",
                 ),
             ),
@@ -281,12 +307,12 @@ class ProjectPipelineStateReaderTest {
                 TranslationReport(
                     jobId = "translation-job",
                     projectId = PROJECT_ID,
-                    runArtifactKey = translationKey,
+                    runArtifactKey = translationRunId,
                     startedAtEpochMillis = 3L,
                     finishedAtEpochMillis = 4L,
                     status = TranslationJobStatus.SUCCEEDED,
-                    totalPageCount = 0,
-                    committedPageCount = 0,
+                    totalPageCount = 1,
+                    committedPageCount = 1,
                     totalWindowCount = 0,
                     committedWindowCount = 0,
                     translatedItemCount = 0,
@@ -299,39 +325,66 @@ class ProjectPipelineStateReaderTest {
                 ),
             ),
         )
+        Files.createDirectories(translationDirectory.resolve("pages/0000"))
+        Files.write(
+            translationDirectory.resolve("pages/0000/translation.json"),
+            translationJson.encodePageArtifact(
+                PageTranslationArtifact(
+                    pageId = PAGE_ID,
+                    pageOrder = 0,
+                    ocrPageArtifactKey = ocrPageId,
+                    pageArtifactKey = translationPageId,
+                    dependencies = translationDependencies,
+                    items = emptyList(),
+                    protectedOcrRegions = emptyList(),
+                ),
+            ).toByteArray(),
+        )
         Files.write(
             translationDirectory.resolve("glossary.json"),
             translationJson.encodeGlossary(
-                TranslationGlossaryArtifact(sha256 = glossarySha, entries = emptyList()),
+                TranslationGlossaryArtifact(entries = emptyList()),
             ).toByteArray(),
         )
 
-        val cleanupDependencies = currentCleanupDependencies(translationKey)
-        val cleanupKey = CleanupIdentity.runArtifactKey(emptyList(), cleanupDependencies)
+        val cleanupDependencies = currentCleanupDependencies(translationRunId)
+        val cleanupRunId = CLEANUP_RUN_ID
+        val cleanupPageId = CLEANUP_PAGE_ID
         val cleanupJson = CleanupJson()
-        writePublished(
+        val cleanupDirectory = writePublished(
             project,
             "cleanup",
-            cleanupKey,
+            cleanupRunId,
             cleanupJson.encodeRun(
                 CleanupRunArtifact(
-                    runArtifactKey = cleanupKey,
+                    runArtifactKey = cleanupRunId,
                     projectId = PROJECT_ID,
                     createdAtEpochMillis = 5L,
                     dependencies = cleanupDependencies,
-                    entries = emptyList(),
+                    entries = listOf(
+                        CleanupRunEntry(
+                            pageId = PAGE_ID,
+                            pageOrder = 0,
+                            translationPageArtifactKey = translationPageId,
+                            pageArtifactKey = cleanupPageId,
+                            state = CleanupPageState.COMMITTED,
+                            artifactPath = "pages/0000/cleanup.json",
+                            imagePath = "pages/0000/cleaned.png",
+                            imageByteLength = 1L,
+                        ),
+                    ),
                 ),
             ),
             cleanupJson.encodeReport(
                 CleanupReport(
                     jobId = "cleanup-job",
                     projectId = PROJECT_ID,
-                    runArtifactKey = cleanupKey,
+                    runArtifactKey = cleanupRunId,
                     startedAtEpochMillis = 4L,
                     finishedAtEpochMillis = 5L,
                     status = CleanupJobStatus.SUCCEEDED,
-                    totalPageCount = 0,
-                    committedPageCount = 0,
+                    totalPageCount = 1,
+                    committedPageCount = 1,
                     preservedPageCount = 0,
                     cleanedRegionCount = 0,
                     preservedRegionCount = 0,
@@ -340,51 +393,84 @@ class ProjectPipelineStateReaderTest {
                 ),
             ),
         )
+        Files.createDirectories(cleanupDirectory.resolve("pages/0000"))
+        Files.write(
+            cleanupDirectory.resolve("pages/0000/cleanup.json"),
+            cleanupJson.encodePageArtifact(
+                PageCleanupArtifact(
+                    pageId = PAGE_ID,
+                    pageOrder = 0,
+                    translationPageArtifactKey = translationPageId,
+                    pageArtifactKey = cleanupPageId,
+                    visibleWidth = 1,
+                    visibleHeight = 1,
+                    cleanedImageByteLength = 1L,
+                    dependencies = cleanupDependencies,
+                    regions = emptyList(),
+                ),
+            ).toByteArray(),
+        )
+        Files.write(cleanupDirectory.resolve("pages/0000/cleaned.png"), byteArrayOf(1))
 
         return CurrentChain(
             project = project,
-            cleanupRunKey = cleanupKey,
-            typesettingRunKey = publishTypesetting(
+            cleanupRunId = cleanupRunId,
+            typesetting = publishTypesetting(
                 project = project,
-                cleanupRunKey = cleanupKey,
+                cleanupRunId = cleanupRunId,
                 policy = TypesettingPolicy(),
                 createdAt = 6L,
+                runId = TYPESETTING_RUN_ID,
+                pageId = TYPESETTING_PAGE_ID,
             ),
         )
     }
 
     private fun publishTypesetting(
         project: Path,
-        cleanupRunKey: String,
+        cleanupRunId: String,
+        cleanupPageId: String = CLEANUP_PAGE_ID,
         policy: TypesettingPolicy,
         createdAt: Long,
-    ): String {
-        val dependencies = TypesettingDependencies(cleanupRunArtifactKey = cleanupRunKey, policy = policy)
-        val runKey = TypesettingIdentity.runArtifactKey(emptyList(), dependencies)
+        runId: String,
+        pageId: String,
+    ): StageRunRef {
+        val dependencies = TypesettingDependencies(cleanupRunArtifactKey = cleanupRunId, policy = policy)
         val json = TypesettingJson()
-        writePublished(
+        val directory = writePublished(
             project,
             "typesetting",
-            runKey,
+            runId,
             json.encodeRun(
                 TypesettingRunArtifact(
-                    runArtifactKey = runKey,
+                    runArtifactKey = runId,
                     projectId = PROJECT_ID,
                     createdAtEpochMillis = createdAt,
                     dependencies = dependencies,
-                    entries = emptyList(),
+                    entries = listOf(
+                        TypesettingRunEntry(
+                            pageId = PAGE_ID,
+                            pageOrder = 0,
+                            cleanupPageArtifactKey = cleanupPageId,
+                            pageArtifactKey = pageId,
+                            state = TypesettingPageState.COMMITTED,
+                            artifactPath = "pages/0000/typesetting.json",
+                            imagePath = "pages/0000/typeset.png",
+                            imageByteLength = 1L,
+                        ),
+                    ),
                 ),
             ),
             json.encodeReport(
                 TypesettingReport(
                     jobId = "typesetting-job-$createdAt",
                     projectId = PROJECT_ID,
-                    runArtifactKey = runKey,
+                    runArtifactKey = runId,
                     startedAtEpochMillis = createdAt - 1L,
                     finishedAtEpochMillis = createdAt,
                     status = TypesettingJobStatus.SUCCEEDED,
-                    totalPageCount = 0,
-                    committedPageCount = 0,
+                    totalPageCount = 1,
+                    committedPageCount = 1,
                     preservedPageCount = 0,
                     typesetRegionCount = 0,
                     preservedRegionCount = 0,
@@ -393,35 +479,51 @@ class ProjectPipelineStateReaderTest {
                 ),
             ),
         )
-        return runKey
+        Files.createDirectories(directory.resolve("pages/0000"))
+        Files.write(
+            directory.resolve("pages/0000/typesetting.json"),
+            json.encodePageArtifact(
+                PageTypesettingArtifact(
+                    pageId = PAGE_ID,
+                    pageOrder = 0,
+                    cleanupPageArtifactKey = cleanupPageId,
+                    pageArtifactKey = pageId,
+                    visibleWidth = 1,
+                    visibleHeight = 1,
+                    renderedImageByteLength = 1L,
+                    dependencies = dependencies,
+                    regions = emptyList(),
+                ),
+            ).toByteArray(),
+        )
+        Files.write(directory.resolve("pages/0000/typeset.png"), byteArrayOf(1))
+        return StageRunRef(runId, pageId)
     }
 
-    private fun publishExport(project: Path, typesettingRunKey: String) {
+    private fun publishExport(project: Path, typesetting: StageRunRef) {
         val destinationUri = "content://rs.masumi.test/tree/library"
-        val destinationKey = ExportIdentity.destinationKey(destinationUri)
+        val destinationId = "export-destination"
         val dependencies = ExportDependencies(
-            typesettingRunArtifactKey = typesettingRunKey,
+            typesettingRunArtifactKey = typesetting.runId,
             policy = ExportPolicy(),
         )
-        val exportKey = ExportIdentity.exportKey(destinationKey, dependencies)
+        val exportId = "export-run"
         val page = ExportJobPage(
-            pageId = SOURCE_SHA,
+            pageId = PAGE_ID,
             pageOrder = 0,
-            sourceSha256 = SOURCE_SHA,
-            typesettingPageArtifactKey = sha('8'),
-            outputName = ExportIdentity.outputName(0, 1, dependencies.policy, "png"),
+            typesettingPageArtifactKey = typesetting.pageId,
+            outputName = "0001.png",
             source = ExportPageSource.FLATTENED,
             state = ExportPageState.COMMITTED,
             attemptCount = 1,
-            outputSha256 = sha('9'),
             byteLength = 1L,
         )
         val job = ExportJobRecord(
             jobId = "export-job",
             projectId = PROJECT_ID,
-            exportKey = exportKey,
+            exportKey = exportId,
             destinationUri = destinationUri,
-            destinationKey = destinationKey,
+            destinationKey = destinationId,
             startedAtEpochMillis = 10L,
             updatedAtEpochMillis = 11L,
             status = ExportJobStatus.SUCCEEDED,
@@ -433,9 +535,9 @@ class ProjectPipelineStateReaderTest {
             ExportReport(
                 jobId = job.jobId,
                 projectId = PROJECT_ID,
-                exportKey = exportKey,
-                destinationKey = destinationKey,
-                typesettingRunArtifactKey = typesettingRunKey,
+                exportKey = exportId,
+                destinationKey = destinationId,
+                typesettingRunArtifactKey = typesetting.runId,
                 startedAtEpochMillis = 10L,
                 finishedAtEpochMillis = 11L,
                 status = ExportJobStatus.SUCCEEDED,
@@ -454,26 +556,36 @@ class ProjectPipelineStateReaderTest {
     private fun writePublished(
         project: Path,
         stage: String,
-        runKey: String,
+        runId: String,
         artifact: String,
         report: String,
-    ): Path = Files.createDirectories(project.resolve("artifacts/$stage/$runKey")).also { directory ->
+    ): Path = Files.createDirectories(project.resolve("artifacts/$stage/$runId")).also { directory ->
         Files.write(directory.resolve("artifact.json"), artifact.toByteArray())
         Files.write(directory.resolve("report.json"), report.toByteArray())
     }
 
     private fun ProjectPipelineState?.requireState(): ProjectPipelineState = requireNotNull(this)
 
-    private fun sha(character: Char): String = character.toString().repeat(64)
-
     private data class CurrentChain(
         val project: Path,
-        val cleanupRunKey: String,
-        val typesettingRunKey: String,
+        val cleanupRunId: String,
+        val typesetting: StageRunRef,
     )
+
+    private data class StageRunRef(val runId: String, val pageId: String)
 
     private companion object {
         const val PROJECT_ID = "project"
-        val SOURCE_SHA = "a".repeat(64)
+        const val PAGE_ID = "page-1"
+        const val DETECTION_RUN_ID = "detection-run-current"
+        const val DETECTION_PAGE_ID = "detection-page-current"
+        const val OCR_RUN_ID = "ocr-run-current"
+        const val OCR_PAGE_ID = "ocr-page-current"
+        const val TRANSLATION_RUN_ID = "translation-run-current"
+        const val TRANSLATION_PAGE_ID = "translation-page-current"
+        const val CLEANUP_RUN_ID = "cleanup-run-current"
+        const val CLEANUP_PAGE_ID = "cleanup-page-current"
+        const val TYPESETTING_RUN_ID = "typesetting-run-current"
+        const val TYPESETTING_PAGE_ID = "typesetting-page-current"
     }
 }

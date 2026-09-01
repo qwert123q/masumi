@@ -143,7 +143,7 @@ backend = "vulkan-preferred-cpu-fallback",
 buildContract = "mtmd-vulkan-pref-t6-image-default-v1",
 ```
 
-Update `PinnedPaddleOcrVl.descriptor.runtime` with the same two runtime strings. Do not change `packageSha256`, model descriptors, generation settings, crop policy, quality thresholds, or `OCR_SCHEMA_VERSION`.
+Update `PinnedPaddleOcrVl.descriptor.runtime` with the same two runtime strings. Do not change the package storage revision, model descriptors, generation settings, crop policy, quality thresholds, or `OCR_SCHEMA_VERSION`.
 
 - [ ] **Step 4: Run focused and complete core tests**
 
@@ -785,7 +785,7 @@ Wait for the OCR notification to reach a terminal state, then record `END_EPOCH=
 - `END_EPOCH - START_EPOCH <= 180` for the complete page;
 - every attempted region reports `executionBackend: "VULKAN"`;
 - no `AndroidRuntime`, native crash, or out-of-memory record appears in `adb logcat`;
-- source and detection hashes remain unchanged;
+- source and detection paths, byte lengths, and explicit lineage remain unchanged;
 - the three-crop terminal policy remains active and uncertain text remains preserved;
 - recognized output on the same crops is not materially worse than the prior CPU safety run.
 

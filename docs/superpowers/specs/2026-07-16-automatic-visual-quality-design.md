@@ -28,9 +28,9 @@ The analyzer compares the committed cleanup PNG with the committed flattened PNG
 
 ## Recovery and privacy
 
-Quality work is checkpointed per page. Cancellation or process loss repeats only the active page. Identity includes the exact typesetting run, page keys, rendered image digests, and versioned quality policy.
+Quality work is checkpointed per page. Cancellation or process loss repeats only the active page. Its lineage records the exact typesetting run, page IDs, rendered-image paths and byte lengths, and versioned quality policy.
 
-Page artifacts and reports contain only stable IDs, digests, geometry, issue codes, severities, and counts. They contain no OCR text, translation text, source filename, API configuration, credential, or external folder URI.
+Page artifacts and reports contain only stable IDs, byte lengths, geometry, issue codes, severities, and counts. They contain no OCR text, translation text, source filename, API configuration, credential, or external folder URI.
 
 ## Export boundary
 

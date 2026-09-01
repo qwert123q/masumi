@@ -56,7 +56,6 @@ import rs.masumi.app.library.MangaLibraryPreferences
 import rs.masumi.app.library.MangaLibraryProject
 import rs.masumi.app.library.MangaLibraryStore
 import rs.masumi.app.library.MangaReaderActivity
-import rs.masumi.app.library.mangaSourceFingerprint
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupPolicy
@@ -996,7 +995,6 @@ class MainActivity : Activity() {
                             .ifBlank { "漫画项目 ${project.manifest.projectId.take(8)}" },
                         createdAtEpochMillis = project.manifest.createdAtEpochMillis,
                         sourceTreeUri = rootUri,
-                        sourceFingerprint = mangaSourceFingerprint(project.manifest.pages),
                     )
                 }
                 store.archiveSourcePages(
@@ -1065,7 +1063,6 @@ class MainActivity : Activity() {
                         title = title,
                         createdAtEpochMillis = outcome.manifest.createdAtEpochMillis,
                         sourceTreeUri = treeUri,
-                        sourceFingerprint = mangaSourceFingerprint(outcome.manifest.pages),
                     )
                     library.archiveSourcePages(
                         projectId = outcome.manifest.projectId,
@@ -1396,7 +1393,9 @@ class MainActivity : Activity() {
             ?: catalog.latestProject()
             ?: return DurableStateSnapshot()
         val projectId = project.manifest.projectId
-        val detectionRun = catalog.latestPublishedRun(projectId)
+        val detectionRun = catalog.publishedDetectionRuns(projectId).firstOrNull {
+            PipelineArtifactFreshness.detection(it.artifact, project.manifest)
+        }
         val detectionProgress = overrides.detection
             ?.takeIf { it.projectId == projectId }
             ?: DurablePipelineProgress.detection(project, detectionRun)
@@ -1405,7 +1404,7 @@ class MainActivity : Activity() {
             catalog.publishedOcrRuns(projectId).firstOrNull {
                 PipelineArtifactFreshness.ocr(
                     it.artifact,
-                    detection.artifact.runArtifactKey,
+                    detection.artifact,
                 )
             }
         }
@@ -1432,7 +1431,7 @@ class MainActivity : Activity() {
             catalog.publishedTranslationRuns(projectId).firstOrNull {
                 PipelineArtifactFreshness.translation(
                     it.artifact,
-                    ocr.artifact.runArtifactKey,
+                    ocr.artifact,
                 )
             }
         }
@@ -1465,7 +1464,7 @@ class MainActivity : Activity() {
             )?.takeIf {
                 PipelineArtifactFreshness.cleanup(
                     it.artifact,
-                    translation.artifact.runArtifactKey,
+                    translation.artifact,
                 )
             }
         }
@@ -1493,7 +1492,9 @@ class MainActivity : Activity() {
                 projectId,
                 cleanup.artifact.runArtifactKey,
                 TypesettingPolicy(),
-            )
+            )?.takeIf {
+                PipelineArtifactFreshness.typesetting(it.artifact, cleanup.artifact)
+            }
         }
         val typesettingProgress = if (cleanupRun == null) {
             null

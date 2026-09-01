@@ -156,7 +156,6 @@ class DetectionJobReducerTest {
         repository = "public/model",
         revision = "revision-1",
         fileName = "model.onnx",
-        sha256 = "c".repeat(64),
         byteLength = 100,
         license = "Apache-2.0",
         opset = 18,

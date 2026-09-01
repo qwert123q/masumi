@@ -7,7 +7,6 @@ import org.junit.Test
 import rs.masumi.app.cleanup.CleanupProgress
 import rs.masumi.app.detection.ProjectRef
 import rs.masumi.core.cleanup.CleanupArtifactStore
-import rs.masumi.core.cleanup.CleanupIdentity
 import rs.masumi.core.cleanup.CleanupJobRecord
 import rs.masumi.core.cleanup.CleanupJobStatus
 import rs.masumi.core.model.ProjectManifest
@@ -17,17 +16,17 @@ class DurablePipelineProgressTest {
     fun `cleanup progress rejects a job from an older neural model identity`() {
         val directory = Files.createTempDirectory("masumi-durable-cleanup")
         try {
-            val translationRun = "a".repeat(64)
+            val translationRun = "translation-run-current"
             val currentDependencies = currentCleanupDependencies(translationRun)
             val staleDependencies = currentDependencies.copy(neuralModel = null)
-            val staleRunKey = CleanupIdentity.runArtifactKey(emptyList(), staleDependencies)
-            val currentRunKey = CleanupIdentity.runArtifactKey(emptyList(), currentDependencies)
+            val staleRunId = "cleanup-run-stale-model"
+            val currentRunId = "cleanup-run-current-model"
             val store = CleanupArtifactStore(directory)
             store.writeJob(
                 CleanupJobRecord(
                     jobId = "stale-cleanup-job",
                     projectId = "project",
-                    runArtifactKey = staleRunKey,
+                    runArtifactKey = staleRunId,
                     startedAtEpochMillis = 1L,
                     updatedAtEpochMillis = 1L,
                     status = CleanupJobStatus.QUEUED,
@@ -39,7 +38,7 @@ class DurablePipelineProgressTest {
                 CleanupJobRecord(
                     jobId = "current-cleanup-job",
                     projectId = "project",
-                    runArtifactKey = currentRunKey,
+                    runArtifactKey = currentRunId,
                     startedAtEpochMillis = 2L,
                     updatedAtEpochMillis = 2L,
                     status = CleanupJobStatus.QUEUED,
@@ -59,14 +58,14 @@ class DurablePipelineProgressTest {
             assertFalse(
                 DurablePipelineProgress.cleanupMatchesTranslation(
                     project,
-                    progress("stale-cleanup-job", staleRunKey),
+                    progress("stale-cleanup-job", staleRunId),
                     translationRun,
                 ),
             )
             assertTrue(
                 DurablePipelineProgress.cleanupMatchesTranslation(
                     project,
-                    progress("current-cleanup-job", currentRunKey),
+                    progress("current-cleanup-job", currentRunId),
                     translationRun,
                 ),
             )

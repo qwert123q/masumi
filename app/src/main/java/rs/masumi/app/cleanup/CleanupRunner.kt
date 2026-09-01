@@ -4,7 +4,6 @@ import rs.masumi.app.PageImageEncoder
 import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import rs.masumi.app.detection.PageBitmapDecoder
@@ -16,6 +15,7 @@ import rs.masumi.app.pipeline.PipelineArtifactFreshness
 import rs.masumi.app.pipeline.SourceFilePreflight
 import rs.masumi.app.pipeline.SourceFilePreflightException
 import rs.masumi.core.cleanup.CleanupArtifactStore
+import rs.masumi.core.cleanup.CLEANUP_SCHEMA_VERSION
 import rs.masumi.core.cleanup.CleanupDependencies
 import rs.masumi.core.cleanup.CleanupError
 import rs.masumi.core.cleanup.CleanupIdentity
@@ -91,17 +91,19 @@ class CleanupRunner(
     ): CleanupRunResult {
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
-        val detectionRun = requireNotNull(catalog.latestPublishedRun(projectId)) {
+        val detectionRun = requireNotNull(catalog.publishedDetectionRuns(projectId).firstOrNull {
+            PipelineArtifactFreshness.detection(it.artifact, project.manifest)
+        }) {
             "completed detection run was not found"
         }
         val currentOcrRun = requireNotNull(
             catalog.publishedOcrRuns(projectId).firstOrNull {
-                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact.runArtifactKey)
+                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact)
             },
         ) { "completed OCR run was not found" }
         val translationRun = requireNotNull(
             catalog.publishedTranslationRuns(projectId).firstOrNull {
-                PipelineArtifactFreshness.translation(it.artifact, currentOcrRun.artifact.runArtifactKey)
+                PipelineArtifactFreshness.translation(it.artifact, currentOcrRun.artifact)
             },
         ) {
             "completed translation run was not found"
@@ -116,25 +118,28 @@ class CleanupRunner(
             maskModel = maskModel,
             neuralModel = neuralModel,
         )
-        val pageKeys = project.manifest.pages.associate { page ->
-            val translationEntry = translationRun.artifact.entries.single { it.pageOrder == page.order }
-            page.order to CleanupIdentity.pageArtifactKey(
-                page.order,
-                page.sourceSha256,
-                translationEntry.pageArtifactKey,
-                dependencies,
-            )
-        }
-        val runKey = CleanupIdentity.runArtifactKey(
-            project.manifest.pages.map { it.order to pageKeys.getValue(it.order) },
-            dependencies,
-        )
         val store = CleanupArtifactStore(project.directory)
-        readPublishedResult(store, project, runKey, dependencies)?.let { cached ->
+        val reusable = catalog.latestPublishedCleanupRun(
+            projectId = projectId,
+            translationRunArtifactKey = translationRun.artifact.runArtifactKey,
+            policy = policy,
+            maskModel = maskModel,
+            neuralModel = neuralModel,
+        )?.takeIf { published ->
+            published.artifact.schemaVersion == CLEANUP_SCHEMA_VERSION &&
+                published.artifact.entries.map { it.pageOrder to it.pageId to it.translationPageArtifactKey } ==
+                project.manifest.pages.map { page ->
+                    val upstream = translationRun.artifact.entries.single { it.pageOrder == page.order }
+                    page.order to page.pageId to upstream.pageArtifactKey
+                }
+        }
+        reusable?.let { published ->
+            val cached = requireNotNull(readPublishedResult(store, project, published.artifact.runArtifactKey, dependencies))
             onProgress(cached.job.toProgress())
             return cached
         }
-        var job = recoverOrCreateJob(store, project, translationRun, pageKeys, runKey, dependencies)
+        var job = recoverOrCreateJob(store, project, translationRun, dependencies)
+        val pageKeys = job.pages.associate { it.pageOrder to it.pageArtifactKey }
         store.prepareRun(job)
         val pageArtifacts = mutableMapOf<Int, PageCleanupArtifact>()
 
@@ -189,6 +194,7 @@ class CleanupRunner(
                             sourcePage.order,
                             artifactPath,
                             imagePath,
+                            artifactAndPng.second.size.toLong(),
                             cleaned,
                             preserved,
                             clock.millis(),
@@ -315,12 +321,11 @@ class CleanupRunner(
                 return PageCleanupArtifact(
                     pageId = sourcePage.pageId,
                     pageOrder = sourcePage.order,
-                    sourceSha256 = sourcePage.sourceSha256,
                     translationPageArtifactKey = translationEntry.pageArtifactKey,
                     pageArtifactKey = pageKey,
                     visibleWidth = cleaned.bitmap.width,
                     visibleHeight = cleaned.bitmap.height,
-                    cleanedImageSha256 = sha256(png),
+                    cleanedImageByteLength = png.size.toLong(),
                     dependencies = dependencies,
                     regions = outcomes,
                 ) to png
@@ -336,12 +341,17 @@ class CleanupRunner(
         store: CleanupArtifactStore,
         project: ProjectRef,
         translationRun: PublishedTranslationRun,
-        pageKeys: Map<Int, String>,
-        runKey: String,
         dependencies: CleanupDependencies,
     ): CleanupJobRecord {
-        val candidate = store.findResumableJob()?.takeIf {
-            it.projectId == project.manifest.projectId && it.runArtifactKey == runKey && it.dependencies == dependencies
+        val candidate = store.findRecoveryCandidates().firstOrNull {
+            it.schemaVersion == CLEANUP_SCHEMA_VERSION &&
+                it.projectId == project.manifest.projectId &&
+                it.dependencies == dependencies &&
+                it.pages.map { page -> page.pageOrder to page.pageId to page.translationPageArtifactKey } ==
+                project.manifest.pages.map { page ->
+                    val upstream = translationRun.artifact.entries.single { it.pageOrder == page.order }
+                    page.order to page.pageId to upstream.pageArtifactKey
+                }
         }
         if (candidate != null) {
             candidate.pages.filter { it.state == CleanupPageState.RUNNING }.forEach {
@@ -358,6 +368,7 @@ class CleanupRunner(
             return recovered
         }
         val now = clock.millis()
+        val runKey = idSource.nextId()
         return CleanupJobRecord(
             jobId = idSource.nextId(),
             projectId = project.manifest.projectId,
@@ -370,9 +381,8 @@ class CleanupRunner(
                 CleanupJobPage(
                     pageId = page.pageId,
                     pageOrder = page.order,
-                    sourceSha256 = page.sourceSha256,
                     translationPageArtifactKey = translationEntry.pageArtifactKey,
-                    pageArtifactKey = pageKeys.getValue(page.order),
+                    pageArtifactKey = CleanupIdentity.pageArtifactKey(runKey, page.order),
                 )
             },
         ).also(store::writeJob)
@@ -431,12 +441,12 @@ class CleanupRunner(
             CleanupRunEntry(
                 pageId = page.pageId,
                 pageOrder = page.pageOrder,
-                sourceSha256 = page.sourceSha256,
                 translationPageArtifactKey = page.translationPageArtifactKey,
                 pageArtifactKey = page.pageArtifactKey,
                 state = page.state,
                 artifactPath = page.artifactPath,
                 imagePath = page.imagePath,
+                imageByteLength = page.imageByteLength,
                 error = page.error,
             )
         },
@@ -479,9 +489,6 @@ class CleanupRunner(
         currentPageOrder = currentPageOrder,
         errorCode = errorCode,
     )
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun Throwable.safePageErrorCode(): String = when (this) {
         is FatalCleanupException -> code

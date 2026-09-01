@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build an installable Android application that atomically imports an image folder into an immutable, content-addressed project and writes deterministic manifest and report artifacts.
+**Goal:** Build an installable Android application that atomically imports an image folder into an immutable, ID-addressed project and writes deterministic manifest and report artifacts.
 
-**Architecture:** Keep Android Storage Access Framework code in `app` and all ordering, hashing, staging, publication, serialization, and reporting rules in the pure Kotlin `pipeline-core` module. Publish a complete project by atomically moving one staged directory, so no partially imported project becomes visible.
+**Architecture:** Keep Android Storage Access Framework code in `app` and all ordering, opaque ID allocation, staging, publication, serialization, and reporting rules in the pure Kotlin `pipeline-core` module. Publish a complete project by atomically moving one staged directory, so no partially imported project becomes visible.
 
 **Tech Stack:** Gradle 8.13, Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Android SDK 36, JDK 17, kotlinx.serialization JSON 1.9.0, JUnit 4.
 
@@ -266,7 +266,6 @@ data class ProjectManifest(
 data class PageRecord(
     val order: Int,
     val pageId: String,
-    val sourceSha256: String,
     val originalName: String,
     val mediaType: String,
     val byteLength: Long,
@@ -274,7 +273,7 @@ data class PageRecord(
 )
 ```
 
-Add `ImportReport`, `ImportStatus`, `ImportError`, and `ProjectJson` using a configured `Json` instance with `prettyPrint`, `encodeDefaults`, and `ignoreUnknownKeys = false`. Provide encode/decode methods for both manifest and report.
+Add `ImportReport`, `ImportStatus`, `ImportError`, and `ProjectJson` using a configured `Json` instance with `prettyPrint`, `encodeDefaults`, and `ignoreUnknownKeys = true` so removed legacy keys remain readable. Provide encode/decode methods for both manifest and report.
 
 - [ ] **Step 4: Run the test and verify GREEN**
 
@@ -302,8 +301,8 @@ git commit -m "feat: define project artifact schemas"
 
 ```kotlin
 @Test
-fun `imports ordered pages and reuses duplicate source objects`() {
-    val importer = importer(ids = listOf("project-1", "job-1"))
+fun `imports ordered pages as independent source objects`() {
+    val importer = importer(ids = listOf("project-1", "job-1", "page-1", "page-2", "page-3"))
     val outcome = importer.importProject(
         listOf(
             bytes("2.jpg", "same"),
@@ -313,8 +312,8 @@ fun `imports ordered pages and reuses duplicate source objects`() {
     )
 
     assertEquals(listOf("1.jpg", "2.jpg", "10.png"), outcome.manifest.pages.map { it.originalName })
-    assertEquals(outcome.manifest.pages[0].pageId, outcome.manifest.pages[1].pageId)
-    assertEquals(2, Files.list(outcome.projectDirectory.resolve("sources")).use { it.count() })
+    assertEquals(listOf("page-1", "page-2", "page-3"), outcome.manifest.pages.map { it.pageId })
+    assertEquals(3, Files.list(outcome.projectDirectory.resolve("sources")).use { it.count() })
     assertTrue(Files.exists(outcome.projectDirectory.resolve("manifest.json")))
 }
 ```
@@ -339,7 +338,7 @@ class ProjectImporter(
 }
 ```
 
-The method obtains project and job IDs, selects sources, streams each accepted source to a temporary file while updating SHA-256, moves completed files to `sources/<digest>.<extension>`, writes manifest and reports inside staging, and publishes by atomically moving the staged directory to `projects/<projectId>`.
+The method obtains project and job IDs, selects sources, allocates a page ID for each accepted entry, streams each source once while counting bytes, moves completed files to `sources/<pageId>.<extension>`, writes manifest and reports inside staging, and publishes by atomically moving the staged directory to `projects/<projectId>`.
 
 `ProjectFileSystem.publishDirectory` must request `StandardCopyOption.ATOMIC_MOVE` and fail if atomic directory replacement is unavailable. It must never silently fall back to a partially visible recursive copy.
 
@@ -347,7 +346,7 @@ The method obtains project and job IDs, selects sources, streams each accepted s
 
 Run: `./gradlew :pipeline-core:test --tests '*ProjectImporterTest.imports*'`
 
-Expected: the project contains three ordered page entries, two source objects, a manifest, and both report formats.
+Expected: the project contains three ordered page entries, three source objects, a manifest, and both report formats.
 
 - [ ] **Step 5: Commit immutable import**
 

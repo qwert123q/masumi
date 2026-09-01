@@ -125,7 +125,7 @@ stays paused and `3585406` stays untouched.
    ordinary attempts retain the current low-cost profile.
 3. A recognized high-detail retry wins. A final unresolved result is protected
    and diagnosed internally; processing continues normally.
-4. Version/hash crop, high-detail and quality policy inputs so stale OCR cache
+4. Record crop, high-detail, and quality-policy inputs explicitly so stale OCR cache
    entries cannot masquerade as the optimized behavior.
 
 ## Task 5: Reject Japanese/echo translations and make retry/glossary safe

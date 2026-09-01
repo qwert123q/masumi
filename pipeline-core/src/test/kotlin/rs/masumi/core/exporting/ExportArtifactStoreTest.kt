@@ -26,7 +26,7 @@ class ExportArtifactStoreTest {
         val store = ExportArtifactStore(root)
         var job = ExportJobReducer.start(ExportFixtures.job(), 2L)
         job = ExportJobReducer.startPage(job, 0, 3L)
-        job = ExportJobReducer.commitPage(job, 0, "a".repeat(64), 12L, true, 4L)
+        job = ExportJobReducer.commitPage(job, 0, 12L, true, 4L)
         store.writeJob(job)
         job = ExportJobReducer.finishSuccess(job, 5L)
         val report = ExportReport(

@@ -3,7 +3,6 @@ package rs.masumi.app.exporting
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.DocumentsContract
-import java.security.MessageDigest
 
 data class DestinationWriteResult(val reusedExisting: Boolean)
 
@@ -16,15 +15,15 @@ internal fun destinationOutputNamesMatch(
     expectedNames: Set<String>,
 ): Boolean = actualNames.size == expectedNames.size && actualNames.toSet() == expectedNames
 
-internal fun <T : Any> unusableRenameDocument(temporary: T, renamed: T?): T = renamed ?: temporary
+internal fun destinationOutputLengthMatches(actualByteLength: Long?, expectedByteLength: Long): Boolean =
+    expectedByteLength > 0L && actualByteLength == expectedByteLength
 
 interface FolderExportDestination {
-    fun matches(outputName: String, expectedSha256: String, expectedByteLength: Long): Boolean
+    fun matches(outputName: String, expectedByteLength: Long): Boolean
 
     fun publish(
         outputName: String,
         bytes: ByteArray,
-        expectedSha256: String,
         cancellation: () -> Boolean,
     ): DestinationWriteResult
 
@@ -46,7 +45,6 @@ class SafFolderExportDestination(
 ) : FolderExportDestination {
     private val treeUri = Uri.parse(treeUriString)
     private val parentUri: Uri
-    private val temporaryPrefix = ".masumi-${jobId.take(32)}-"
     private val stagingName = "${rs.masumi.app.library.OutputGeneration.STAGING_PREFIX}${jobId.take(48)}"
     private var workingDirectoryUri: Uri
     private var published = false
@@ -75,70 +73,49 @@ class SafFolderExportDestination(
         }
     }
 
-    override fun matches(outputName: String, expectedSha256: String, expectedByteLength: Long): Boolean {
+    override fun matches(outputName: String, expectedByteLength: Long): Boolean {
         val exact = children(workingDirectoryUri).filter { it.displayName == outputName }
         if (exact.size != 1) return false
-        return verify(exact.single().uri, expectedSha256, expectedByteLength) { false }
+        return destinationOutputLengthMatches(exact.single().byteLength, expectedByteLength)
     }
 
     override fun publish(
         outputName: String,
         bytes: ByteArray,
-        expectedSha256: String,
         cancellation: () -> Boolean,
     ): DestinationWriteResult {
         require(OUTPUT_NAME.matches(outputName))
-        require(SHA256.matches(expectedSha256) && bytes.isNotEmpty())
+        require(bytes.isNotEmpty())
         if (cancellation()) throw ExportCancellationSignal()
         if (published) rollbackCommittedSet()
         val existing = children(workingDirectoryUri).filter { it.displayName == outputName }
-        if (existing.size == 1 && verify(existing.single().uri, expectedSha256, bytes.size.toLong(), cancellation)) {
+        if (
+            existing.size == 1 &&
+            destinationOutputLengthMatches(existing.single().byteLength, bytes.size.toLong())
+        ) {
             return DestinationWriteResult(reusedExisting = true)
         }
-        val temporaryName = "$temporaryPrefix$outputName"
-        children(workingDirectoryUri).filter { it.displayName == temporaryName }.forEach { deleteQuietly(it.uri) }
-        val temporary = create(workingDirectoryUri, temporaryName)
-        var promoted = false
+        existing.forEach { document ->
+            if (!delete(document.uri)) throw ExportDestinationException("DESTINATION_REPLACE_FAILED")
+        }
+        val outputUri = create(workingDirectoryUri, outputName)
+        var complete = false
         try {
-            writeBytes(temporary, bytes, cancellation)
+            if (displayName(outputUri) != outputName) {
+                throw ExportDestinationException("DESTINATION_NAMING_UNSUPPORTED")
+            }
+            writeBytes(outputUri, bytes, cancellation)
             if (cancellation()) throw ExportCancellationSignal()
-            children(workingDirectoryUri).filter { it.displayName == outputName }.forEach { document ->
-                if (!delete(document.uri)) throw ExportDestinationException("DESTINATION_REPLACE_FAILED")
-            }
-            val renamed = runCatching {
-                DocumentsContract.renameDocument(resolver, temporary, outputName)
-            }.getOrNull()
-            val finalUri = if (renamed != null && displayName(renamed) == outputName) {
-                promoted = true
-                renamed
-            } else {
-                val staleDocuments = linkedSetOf(unusableRenameDocument(temporary, renamed))
-                children(workingDirectoryUri)
-                    .filter { it.displayName == temporaryName }
-                    .mapTo(staleDocuments, DocumentRef::uri)
-                staleDocuments.forEach { stale ->
-                    if (!delete(stale)) throw ExportDestinationException("DESTINATION_REPLACE_FAILED")
-                }
-                val direct = create(workingDirectoryUri, outputName)
-                try {
-                    if (displayName(direct) != outputName) {
-                        throw ExportDestinationException("DESTINATION_NAMING_UNSUPPORTED")
-                    }
-                    writeBytes(direct, bytes, cancellation)
-                    promoted = true
-                    deleteQuietly(temporary)
-                    direct
-                } catch (failure: Throwable) {
-                    deleteQuietly(direct)
-                    throw failure
-                }
-            }
-            if (!verify(finalUri, expectedSha256, bytes.size.toLong(), cancellation)) {
-                deleteQuietly(finalUri)
+            val publishedDocuments = children(workingDirectoryUri).filter { it.displayName == outputName }
+            val publishedDocument = publishedDocuments.singleOrNull()
+            if (
+                publishedDocument == null ||
+                publishedDocument.uri != outputUri ||
+                !destinationOutputLengthMatches(publishedDocument.byteLength, bytes.size.toLong())
+            ) {
                 throw ExportDestinationException("DESTINATION_FINAL_VERIFY_FAILED")
             }
-            val duplicates = children(workingDirectoryUri).filter { it.displayName == outputName && it.uri != finalUri }
-            duplicates.forEach { deleteQuietly(it.uri) }
+            complete = true
             return DestinationWriteResult(reusedExisting = false)
         } catch (failure: SecurityException) {
             throw ExportDestinationException("DESTINATION_PERMISSION_DENIED")
@@ -149,7 +126,7 @@ class SafFolderExportDestination(
         } catch (_: Throwable) {
             throw ExportDestinationException("DESTINATION_WRITE_FAILED")
         } finally {
-            if (!promoted) deleteQuietly(temporary)
+            if (!complete) deleteQuietly(outputUri)
         }
     }
 
@@ -164,7 +141,6 @@ class SafFolderExportDestination(
                 if (!delete(document.uri)) throw ExportDestinationException("DESTINATION_PRUNE_FAILED")
             }
         val actual = children(workingDirectoryUri)
-            .filter { it.mimeType.startsWith("image/") }
             .map(DocumentRef::displayName)
         if (!destinationOutputNamesMatch(actual, expectedNames)) {
             throw ExportDestinationException("DESTINATION_FINAL_SET_INVALID")
@@ -202,12 +178,10 @@ class SafFolderExportDestination(
 
     override fun pruneManagedOutputs() {
         check(published) { "generation must be committed before pruning" }
-        children(parentUri).filter { document ->
-            OUTPUT_NAME.matches(document.displayName) ||
-                document.displayName.startsWith(rs.masumi.app.library.OutputGeneration.STAGING_PREFIX)
-        }.forEach { document ->
-            if (!delete(document.uri)) throw ExportDestinationException("DESTINATION_PRUNE_FAILED")
-        }
+        // The selected SAF directory may contain user-owned numeric images or
+        // another recoverable export's staging directory. After this job's
+        // staging directory has been renamed to its published generation there
+        // is no remaining root entry whose ownership this instance can prove.
     }
 
     private fun writeBytes(
@@ -227,32 +201,6 @@ class SafFolderExportDestination(
         } ?: throw ExportDestinationException("DESTINATION_OPEN_FAILED")
     }
 
-    private fun verify(
-        uri: Uri,
-        expectedSha256: String,
-        expectedByteLength: Long,
-        cancellation: () -> Boolean,
-    ): Boolean = runCatching {
-        val digest = MessageDigest.getInstance("SHA-256")
-        var total = 0L
-        resolver.openInputStream(uri)?.buffered()?.use { input ->
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (true) {
-                if (cancellation()) throw ExportCancellationSignal()
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read > 0) {
-                    digest.update(buffer, 0, read)
-                    total += read
-                }
-            }
-        } ?: return@runCatching false
-        total == expectedByteLength && digest.digest().joinToString("") { "%02x".format(it) } == expectedSha256
-    }.getOrElse {
-        if (it is ExportCancellationSignal) throw it
-        false
-    }
-
     private fun children(directoryUri: Uri): List<DocumentRef> {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
             treeUri,
@@ -265,6 +213,7 @@ class SafFolderExportDestination(
                     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                     DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE,
                 ),
                 null,
                 null,
@@ -273,6 +222,7 @@ class SafFolderExportDestination(
                 val idColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val typeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
                 buildList {
                     while (cursor.moveToNext()) {
                         val id = cursor.getString(idColumn)
@@ -282,6 +232,7 @@ class SafFolderExportDestination(
                                 DocumentsContract.buildDocumentUriUsingTree(treeUri, id),
                                 name,
                                 cursor.getString(typeColumn) ?: "application/octet-stream",
+                                if (cursor.isNull(sizeColumn)) null else cursor.getLong(sizeColumn),
                             ),
                         )
                     }
@@ -332,12 +283,16 @@ class SafFolderExportDestination(
         ) ?: throw ExportDestinationException("DESTINATION_CREATE_FAILED")
     }
 
-    private data class DocumentRef(val uri: Uri, val displayName: String, val mimeType: String)
+    private data class DocumentRef(
+        val uri: Uri,
+        val displayName: String,
+        val mimeType: String,
+        val byteLength: Long?,
+    )
 
     private companion object {
         const val BUFFER_SIZE = 64 * 1024
         val OUTPUT_NAME = Regex("[0-9]{1,12}\\.(png|webp)")
-        val SHA256 = Regex("[0-9a-f]{64}")
     }
 }
 

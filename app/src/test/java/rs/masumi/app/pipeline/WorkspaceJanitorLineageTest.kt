@@ -29,7 +29,6 @@ import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
 import rs.masumi.core.serialization.TypesettingJson
-import rs.masumi.core.translation.TranslationArtifactIdentity
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationDependencies
 import rs.masumi.core.translation.TranslationGlossaryArtifact
@@ -61,8 +60,7 @@ class WorkspaceJanitorLineageTest {
                         pages = listOf(
                             PageRecord(
                                 order = 0,
-                                pageId = sha('a'),
-                                sourceSha256 = sha('a'),
+                                pageId = "page-1",
                                 originalName = "page.png",
                                 mediaType = "image/png",
                                 byteLength = 1L,
@@ -72,12 +70,12 @@ class WorkspaceJanitorLineageTest {
                     ),
                 ).toByteArray(),
             )
-            val detectionKey = sha('1')
-            val ocrKey = sha('2')
-            val translationKey = sha('3')
-            val cleanupKey = sha('4')
-            val typesettingKey = sha('5')
-            val qualityKey = sha('6')
+            val detectionKey = "detection-run-current"
+            val ocrKey = "ocr-run-legacy-policy"
+            val translationKey = "translation-run-current"
+            val cleanupKey = "cleanup-run-current"
+            val typesettingKey = "typesetting-run-current"
+            val qualityKey = "quality-run-legacy"
             publishDetection(project, projectId, detectionKey)
             publishStaleOcr(project, projectId, detectionKey, ocrKey)
             publishTranslation(project, projectId, ocrKey, translationKey)
@@ -87,7 +85,7 @@ class WorkspaceJanitorLineageTest {
             Files.write(legacyQuality.resolve("legacy.bin"), ByteArray(1024))
 
             val superseded = Files.createDirectories(
-                project.resolve("artifacts/cleanup/${sha('7')}"),
+                project.resolve("artifacts/cleanup/cleanup-run-superseded"),
             )
             Files.write(superseded.resolve("orphan.bin"), ByteArray(4096))
             val stale = FileTime.from(
@@ -197,7 +195,6 @@ class WorkspaceJanitorLineageTest {
 
     private fun publishTranslation(project: Path, projectId: String, ocrKey: String, runKey: String) {
         val json = TranslationJson()
-        val glossarySha = TranslationArtifactIdentity.glossarySha256(emptyList())
         val dependencies = TranslationDependencies(
             ocrRunArtifactKey = ocrKey,
             policy = TranslationPolicy(),
@@ -210,7 +207,7 @@ class WorkspaceJanitorLineageTest {
                 maximumOutputTokens = 1,
                 requestJsonObjectFormat = true,
             ),
-            initialGlossarySha256 = glossarySha,
+            initialGlossary = emptyList(),
         )
         val directory = writePublished(
             project,
@@ -252,7 +249,6 @@ class WorkspaceJanitorLineageTest {
             directory.resolve("glossary.json"),
             json.encodeGlossary(
                 TranslationGlossaryArtifact(
-                    sha256 = glossarySha,
                     entries = emptyList(),
                 ),
             ).toByteArray(),
@@ -351,6 +347,4 @@ class WorkspaceJanitorLineageTest {
         Files.write(it.resolve("artifact.json"), artifact.toByteArray())
         Files.write(it.resolve("report.json"), report.toByteArray())
     }
-
-    private fun sha(character: Char): String = character.toString().repeat(64)
 }

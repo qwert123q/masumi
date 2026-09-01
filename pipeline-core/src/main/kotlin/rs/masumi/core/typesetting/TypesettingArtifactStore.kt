@@ -2,6 +2,7 @@ package rs.masumi.core.typesetting
 
 import java.nio.file.Path
 import java.util.UUID
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.io.NioProjectFileSystem
 import rs.masumi.core.io.ProjectFileSystem
 import rs.masumi.core.serialization.TypesettingJson
@@ -14,21 +15,21 @@ class TypesettingArtifactStore(
     private val projectDirectory = projectDirectory.toAbsolutePath().normalize()
 
     fun writeJob(job: TypesettingJobRecord) {
-        requireSafeId(job.jobId)
-        requireSha256(job.runArtifactKey)
+        SafeOpaqueId.require(job.jobId, "jobId")
+        SafeOpaqueId.require(job.runArtifactKey, "runArtifactKey")
         val jobs = projectDirectory.resolve("jobs")
         fileSystem.createDirectories(jobs)
         fileSystem.replaceUtf8(jobs.resolve("${job.jobId}.json"), json.encodeJob(job))
     }
 
     fun readJob(jobId: String): TypesettingJobRecord? {
-        requireSafeId(jobId)
+        SafeOpaqueId.require(jobId, "jobId")
         val path = projectDirectory.resolve("jobs/$jobId.json")
         if (!fileSystem.exists(path)) return null
         return runCatching { json.decodeJob(fileSystem.readUtf8(path)).also { require(it.jobId == jobId) } }.getOrNull()
     }
 
-    fun findResumableJob(): TypesettingJobRecord? = fileSystem.list(projectDirectory.resolve("jobs"))
+    fun findRecoveryCandidates(): List<TypesettingJobRecord> = fileSystem.list(projectDirectory.resolve("jobs"))
         .asSequence()
         .filter { it.fileName.toString().endsWith(".json") }
         .mapNotNull { runCatching { json.decodeJob(fileSystem.readUtf8(it)) }.getOrNull() }
@@ -39,7 +40,10 @@ class TypesettingArtifactStore(
                 TypesettingJobStatus.CANCELLED,
             )
         }
-        .maxWithOrNull(compareBy<TypesettingJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
+        .sortedWith(compareByDescending<TypesettingJobRecord> { it.updatedAtEpochMillis }.thenByDescending { it.jobId })
+        .toList()
+
+    fun findResumableJob(): TypesettingJobRecord? = findRecoveryCandidates().firstOrNull()
 
     fun prepareRun(job: TypesettingJobRecord) {
         fileSystem.createDirectories(checkpointDirectory(job))
@@ -61,6 +65,8 @@ class TypesettingArtifactStore(
         require(imageExtension in SUPPORTED_IMAGE_EXTENSIONS)
         val page = job.pages.single { it.pageOrder == artifact.pageOrder }
         require(page.state == TypesettingPageState.RUNNING)
+        require(renderedImage.isNotEmpty())
+        require(artifact.renderedImageByteLength == renderedImage.size.toLong())
         requireValidPageArtifact(artifact, page, job.dependencies)
         val directory = pageDirectory(checkpointDirectory(job), page)
         fileSystem.createDirectories(directory)
@@ -76,6 +82,7 @@ class TypesettingArtifactStore(
                     state = TypesettingPageState.COMMITTED,
                     artifactPath = artifactPath,
                     imagePath = imagePath,
+                    imageByteLength = renderedImage.size.toLong(),
                 ),
             ) == artifact,
         )
@@ -90,6 +97,10 @@ class TypesettingArtifactStore(
         require(fileSystem.exists(artifactPath) && fileSystem.exists(imagePath))
         json.decodePageArtifact(fileSystem.readUtf8(artifactPath)).also { artifact ->
             requireValidPageArtifact(artifact, page, job.dependencies)
+            val actualByteLength = fileSystem.byteLength(imagePath)
+            require(actualByteLength > 0L)
+            require(artifact.renderedImageByteLength in setOf(0L, actualByteLength))
+            require(page.imageByteLength in setOf(0L, actualByteLength))
         }
     }.getOrNull()
 
@@ -113,7 +124,7 @@ class TypesettingArtifactStore(
     }
 
     fun readPublishedRun(runKey: String): TypesettingRunArtifact? {
-        requireSha256(runKey)
+        SafeOpaqueId.require(runKey, "runKey")
         val root = publishedDirectory(runKey)
         val path = root.resolve("artifact.json")
         if (!fileSystem.exists(path)) return null
@@ -125,7 +136,7 @@ class TypesettingArtifactStore(
     }
 
     fun readPublishedReport(runKey: String): TypesettingReport? {
-        requireSha256(runKey)
+        SafeOpaqueId.require(runKey, "runKey")
         val path = publishedDirectory(runKey).resolve("report.json")
         if (!fileSystem.exists(path)) return null
         return runCatching {
@@ -143,6 +154,10 @@ class TypesettingArtifactStore(
         require(fileSystem.exists(artifactPath) && fileSystem.exists(imagePath))
         val artifact = json.decodePageArtifact(fileSystem.readUtf8(artifactPath))
         require(artifact.pageOrder == entry.pageOrder && artifact.pageArtifactKey == entry.pageArtifactKey)
+        val actualByteLength = fileSystem.byteLength(imagePath)
+        require(actualByteLength > 0L)
+        require(artifact.renderedImageByteLength in setOf(0L, actualByteLength))
+        require(entry.imageByteLength in setOf(0L, actualByteLength))
         artifact
     }.getOrNull()
 
@@ -157,6 +172,10 @@ class TypesettingArtifactStore(
                 require(artifact.pageId == entry.pageId)
                 require(artifact.pageArtifactKey == entry.pageArtifactKey)
                 require(artifact.dependencies == run.dependencies)
+                val actualByteLength = fileSystem.byteLength(imagePath)
+                require(actualByteLength > 0L)
+                require(artifact.renderedImageByteLength in setOf(0L, actualByteLength))
+                require(entry.imageByteLength in setOf(0L, actualByteLength))
             }.isSuccess
             TypesettingPageState.PRESERVED_CLEANED_PAGE ->
                 entry.artifactPath == null && entry.imagePath == null && entry.error != null
@@ -173,19 +192,18 @@ class TypesettingArtifactStore(
     ) {
         require(artifact.schemaVersion == TYPESETTING_SCHEMA_VERSION)
         require(artifact.pageId == page.pageId && artifact.pageOrder == page.pageOrder)
-        require(artifact.sourceSha256 == page.sourceSha256)
         require(artifact.cleanupPageArtifactKey == page.cleanupPageArtifactKey)
         require(artifact.pageArtifactKey == page.pageArtifactKey)
         require(artifact.dependencies == dependencies)
         require(artifact.visibleWidth > 0 && artifact.visibleHeight > 0)
-        requireSha256(artifact.renderedImageSha256)
+        require(artifact.renderedImageByteLength >= 0L)
         artifact.reusedFromPageArtifactKey?.let {
-            requireSha256(it)
+            SafeOpaqueId.require(it, "reusedFromPageArtifactKey")
             require(it != artifact.pageArtifactKey)
         }
         artifact.regions.forEach { region ->
-            requireSha256(region.ocrRegionId)
-            region.translationRegionId?.let(::requireSha256)
+            SafeOpaqueId.require(region.ocrRegionId, "ocrRegionId")
+            region.translationRegionId?.let { SafeOpaqueId.require(it, "translationRegionId") }
             require(region.lineOrColumnCount >= 0 && region.changedPixelCount >= 0)
             when (region.state) {
                 TypesettingRegionState.TYPESET -> {
@@ -202,7 +220,7 @@ class TypesettingArtifactStore(
 
     private fun replaceUnique(path: Path, bytes: ByteArray) {
         if (fileSystem.exists(path)) {
-            require(fileSystem.readBytes(path).contentEquals(bytes))
+            require(fileSystem.byteLength(path) == bytes.size.toLong())
             return
         }
         val part = path.resolveSibling(".${path.fileName}.${UUID.randomUUID()}.part")
@@ -232,12 +250,7 @@ class TypesettingArtifactStore(
         return resolved
     }
 
-    private fun requireSafeId(value: String) = require(SAFE_ID.matches(value))
-    private fun requireSha256(value: String) = require(SHA256.matches(value))
-
     private companion object {
-        val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA256 = Regex("[0-9a-f]{64}")
         val SUPPORTED_IMAGE_EXTENSIONS = setOf("png", "webp")
     }
 }

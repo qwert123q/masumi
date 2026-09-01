@@ -1,6 +1,5 @@
 package rs.masumi.core.typesetting
 
-import java.security.MessageDigest
 import rs.masumi.core.detection.PixelBox
 
 object TypesettingFixtures {
@@ -9,7 +8,7 @@ object TypesettingFixtures {
     fun job(): TypesettingJobRecord = TypesettingJobRecord(
         jobId = "typesetting-job",
         projectId = "project-1",
-        runArtifactKey = "b".repeat(64),
+        runArtifactKey = "typesetting-run",
         startedAtEpochMillis = 1L,
         updatedAtEpochMillis = 1L,
         dependencies = dependencies,
@@ -17,9 +16,8 @@ object TypesettingFixtures {
             TypesettingJobPage(
                 pageId = "c".repeat(64),
                 pageOrder = 0,
-                sourceSha256 = "c".repeat(64),
                 cleanupPageArtifactKey = "d".repeat(64),
-                pageArtifactKey = "e".repeat(64),
+                pageArtifactKey = TypesettingIdentity.pageArtifactKey("typesetting-run", 0),
             ),
         ),
     )
@@ -27,12 +25,11 @@ object TypesettingFixtures {
     fun artifact(png: ByteArray): PageTypesettingArtifact = PageTypesettingArtifact(
         pageId = "c".repeat(64),
         pageOrder = 0,
-        sourceSha256 = "c".repeat(64),
         cleanupPageArtifactKey = "d".repeat(64),
-        pageArtifactKey = "e".repeat(64),
+        pageArtifactKey = TypesettingIdentity.pageArtifactKey("typesetting-run", 0),
         visibleWidth = 100,
         visibleHeight = 200,
-        renderedImageSha256 = sha256(png),
+        renderedImageByteLength = png.size.toLong(),
         dependencies = dependencies,
         regions = listOf(
             TypesettingRegionArtifact(
@@ -49,7 +46,4 @@ object TypesettingFixtures {
             ),
         ),
     )
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 }

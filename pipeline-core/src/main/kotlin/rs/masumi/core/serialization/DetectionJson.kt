@@ -14,7 +14,7 @@ class DetectionJson(
         prettyPrint = true
         encodeDefaults = true
         explicitNulls = true
-        ignoreUnknownKeys = false
+        ignoreUnknownKeys = true
     },
 ) {
     fun encodePageArtifact(artifact: PageDetectionArtifact): String = json.encodeToString(artifact)

@@ -1,6 +1,7 @@
 package rs.masumi.core.exporting
 
 import java.nio.file.Path
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.io.NioProjectFileSystem
 import rs.masumi.core.io.ProjectFileSystem
 import rs.masumi.core.serialization.ExportJson
@@ -21,7 +22,7 @@ class ExportArtifactStore(
     }
 
     fun readJob(jobId: String): ExportJobRecord? {
-        requireSafeId(jobId)
+        SafeOpaqueId.require(jobId, "jobId")
         val path = jobsDirectory.resolve("$jobId.json")
         if (!fileSystem.exists(path)) return null
         return runCatching {
@@ -39,7 +40,7 @@ class ExportArtifactStore(
         .filter { runCatching { requireValidJob(it) }.isSuccess }
         .maxWithOrNull(compareBy<ExportJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
 
-    fun findRecoverableJob(): ExportJobRecord? = fileSystem.list(jobsDirectory)
+    fun findRecoveryCandidates(): List<ExportJobRecord> = fileSystem.list(jobsDirectory)
         .asSequence()
         .filter { it.fileName.toString().endsWith(".json") }
         .mapNotNull { runCatching { json.decodeJob(fileSystem.readUtf8(it)) }.getOrNull() }
@@ -52,7 +53,10 @@ class ExportArtifactStore(
             )
         }
         .filter { runCatching { requireValidJob(it) }.isSuccess }
-        .maxWithOrNull(compareBy<ExportJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
+        .sortedWith(compareByDescending<ExportJobRecord> { it.updatedAtEpochMillis }.thenByDescending { it.jobId })
+        .toList()
+
+    fun findRecoverableJob(): ExportJobRecord? = findRecoveryCandidates().firstOrNull()
 
     fun writeReport(report: ExportReport) {
         requireValidReport(report)
@@ -78,7 +82,7 @@ class ExportArtifactStore(
     }
 
     fun readReport(jobId: String): ExportReport? {
-        requireSafeId(jobId)
+        SafeOpaqueId.require(jobId, "jobId")
         val path = reportsDirectory.resolve("$jobId.json")
         if (!fileSystem.exists(path)) return null
         return runCatching {
@@ -92,24 +96,21 @@ class ExportArtifactStore(
 
     private fun requireValidJob(job: ExportJobRecord) {
         require(job.schemaVersion == EXPORT_SCHEMA_VERSION)
-        requireSafeId(job.jobId)
-        requireSafeId(job.projectId)
-        requireSha256(job.exportKey)
-        requireSha256(job.destinationKey)
-        requireSha256(job.dependencies.typesettingRunArtifactKey)
+        SafeOpaqueId.require(job.jobId, "jobId")
+        SafeOpaqueId.require(job.projectId, "projectId")
+        SafeOpaqueId.require(job.exportKey, "exportKey")
+        SafeOpaqueId.require(job.destinationKey, "destinationKey")
+        SafeOpaqueId.require(job.dependencies.typesettingRunArtifactKey, "typesettingRunArtifactKey")
         if (job.dependencies.qualityRunArtifactKey.isNotEmpty()) {
-            requireSha256(job.dependencies.qualityRunArtifactKey)
+            SafeOpaqueId.require(job.dependencies.qualityRunArtifactKey, "qualityRunArtifactKey")
         }
         require(job.destinationUri.isNotBlank())
-        require(job.destinationKey == ExportIdentity.destinationKey(job.destinationUri))
-        require(job.exportKey == ExportIdentity.exportKey(job.destinationKey, job.dependencies))
         require(job.pages.isNotEmpty())
         require(job.pages.map { it.pageOrder } == job.pages.indices.toList())
         require(job.pages.map { it.outputName }.distinct().size == job.pages.size)
         job.pages.forEach { page ->
-            requireSha256(page.pageId)
-            requireSha256(page.sourceSha256)
-            requireSha256(page.typesettingPageArtifactKey)
+            SafeOpaqueId.require(page.pageId, "pageId")
+            SafeOpaqueId.require(page.typesettingPageArtifactKey, "typesettingPageArtifactKey")
             require(OUTPUT_NAME.matches(page.outputName))
             // The extension follows the artifact encoding of the page's source,
             // so identity is validated for the extension the page carries.
@@ -123,23 +124,22 @@ class ExportArtifactStore(
             )
             require(page.attemptCount >= 0 && page.byteLength >= 0L)
             if (page.state == ExportPageState.COMMITTED) {
-                requireSha256(requireNotNull(page.outputSha256))
                 require(page.byteLength > 0L && page.error == null)
             } else {
-                require(page.outputSha256 == null && page.byteLength == 0L)
+                require(page.byteLength == 0L)
             }
         }
     }
 
     private fun requireValidReport(report: ExportReport) {
         require(report.schemaVersion == EXPORT_SCHEMA_VERSION)
-        requireSafeId(report.jobId)
-        requireSafeId(report.projectId)
-        requireSha256(report.exportKey)
-        requireSha256(report.destinationKey)
-        requireSha256(report.typesettingRunArtifactKey)
+        SafeOpaqueId.require(report.jobId, "jobId")
+        SafeOpaqueId.require(report.projectId, "projectId")
+        SafeOpaqueId.require(report.exportKey, "exportKey")
+        SafeOpaqueId.require(report.destinationKey, "destinationKey")
+        SafeOpaqueId.require(report.typesettingRunArtifactKey, "typesettingRunArtifactKey")
         if (report.qualityRunArtifactKey.isNotEmpty()) {
-            requireSha256(report.qualityRunArtifactKey)
+            SafeOpaqueId.require(report.qualityRunArtifactKey, "qualityRunArtifactKey")
         }
         require(report.status == ExportJobStatus.SUCCEEDED && report.error == null)
         require(report.totalPageCount > 0 && report.exportedPageCount == report.totalPageCount)
@@ -167,12 +167,7 @@ class ExportArtifactStore(
         require(report.totalByteCount == job.pages.sumOf { it.byteLength })
     }
 
-    private fun requireSafeId(value: String) = require(SAFE_ID.matches(value))
-    private fun requireSha256(value: String) = require(SHA256.matches(value))
-
     private companion object {
-        val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA256 = Regex("[0-9a-f]{64}")
         val OUTPUT_NAME = Regex("[0-9]{1,12}\\.(png|webp)")
     }
 }

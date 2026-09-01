@@ -167,7 +167,6 @@ class DetectionArtifactStoreTest {
 
     private fun pageArtifact(): PageDetectionArtifact = PageDetectionArtifact(
         pageId = PAGE_ID,
-        sourceSha256 = PAGE_ID,
         pageArtifactKey = PAGE_KEY,
         visibleWidth = 100,
         visibleHeight = 200,
@@ -233,7 +232,6 @@ class DetectionArtifactStoreTest {
         repository = "public/model",
         revision = "revision-1",
         fileName = "model.onnx",
-        sha256 = "c".repeat(64),
         byteLength = 100,
         license = "Apache-2.0",
         opset = 18,

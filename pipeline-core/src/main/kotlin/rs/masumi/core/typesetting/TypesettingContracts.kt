@@ -44,6 +44,8 @@ data class TypesettingDependencies(
     val schemaVersion: Int = TYPESETTING_SCHEMA_VERSION,
     val cleanupRunArtifactKey: String,
     val policy: TypesettingPolicy = TypesettingPolicy(),
+    val reuseRunArtifactKey: String = "",
+    val reprocessPageOrders: List<Int> = emptyList(),
 )
 
 @Serializable
@@ -86,12 +88,13 @@ data class PageTypesettingArtifact(
     val schemaVersion: Int = TYPESETTING_SCHEMA_VERSION,
     val pageId: String,
     val pageOrder: Int,
-    val sourceSha256: String,
     val cleanupPageArtifactKey: String,
     val pageArtifactKey: String,
     val visibleWidth: Int,
     val visibleHeight: Int,
-    val renderedImageSha256: String,
+    // Zero is accepted only when decoding a legacy checkpoint that predated
+    // persisted byte lengths; stores still require the image itself to be non-empty.
+    val renderedImageByteLength: Long = 0L,
     val reusedFromPageArtifactKey: String? = null,
     val dependencies: TypesettingDependencies,
     val regions: List<TypesettingRegionArtifact>,
@@ -117,13 +120,13 @@ data class TypesettingError(val code: String)
 data class TypesettingJobPage(
     val pageId: String,
     val pageOrder: Int,
-    val sourceSha256: String,
     val cleanupPageArtifactKey: String,
     val pageArtifactKey: String,
     val state: TypesettingPageState = TypesettingPageState.PENDING,
     val attemptCount: Int = 0,
     val artifactPath: String? = null,
     val imagePath: String? = null,
+    val imageByteLength: Long = 0L,
     val typesetRegionCount: Int = 0,
     val preservedRegionCount: Int = 0,
     val error: TypesettingError? = null,
@@ -148,12 +151,12 @@ data class TypesettingJobRecord(
 data class TypesettingRunEntry(
     val pageId: String,
     val pageOrder: Int,
-    val sourceSha256: String,
     val cleanupPageArtifactKey: String,
     val pageArtifactKey: String,
     val state: TypesettingPageState,
     val artifactPath: String? = null,
     val imagePath: String? = null,
+    val imageByteLength: Long = 0L,
     val error: TypesettingError? = null,
 )
 

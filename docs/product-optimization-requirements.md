@@ -85,15 +85,15 @@ Status: Implemented and verified on 2026-09-01. The user cancelled the `4008174`
 - The only automatic translation re-request retained is one isolated quality repair for a structurally valid item that still contains Japanese kana or echoes its source text. Valid neighboring items are not resent. A second semantically invalid result remains internally preserved and does not become a user-facing warning.
 - Any terminal stage failure, service-start failure, detected OCR process death, or scheduler stall pauses that project with its safe error code. The scheduler has no failure counter, retry deadline, or automatic backoff; continuing is an explicit user action.
 - Process-recreation recovery of an uncommitted active page/window remains. It is checkpoint recovery, not an automatic retry of a terminal failure.
-- Keep inexpensive artifact-identity hashes, import-time source hashing, model-package digests, concurrency locks, OCR crop selection, and cleanup safety rollback.
+- Keep concurrency locks, OCR crop selection, cleanup safety rollback, explicit dependency records, atomic publication, byte-length checks, image decode checks, and model tensor/capability validation. Do not retain or replace content-derived identity or integrity values.
 
 ## Runtime slimming and verification policy
 
 - Remove the automatic visual-quality stage from the runtime pipeline. Typesetting flows directly to export; no full-page cleaned-versus-typeset pixel audit, quality gate, or automatic quality-directed re-typesetting runs on the phone. Renderer correctness remains covered by focused tests instead of a production stage.
-- The source image is content-hashed once while it is imported into app-private immutable storage. Detection, OCR, cleanup, and typesetting must not reread the complete source merely to recompute the same digest. Later stages may retain cheap path, existence, length, decode, and lineage checks that they already need for useful work.
-- Keep canonical hashes over small dependency records because they cheaply identify cached artifacts and invalidate stale outputs. Keep model-package hashing because loading the wrong or corrupt native model can crash or invalidate inference.
-- Local cleanup and typesetting artifacts are written atomically. Generate their recorded digest from the already-available output bytes once; do not repeatedly read and hash every image during the same commit, publication, catalog lookup, or ordinary downstream read.
-- External folder export crosses Android storage-provider implementations, so retain one write/read-back integrity check for each newly written file. Remove duplicate full-set content-hash passes before and after directory promotion; final publication still checks the expected filenames as a complete set.
+- Import copies each source once into app-private immutable storage and assigns an opaque ID. Later stages retain only useful path, existence, length, decode, and lineage checks.
+- Cache reuse and recovery compare explicit schema versions, policies, model descriptors, ordered page lineage, and upstream artifact IDs. New root IDs are random opaque IDs; child IDs are derived structurally from their persisted parent.
+- Model packages validate expected byte lengths, metadata, tensor signatures, and runtime capabilities. Existing legacy-named directories are discovered and reused without rereading large model files to derive a content summary.
+- Cleanup and typesetting artifacts are written atomically and record paths and byte lengths. External folder export uses atomic generation publication, byte-length checks, and the exact expected filename set without a full-file read-back.
 
 ## Decision and implementation boundary
 

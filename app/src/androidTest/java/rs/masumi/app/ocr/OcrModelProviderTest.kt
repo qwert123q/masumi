@@ -5,7 +5,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.nio.file.Files
-import java.security.MessageDigest
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -75,7 +74,7 @@ class OcrModelProviderTest {
             "projector.gguf" to "projector-data".encodeToByteArray(),
         )
         val descriptor = descriptor(files)
-        val staging = workspace.resolve("models/.staging/${descriptor.packageSha256}")
+        val staging = workspace.resolve("models/.staging/${descriptor.storageRevision}")
         Files.createDirectories(staging)
         Files.write(staging.resolve("model.gguf.part"), files.getValue("model.gguf"))
         Files.write(staging.resolve("projector.gguf.part"), files.getValue("projector.gguf"))
@@ -98,14 +97,72 @@ class OcrModelProviderTest {
         }
     }
 
+    @Test
+    fun reusesLegacyNamedPackageWithoutRedownloading() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val workspace = Files.createTempDirectory(context.cacheDir.toPath(), "ocr-provider-legacy-")
+        val files = mapOf(
+            "model.gguf" to "model-data".encodeToByteArray(),
+            "projector.gguf" to "projector-data".encodeToByteArray(),
+        )
+        val descriptor = descriptor(files)
+        val source = OcrRangeSource { file, offset ->
+            val bytes = files.getValue(file.fileName)
+            OcrRangeResponse(
+                statusCode = if (offset == 0L) 200 else 206,
+                totalLength = bytes.size.toLong(),
+                contentRangeStart = offset.takeIf { it > 0L },
+                input = ByteArrayInputStream(bytes, offset.toInt(), bytes.size - offset.toInt()),
+            )
+        }
+        val validator = OcrModelCapabilityValidator { _, _ ->
+            OcrModelCapabilities(true, true, "paddleocr-vl")
+        }
+
+        try {
+            val installed = DefaultOcrModelProvider(
+                workspaceRoot = workspace,
+                descriptor = descriptor,
+                rangeSource = source,
+                capabilityValidator = validator,
+            ).acquire("install-1") { _, _ -> }
+            val metadataPath = installed.model.parent.resolve("package.json")
+            val legacyMetadata = Files.newBufferedReader(metadataPath, Charsets.UTF_8).use { reader ->
+                reader.readText().replace(
+                    "  \"storageRevision\": \"${descriptor.storageRevision}\",\n",
+                    "",
+                )
+            }
+            Files.newBufferedWriter(metadataPath, Charsets.UTF_8).use { writer ->
+                writer.write(legacyMetadata)
+            }
+            val legacyDirectory = installed.model.parent.parent.resolve("legacy-opaque-directory")
+            Files.move(installed.model.parent, legacyDirectory)
+            val secondProvider = DefaultOcrModelProvider(
+                workspaceRoot = workspace,
+                descriptor = descriptor,
+                rangeSource = OcrRangeSource { _, _ -> throw IOException("must reuse installed package") },
+                capabilityValidator = validator,
+            )
+
+            val reused = secondProvider.acquire("install-2") { _, _ -> }
+
+            assertEquals(legacyDirectory.resolve(descriptor.model.fileName), reused.model)
+            assertEquals(legacyDirectory.resolve(descriptor.projector.fileName), reused.projector)
+            assertEquals(descriptor.storageRevision, reused.metadata.storageRevision)
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
     private fun descriptor(files: Map<String, ByteArray>) = OcrModelPackageDescriptor(
         packageId = "test/ocr",
         storageKey = "test--ocr",
+        storageRevision = "revision-f16-v1",
         repository = "test/ocr",
         revision = "revision",
         model = fileDescriptor("model.gguf", files.getValue("model.gguf")),
         projector = fileDescriptor("projector.gguf", files.getValue("projector.gguf")),
-        packageSha256 = "f".repeat(64),
         license = "Apache-2.0",
         prompt = "OCR:",
         runtime = OcrNativeRuntimeDescriptor("b8935", "commit", "arm64-v8a", "cpu", "mtmd-v1"),
@@ -114,7 +171,6 @@ class OcrModelProviderTest {
     private fun fileDescriptor(fileName: String, bytes: ByteArray) = OcrModelFileDescriptor(
         fileName = fileName,
         byteLength = bytes.size.toLong(),
-        sha256 = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) },
         downloadUrl = "https://example.invalid/$fileName",
     )
 }

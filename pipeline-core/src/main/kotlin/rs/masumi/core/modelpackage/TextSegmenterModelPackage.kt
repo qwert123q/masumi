@@ -8,12 +8,12 @@ import java.nio.file.Path
 data class TextSegmenterModelDescriptor(
     val modelId: String,
     val storageKey: String,
+    val storageRevision: String,
     val repository: String,
     val revision: String,
     val fileName: String,
     val assetPath: String,
     val byteLength: Long,
-    val sha256: String,
     val license: String,
     val opset: Int,
     val runtimeRevision: String,
@@ -23,7 +23,6 @@ data class TextSegmenterModelDescriptor(
         repository = repository,
         revision = revision,
         fileName = fileName,
-        sha256 = sha256,
         byteLength = byteLength,
         license = license,
         opset = opset,
@@ -42,6 +41,7 @@ data class TextSegmenterModelSignature(
 @Serializable
 data class TextSegmenterModelPackageMetadata(
     val schemaVersion: Int = 1,
+    val storageRevision: String = "",
     val model: CleanupMaskModelRef,
     val signature: TextSegmenterModelSignature,
     val acquiredAtEpochMillis: Long,
@@ -53,7 +53,6 @@ fun interface TextSegmenterSignatureValidator {
 
 enum class TextSegmenterModelPackageErrorCode(val safeMessage: String) {
     LENGTH_MISMATCH("Text segmentation model byte length did not match the pinned package"),
-    HASH_MISMATCH("Text segmentation model digest did not match the pinned package"),
     SIGNATURE_MISMATCH("Text segmentation model tensor signature did not match the pinned package"),
     INSTALL_IO("Text segmentation model package could not be installed"),
 }
@@ -67,12 +66,12 @@ object PinnedComicTextSegmenter {
     val descriptor = TextSegmenterModelDescriptor(
         modelId = "dmMaze/comic-text-detector-segmentation",
         storageKey = "dmMaze--comic-text-detector-segmentation",
+        storageRevision = "beta-0.3-seg-only-512-v1",
         repository = "zyddnys/manga-image-translator",
         revision = "beta-0.3-seg-only-512-v1",
         fileName = "comic-text-segmenter-512.onnx",
         assetPath = "models/comic-text-segmenter-512.onnx",
         byteLength = 65_568_382,
-        sha256 = "688cb2b55bc14e29957bb4dad768e7420a4b1f740b84ffadc83ecaac63846485",
         license = "GPL-3.0-only",
         opset = 11,
         runtimeRevision = "onnxruntime-android:1.27.0",

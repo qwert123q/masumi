@@ -35,7 +35,7 @@ class CleanupArtifactStoreTest {
         val artifact = CleanupFixtures.artifact(png)
         val (artifactPath, imagePath) = store.commitPage(job, artifact, png, "webp")
         assertTrue(imagePath.endsWith("cleaned.webp"))
-        job = CleanupJobReducer.commitPage(job, 0, artifactPath, imagePath, 1, 0, 4L)
+        job = CleanupJobReducer.commitPage(job, 0, artifactPath, imagePath, png.size.toLong(), 1, 0, 4L)
         job = CleanupJobReducer.finishSuccess(job, 5L)
         val run = CleanupRunArtifact(
             runArtifactKey = job.runArtifactKey,
@@ -46,12 +46,12 @@ class CleanupArtifactStoreTest {
                 CleanupRunEntry(
                     pageId = job.pages.single().pageId,
                     pageOrder = 0,
-                    sourceSha256 = job.pages.single().sourceSha256,
                     translationPageArtifactKey = job.pages.single().translationPageArtifactKey,
                     pageArtifactKey = job.pages.single().pageArtifactKey,
                     state = CleanupPageState.COMMITTED,
                     artifactPath = artifactPath,
                     imagePath = imagePath,
+                    imageByteLength = png.size.toLong(),
                 ),
             ),
         )
@@ -85,6 +85,34 @@ class CleanupArtifactStoreTest {
         Files.write(published.resolve(imagePath), byteArrayOf(9, 8, 7, 6))
         assertEquals(run, assertNotNull(store.readPublishedRun(job.runArtifactKey)))
         assertEquals(artifact, assertNotNull(store.readPublishedPage(job.runArtifactKey, run.entries.single())))
+
+        // A pre-migration artifact has only the removed digest metadata. Its
+        // unknown legacy field is ignored and the store falls back to the
+        // actual non-zero image length without rereading the image contents.
+        val legacyDigest = "a".repeat(64)
+        Files.writeString(
+            published.resolve(artifactPath),
+            rs.masumi.core.serialization.CleanupJson().encodePageArtifact(artifact)
+                .replace(
+                    "\"cleanedImageByteLength\": ${png.size}",
+                    "\"cleanedImageSha256\": \"$legacyDigest\"",
+                ),
+        )
+        Files.writeString(
+            published.resolve("artifact.json"),
+            rs.masumi.core.serialization.CleanupJson().encodeRun(run)
+                .replace(
+                    "\"imageByteLength\": ${png.size}",
+                    "\"cleanedImageSha256\": \"$legacyDigest\"",
+                ),
+        )
+        val legacyRun = assertNotNull(store.readPublishedRun(job.runArtifactKey))
+        assertEquals(0L, legacyRun.entries.single().imageByteLength)
+        assertEquals(
+            0L,
+            assertNotNull(store.readPublishedPage(job.runArtifactKey, legacyRun.entries.single()))
+                .cleanedImageByteLength,
+        )
     }
 
     @Test

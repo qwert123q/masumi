@@ -1,16 +1,16 @@
 package rs.masumi.core.cleanup
 
-import java.security.MessageDigest
 import rs.masumi.core.detection.PixelBox
 
 object CleanupFixtures {
     val dependencies = CleanupDependencies(translationRunArtifactKey = "a".repeat(64))
-    val pageKey = CleanupIdentity.pageArtifactKey(0, "b".repeat(64), "c".repeat(64), dependencies)
+    const val runKey = "cleanup-run"
+    val pageKey = CleanupIdentity.pageArtifactKey(runKey, 0)
 
     fun job(): CleanupJobRecord = CleanupJobRecord(
         jobId = "cleanup-job",
         projectId = "project-1",
-        runArtifactKey = CleanupIdentity.runArtifactKey(listOf(0 to pageKey), dependencies),
+        runArtifactKey = runKey,
         startedAtEpochMillis = 1L,
         updatedAtEpochMillis = 1L,
         dependencies = dependencies,
@@ -18,7 +18,6 @@ object CleanupFixtures {
             CleanupJobPage(
                 pageId = "b".repeat(64),
                 pageOrder = 0,
-                sourceSha256 = "b".repeat(64),
                 translationPageArtifactKey = "c".repeat(64),
                 pageArtifactKey = pageKey,
             ),
@@ -28,12 +27,11 @@ object CleanupFixtures {
     fun artifact(png: ByteArray): PageCleanupArtifact = PageCleanupArtifact(
         pageId = "b".repeat(64),
         pageOrder = 0,
-        sourceSha256 = "b".repeat(64),
         translationPageArtifactKey = "c".repeat(64),
         pageArtifactKey = pageKey,
         visibleWidth = 20,
         visibleHeight = 20,
-        cleanedImageSha256 = sha256(png),
+        cleanedImageByteLength = png.size.toLong(),
         dependencies = dependencies,
         regions = listOf(
             CleanupRegionArtifact(
@@ -50,7 +48,4 @@ object CleanupFixtures {
             ),
         ),
     )
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 }

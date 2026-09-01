@@ -18,6 +18,7 @@ object CleanupJobReducer {
                     attemptCount = it.attemptCount + 1,
                     artifactPath = null,
                     imagePath = null,
+                    imageByteLength = 0L,
                     error = null,
                 ) else it
             },
@@ -29,12 +30,14 @@ object CleanupJobReducer {
         pageOrder: Int,
         artifactPath: String,
         imagePath: String,
+        imageByteLength: Long,
         cleanedRegionCount: Int,
         preservedRegionCount: Int,
         now: Long,
     ): CleanupJobRecord {
         val page = job.pages.single { it.pageOrder == pageOrder }
         require(page.state == CleanupPageState.RUNNING)
+        require(imageByteLength > 0L)
         require(cleanedRegionCount >= 0 && preservedRegionCount >= 0)
         return job.updated(now).copy(
             pages = job.pages.map {
@@ -42,6 +45,7 @@ object CleanupJobReducer {
                     state = CleanupPageState.COMMITTED,
                     artifactPath = artifactPath,
                     imagePath = imagePath,
+                    imageByteLength = imageByteLength,
                     cleanedRegionCount = cleanedRegionCount,
                     preservedRegionCount = preservedRegionCount,
                 ) else it
@@ -87,6 +91,7 @@ object CleanupJobReducer {
                     state = CleanupPageState.PENDING,
                     artifactPath = null,
                     imagePath = null,
+                    imageByteLength = 0L,
                     error = null,
                 ) else it
             },

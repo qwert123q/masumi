@@ -513,12 +513,16 @@ class LibraryActivity : Activity() {
         val completedStages = if (isFinishedLibraryProject(project.outputPageCount, queueStatus)) {
             AutomaticPipelinePlanner.STAGE_COUNT
         } else {
-            val detection = privateProject?.let { catalog.latestPublishedRun(projectId) }
+            val detection = privateProject?.let { projectRef ->
+                catalog.publishedDetectionRuns(projectId).firstOrNull {
+                    PipelineArtifactFreshness.detection(it.artifact, projectRef.manifest)
+                }
+            }
             val ocr = detection?.let { currentDetection ->
                 catalog.publishedOcrRuns(projectId).firstOrNull {
                     PipelineArtifactFreshness.ocr(
                         it.artifact,
-                        currentDetection.artifact.runArtifactKey,
+                        currentDetection.artifact,
                     )
                 }
             }
@@ -526,7 +530,7 @@ class LibraryActivity : Activity() {
                 catalog.publishedTranslationRuns(projectId).firstOrNull {
                     PipelineArtifactFreshness.translation(
                         it.artifact,
-                        currentOcr.artifact.runArtifactKey,
+                        currentOcr.artifact,
                     )
                 }
             }
@@ -540,7 +544,7 @@ class LibraryActivity : Activity() {
                 )?.takeIf { currentCleanup ->
                     PipelineArtifactFreshness.cleanup(
                         currentCleanup.artifact,
-                        it.artifact.runArtifactKey,
+                        it.artifact,
                     )
                 }
             }
@@ -549,7 +553,9 @@ class LibraryActivity : Activity() {
                     projectId,
                     it.artifact.runArtifactKey,
                     TypesettingPolicy(),
-                )
+                )?.takeIf { currentTypesetting ->
+                    PipelineArtifactFreshness.typesetting(currentTypesetting.artifact, it.artifact)
+                }
             }
             when {
                 typesetting != null -> 5

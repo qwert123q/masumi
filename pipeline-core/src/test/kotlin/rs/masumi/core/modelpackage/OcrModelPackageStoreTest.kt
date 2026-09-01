@@ -7,7 +7,6 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import kotlin.io.path.exists
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -18,6 +17,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import rs.masumi.core.io.NioProjectFileSystem
+import rs.masumi.core.io.ProjectFileSystem
 
 class OcrModelPackageStoreTest {
     private lateinit var workspace: Path
@@ -71,20 +72,61 @@ class OcrModelPackageStoreTest {
     }
 
     @Test
-    fun `bad complete digest is deleted and retried once from zero`() {
+    fun `accepts same length downloaded bytes when model capabilities are valid`() {
         val files = files()
         val descriptor = descriptor(files)
-        val source = CorruptFirstModelSource(files)
+        val replacement = ByteArray(files.getValue("model.gguf").size) { index -> (index + 3).toByte() }
+        val sourceFiles = files + ("model.gguf" to replacement)
 
         val installed = OcrModelPackageStore(workspace).ensureInstalled(
-            "install",
+            "same-length-install",
             descriptor,
-            source,
-            validator(files),
+            FakeRangeSource(sourceFiles),
+            OcrModelCapabilityValidator { _, _ -> OcrModelCapabilities(true, true, "paddleocr-vl") },
         ) { _, _ -> }
 
-        assertContentEquals(files.getValue("model.gguf"), Files.readAllBytes(installed.model))
-        assertEquals(listOf(0L, 0L), source.modelOffsets)
+        assertContentEquals(replacement, Files.readAllBytes(installed.model))
+    }
+
+    @Test
+    fun `discovers and reuses a valid legacy named package with old metadata fields`() {
+        val files = files()
+        val descriptor = descriptor(files)
+        val store = OcrModelPackageStore(workspace)
+        val validator = validator(files)
+        val installed = store.ensureInstalled(
+            "install",
+            descriptor,
+            FakeRangeSource(files),
+            validator,
+        ) { _, _ -> }
+        val metadataPath = installed.model.parent.resolve("package.json")
+        Files.writeString(
+            metadataPath,
+            Files.readString(metadataPath)
+                .replace("  \"storageRevision\": \"${descriptor.storageRevision}\",\n", "")
+                .replace(
+                    "\"byteLength\"",
+                    "\"sha256\": \"legacy-value\",\n          \"byteLength\"",
+                )
+                .replace(
+                    "\"license\"",
+                    "\"packageSha256\": \"legacy-value\",\n      \"license\"",
+                ),
+        )
+        val legacyDirectory = installed.model.parent.parent.resolve("legacy-opaque-directory")
+        Files.move(installed.model.parent, legacyDirectory)
+
+        val reused = store.ensureInstalled(
+            "second-install",
+            descriptor,
+            OcrRangeSource { _, _ -> throw IOException("must reuse legacy package") },
+            validator,
+        ) { _, _ -> }
+
+        assertEquals(legacyDirectory.resolve(descriptor.model.fileName), reused.model)
+        assertEquals(legacyDirectory.resolve(descriptor.projector.fileName), reused.projector)
+        assertEquals(descriptor.storageRevision, reused.metadata.storageRevision)
     }
 
     @Test
@@ -108,7 +150,7 @@ class OcrModelPackageStoreTest {
             ) { _, _ -> }
         }
 
-        assertFalse(workspace.resolve("models/test--ocr/${descriptor.packageSha256}").exists())
+        assertFalse(workspace.resolve("models/test--ocr/${descriptor.storageRevision}").exists())
         assertEquals(null, OcrModelPackageStore(workspace).readInstalled(descriptor, validator(files)))
     }
 
@@ -132,11 +174,12 @@ class OcrModelPackageStoreTest {
         ) { _, _ -> }
 
         assertEquals(1, validationCount)
+        assertEquals(descriptor.storageRevision, installed.metadata.storageRevision)
         assertEquals("paddleocr-vl", installed.metadata.capabilities.projectorType)
     }
 
     @Test
-    fun `transient capability failure never deletes an integrity verified package`() {
+    fun `transient capability failure never deletes an installed package`() {
         val files = files()
         val descriptor = descriptor(files)
         val store = OcrModelPackageStore(workspace)
@@ -202,11 +245,9 @@ class OcrModelPackageStoreTest {
         val base = descriptor(files)
         val normalizedDescriptor = base.copy(
             model = base.model.copy(
-                installedSha256 = sha256(normalized),
                 normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
             ),
             projector = base.projector.copy(
-                installedSha256 = sha256(normalized),
                 normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
             ),
         )
@@ -224,7 +265,130 @@ class OcrModelPackageStoreTest {
         ) { _, _ -> }
 
         assertContentEquals(normalized, Files.readAllBytes(installed.model))
-        assertEquals(sha256(normalized), installed.metadata.modelPackage.model.sha256)
+        assertEquals(normalized.size.toLong(), installed.metadata.modelPackage.model.byteLength)
+    }
+
+    @Test
+    fun `interrupted normalization discards staging bytes and restarts download from zero`() {
+        val canonical = ggufFixture(0x3f80)
+        val normalized = convertFixture(canonical)
+        val files = mapOf("model.gguf" to canonical, "projector.gguf" to canonical)
+        val base = descriptor(files)
+        val normalizedDescriptor = base.copy(
+            model = base.model.copy(
+                normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
+            ),
+            projector = base.projector.copy(
+                normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
+            ),
+        )
+        val staging = workspace.resolve("models/.staging/interrupted-normalization")
+        Files.createDirectories(staging)
+        Files.write(staging.resolve("model.gguf.part"), normalized)
+        Files.writeString(staging.resolve("model.gguf.part.normalizing"), "in-progress")
+        val source = FakeRangeSource(files)
+        val validator = OcrModelCapabilityValidator { model, projector ->
+            assertContentEquals(normalized, Files.readAllBytes(model))
+            assertContentEquals(normalized, Files.readAllBytes(projector))
+            OcrModelCapabilities(true, true, "paddleocr-vl")
+        }
+
+        val installed = OcrModelPackageStore(workspace).ensureInstalled(
+            "interrupted-normalization",
+            normalizedDescriptor,
+            source,
+            validator,
+        ) { _, _ -> }
+
+        assertTrue(source.requests.contains("model.gguf" to 0L))
+        assertContentEquals(normalized, Files.readAllBytes(installed.model))
+        assertFalse(installed.model.parent.resolve("model.gguf.part.normalizing").exists())
+        assertFalse(workspace.resolve("models/.staging/interrupted-normalization").exists())
+    }
+
+    @Test
+    fun `failed recovery cleanup quarantines the marker before deleting any staging bytes`() {
+        val files = files()
+        val descriptor = descriptor(files)
+        val staging = workspace.resolve("models/.staging/interrupted-cleanup")
+        Files.createDirectories(staging)
+        Files.write(staging.resolve("model.gguf.part"), files.getValue("model.gguf"))
+        Files.writeString(staging.resolve("model.gguf.part.normalizing"), "in-progress")
+        val nio = NioProjectFileSystem()
+        val failingCleanup = object : ProjectFileSystem by nio {
+            override fun deleteRecursively(path: Path) {
+                if (path.fileName.toString().startsWith(".discarding-interrupted-cleanup-")) {
+                    throw IOException("simulated cleanup interruption")
+                }
+                nio.deleteRecursively(path)
+            }
+        }
+
+        val failure = assertFailsWith<OcrModelPackageException> {
+            OcrModelPackageStore(workspace, fileSystem = failingCleanup).ensureInstalled(
+                "interrupted-cleanup",
+                descriptor,
+                FakeRangeSource(files),
+                validator(files),
+            ) { _, _ -> }
+        }
+
+        assertEquals(OcrModelPackageErrorCode.INSTALL_IO, failure.code)
+        assertFalse(staging.exists())
+        val quarantined = Files.list(staging.parent).use { entries ->
+            entries.filter { it.fileName.toString().startsWith(".discarding-interrupted-cleanup-") }
+                .toList()
+                .single()
+        }
+        assertTrue(quarantined.resolve("model.gguf.part.normalizing").exists())
+        assertTrue(quarantined.resolve("model.gguf.part").exists())
+    }
+
+    @Test
+    fun `a new install revision cleans quarantines left by older revisions`() {
+        val files = files()
+        val abandoned = workspace.resolve(
+            "models/.staging/.discarding-old-revision-550e8400-e29b-41d4-a716-446655440000",
+        )
+        Files.createDirectories(abandoned)
+        Files.writeString(abandoned.resolve("model.gguf.part.normalizing"), "in-progress")
+        Files.write(abandoned.resolve("model.gguf.part"), files.getValue("model.gguf"))
+
+        OcrModelPackageStore(workspace).ensureInstalled(
+            "new-revision",
+            descriptor(files),
+            FakeRangeSource(files),
+            validator(files),
+        ) { _, _ -> }
+
+        assertFalse(abandoned.exists())
+    }
+
+    @Test
+    fun `reusing an installed package also cleans an abandoned quarantine`() {
+        val files = files()
+        val descriptor = descriptor(files)
+        val store = OcrModelPackageStore(workspace)
+        store.ensureInstalled(
+            "first-install",
+            descriptor,
+            FakeRangeSource(files),
+            validator(files),
+        ) { _, _ -> }
+        val abandoned = workspace.resolve(
+            "models/.staging/.discarding-obsolete-550e8400-e29b-41d4-a716-446655440000",
+        )
+        Files.createDirectories(abandoned)
+        Files.writeString(abandoned.resolve("model.gguf.part.normalizing"), "in-progress")
+
+        store.ensureInstalled(
+            "second-install",
+            descriptor,
+            OcrRangeSource { _, _ -> throw IOException("installed package must be reused") },
+            validator(files),
+        ) { _, _ -> }
+
+        assertFalse(abandoned.exists())
     }
 
     private fun validator(files: Map<String, ByteArray>) = OcrModelCapabilityValidator { model, projector ->
@@ -241,11 +405,11 @@ class OcrModelPackageStoreTest {
     private fun descriptor(files: Map<String, ByteArray>) = OcrModelPackageDescriptor(
         packageId = "test/ocr",
         storageKey = "test--ocr",
+        storageRevision = "revision-f16-v1",
         repository = "test/ocr",
         revision = "revision",
         model = fileDescriptor("model.gguf", files.getValue("model.gguf")),
         projector = fileDescriptor("projector.gguf", files.getValue("projector.gguf")),
-        packageSha256 = "f".repeat(64),
         license = "Apache-2.0",
         prompt = "OCR:",
         runtime = OcrNativeRuntimeDescriptor(
@@ -260,13 +424,8 @@ class OcrModelPackageStoreTest {
     private fun fileDescriptor(name: String, bytes: ByteArray) = OcrModelFileDescriptor(
         fileName = name,
         byteLength = bytes.size.toLong(),
-        sha256 = sha256(bytes),
         downloadUrl = "https://example.invalid/$name",
     )
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes)
-        .joinToString(separator = "") { "%02x".format(it) }
 
     private fun convertFixture(source: ByteArray): ByteArray {
         val path = Files.createTempFile(workspace, "normalize", ".gguf")
@@ -318,23 +477,6 @@ class OcrModelPackageStoreTest {
                     input = ByteArrayInputStream(bytes),
                 )
             }
-        }
-    }
-
-    private class CorruptFirstModelSource(
-        private val files: Map<String, ByteArray>,
-    ) : OcrRangeSource {
-        val modelOffsets = mutableListOf<Long>()
-
-        override fun open(file: OcrModelFileDescriptor, offset: Long): OcrRangeResponse {
-            val original = files.getValue(file.fileName)
-            val bytes = if (file.fileName == "model.gguf") {
-                modelOffsets += offset
-                if (modelOffsets.size == 1) original.clone().also { it[0] = (it[0] + 1).toByte() } else original
-            } else {
-                original
-            }
-            return response(bytes, offset)
         }
     }
 

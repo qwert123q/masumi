@@ -1,14 +1,12 @@
 package rs.masumi.core.ocr
 
-import kotlinx.serialization.SerializationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import rs.masumi.core.serialization.OcrJson
 
 class OcrJsonTest {
     @Test
-    fun `OCR JSON is strict and round trips terminal region data`() {
+    fun `OCR JSON ignores legacy fields and round trips terminal region data`() {
         val artifact = OcrFixtures.pageArtifact(
             state = OcrRegionState.RECOGNIZED,
             rawText = "縦書きです",
@@ -19,8 +17,9 @@ class OcrJsonTest {
 
         assertEquals(artifact, OcrJson().decodePageArtifact(encoded))
         assertEquals(true, encoded.contains("\"executionBackend\": \"VULKAN\""))
-        assertFailsWith<SerializationException> {
-            OcrJson().decodePageArtifact(encoded.dropLast(2) + ",\"unexpected\":true\n}")
-        }
+        assertEquals(
+            artifact,
+            OcrJson().decodePageArtifact(encoded.dropLast(2) + ",\"sourceSha256\":\"legacy\"\n}"),
+        )
     }
 }

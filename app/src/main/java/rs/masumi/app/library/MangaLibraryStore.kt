@@ -6,9 +6,9 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.Locale
 import org.json.JSONObject
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.importer.PageMediaType
 import rs.masumi.core.model.PageRecord
 
@@ -18,7 +18,6 @@ data class MangaLibraryProjectMetadata(
     val title: String,
     val createdAtEpochMillis: Long,
     val sourceTreeUri: String,
-    val sourceFingerprint: String = "",
 )
 
 data class MangaLibraryProject(
@@ -59,17 +58,6 @@ class MangaLibraryPreferences(context: Context) {
     }
 }
 
-fun mangaSourceFingerprint(pages: List<PageRecord>): String {
-    require(pages.isNotEmpty())
-    val digest = MessageDigest.getInstance("SHA-256")
-    pages.sortedBy(PageRecord::order).forEach { page ->
-        require(SHA256.matches(page.sourceSha256))
-        digest.update(page.sourceSha256.toByteArray(Charsets.US_ASCII))
-        digest.update(0)
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
-}
-
 internal fun mangaArchiveSourceFileName(page: PageRecord): String =
     mangaArchiveStableFileName(page, alternateOrdinal = null)
 
@@ -80,7 +68,7 @@ internal fun mangaArchiveAlternativeSourceFileName(page: PageRecord, ordinal: In
 
 private fun mangaArchiveStableFileName(page: PageRecord, alternateOrdinal: Int?): String {
     require(page.order >= 0)
-    require(SHA256.matches(page.sourceSha256))
+    SafeOpaqueId.require(page.pageId, "pageId")
     val extension = requireNotNull(PageMediaType.detect(page.originalName, page.mediaType)).extension
     val sanitizedName = page.originalName
         .replace(UNSAFE_ARCHIVE_FILE_NAME_CHARACTER, "_")
@@ -90,7 +78,7 @@ private fun mangaArchiveStableFileName(page: PageRecord, alternateOrdinal: Int?)
         .trim(' ', '.', '_')
         .ifBlank { "page" }
     val order = (page.order.toLong() + 1L).toString().padStart(6, '0')
-    val identityPrefix = "$order-${page.sourceSha256}-"
+    val identityPrefix = "$order-${page.pageId}-"
     val alternateSuffix = alternateOrdinal?.let { "~$it" }.orEmpty()
     val extensionSuffix = ".$extension"
     val maximumStemLength = MAX_ARCHIVE_SOURCE_FILE_NAME_LENGTH -
@@ -124,35 +112,26 @@ internal enum class LegacyArchiveSourceAction {
 
 internal fun isReusableArchiveSourceCandidate(
     expectedByteLength: Long,
-    expectedSha256: String,
     candidateByteLength: Long,
-    candidateSha256: String?,
     candidateAlreadyClaimed: Boolean,
     candidateNameReservedForAnotherPage: Boolean = false,
 ): Boolean {
     require(expectedByteLength >= 0L)
-    require(SHA256.matches(expectedSha256))
     require(candidateByteLength >= -1L)
-    require(candidateSha256 == null || SHA256.matches(candidateSha256))
     return !candidateAlreadyClaimed &&
         !candidateNameReservedForAnotherPage &&
-        candidateByteLength == expectedByteLength &&
-        candidateSha256 == expectedSha256
+        candidateByteLength == expectedByteLength
 }
 
 internal fun selectLegacyArchiveSourceAction(
     expectedByteLength: Long,
-    expectedSha256: String,
     legacyByteLength: Long,
-    legacySha256: String?,
     legacyAlreadyClaimed: Boolean,
     legacyNameReservedForStablePage: Boolean = false,
 ): LegacyArchiveSourceAction {
     return if (isReusableArchiveSourceCandidate(
             expectedByteLength = expectedByteLength,
-            expectedSha256 = expectedSha256,
             candidateByteLength = legacyByteLength,
-            candidateSha256 = legacySha256,
             candidateAlreadyClaimed = legacyAlreadyClaimed,
             candidateNameReservedForAnotherPage = legacyNameReservedForStablePage,
         )
@@ -224,10 +203,8 @@ class MangaLibraryStore(
         title: String,
         createdAtEpochMillis: Long,
         sourceTreeUri: Uri,
-        sourceFingerprint: String = sha256(sourceTreeUri.toString()),
     ): MangaLibraryProject {
-        require(SAFE_ID.matches(projectId))
-        require(SHA256.matches(sourceFingerprint))
+        SafeOpaqueId.require(projectId, "projectId")
         refreshProjects().firstOrNull { it.metadata.projectId == projectId }?.let { existing ->
             val source = existing.sourceDirectoryUri
                 ?: ensureDirectory(existing.directoryUri, SOURCE_DIRECTORY_NAME)
@@ -255,7 +232,6 @@ class MangaLibraryStore(
             title = directoryName,
             createdAtEpochMillis = createdAtEpochMillis,
             sourceTreeUri = sourceTreeUri.toString(),
-            sourceFingerprint = sourceFingerprint,
         )
         writeProjectMetadata(directory, metadata)
         MangaLibraryCache.invalidate(cacheKey)
@@ -274,44 +250,33 @@ class MangaLibraryStore(
         privateProjectDirectory: Path,
         pages: List<PageRecord>,
     ) {
-        require(SAFE_ID.matches(projectId))
+        SafeOpaqueId.require(projectId, "projectId")
         val project = requireNotNull(project(projectId)) { "library project was not found" }
         val sourceDirectory = project.sourceDirectoryUri
             ?: ensureDirectory(project.directoryUri, SOURCE_DIRECTORY_NAME)
         val sortedPages = pages.sortedBy(PageRecord::order)
-        val reservedStableNames = sortedPages.mapTo(mutableSetOf(), ::mangaArchiveSourceFileName)
+        val stableNames = sortedPages.associate { it.order to mangaArchiveSourceFileName(it) }
+        val legacyNames = sortedPages.associate { it.order to legacyMangaArchiveSourceFileName(it) }
+
+        fun nameReservedForAnotherPage(page: PageRecord, name: String): Boolean =
+            sortedPages.any { other ->
+                other.order != page.order &&
+                    (stableNames.getValue(other.order) == name || legacyNames.getValue(other.order) == name)
+            }
+
         val existing = children(sourceDirectory)
             .groupByTo(mutableMapOf(), DocumentRef::displayName)
             .mapValuesTo(mutableMapOf()) { (_, documents) -> documents.toMutableList() }
         val claimedDocuments = mutableSetOf<Uri>()
-        val documentDigests = mutableMapOf<Uri, String?>()
-
-        fun digest(candidate: DocumentRef): String? {
-            if (documentDigests.containsKey(candidate.uri)) return documentDigests[candidate.uri]
-            return runCatching { documentSha256(candidate.uri) }.getOrNull().also {
-                documentDigests[candidate.uri] = it
-            }
-        }
 
         fun reusableCandidate(
             page: PageRecord,
             candidate: DocumentRef,
             nameReservedForAnotherPage: Boolean,
         ): Boolean {
-            val candidateDigest = if (
-                candidate.byteLength == page.byteLength &&
-                candidate.uri !in claimedDocuments &&
-                !nameReservedForAnotherPage
-            ) {
-                digest(candidate)
-            } else {
-                null
-            }
             return isReusableArchiveSourceCandidate(
                 expectedByteLength = page.byteLength,
-                expectedSha256 = page.sourceSha256,
                 candidateByteLength = candidate.byteLength,
-                candidateSha256 = candidateDigest,
                 candidateAlreadyClaimed = candidate.uri in claimedDocuments,
                 candidateNameReservedForAnotherPage = nameReservedForAnotherPage,
             )
@@ -320,11 +285,13 @@ class MangaLibraryStore(
         fun reuseMatching(
             page: PageRecord,
             name: String,
-            nameReservedForAnotherPage: Boolean,
         ): Boolean {
-            val reusable = existing[name]
-                .orEmpty()
-                .firstOrNull { reusableCandidate(page, it, nameReservedForAnotherPage) }
+            // Duplicate display names have no stable owner. Keep them intact
+            // and let the caller allocate the next deterministic suffix.
+            val candidate = existing[name].orEmpty().singleOrNull() ?: return false
+            val reusable = candidate.takeIf {
+                reusableCandidate(page, it, nameReservedForAnotherPage(page, name))
+            }
                 ?: return false
             claimedDocuments += reusable.uri
             return true
@@ -333,16 +300,13 @@ class MangaLibraryStore(
         sortedPages.forEach { page ->
             val source = resolveInside(privateProjectDirectory, page.storedPath)
             require(Files.isRegularFile(source) && Files.size(source) == page.byteLength)
-            val primaryStableName = mangaArchiveSourceFileName(page)
-            if (reuseMatching(page, primaryStableName, nameReservedForAnotherPage = false)) {
+            val primaryStableName = stableNames.getValue(page.order)
+            if (reuseMatching(page, primaryStableName)) {
                 return@forEach
             }
 
-            val legacyName = legacyMangaArchiveSourceFileName(page)
-            if (
-                legacyName !in reservedStableNames &&
-                reuseMatching(page, legacyName, nameReservedForAnotherPage = false)
-            ) {
+            val legacyName = legacyNames.getValue(page.order)
+            if (reuseMatching(page, legacyName)) {
                 return@forEach
             }
 
@@ -350,15 +314,12 @@ class MangaLibraryStore(
             var alternateOrdinal = 2
             while (
                 existing[outputName].orEmpty().isNotEmpty() ||
-                (outputName != primaryStableName && outputName in reservedStableNames)
+                nameReservedForAnotherPage(page, outputName)
             ) {
                 outputName = mangaArchiveAlternativeSourceFileName(page, alternateOrdinal)
                 check(alternateOrdinal < Int.MAX_VALUE) { "source archive name space exhausted" }
                 alternateOrdinal += 1
-                if (
-                    outputName !in reservedStableNames &&
-                    reuseMatching(page, outputName, nameReservedForAnotherPage = false)
-                ) {
+                if (reuseMatching(page, outputName)) {
                     return@forEach
                 }
             }
@@ -383,7 +344,6 @@ class MangaLibraryStore(
                 existing.getOrPut(actualName, ::mutableListOf) +=
                     DocumentRef(target, actualName, page.mediaType, page.byteLength)
                 claimedDocuments += target
-                documentDigests[target] = page.sourceSha256
             } finally {
                 if (created) runCatching { DocumentsContract.deleteDocument(resolver, target) }
             }
@@ -408,12 +368,12 @@ class MangaLibraryStore(
         .also { MangaLibraryCache.putProjects(cacheKey, it) }
 
     fun project(projectId: String): MangaLibraryProject? {
-        if (!SAFE_ID.matches(projectId)) return null
+        if (!SafeOpaqueId.isValid(projectId)) return null
         return projects().firstOrNull { it.metadata.projectId == projectId }
     }
 
     fun ensureOutputDirectory(projectId: String): Uri {
-        require(SAFE_ID.matches(projectId))
+        SafeOpaqueId.require(projectId, "projectId")
         val project = requireNotNull(refreshProjects().firstOrNull {
             it.metadata.projectId == projectId
         }) { "library project was not found" }
@@ -422,7 +382,8 @@ class MangaLibraryStore(
     }
 
     fun markProjectCompleted(projectId: String, completedAtEpochMillis: Long) {
-        require(SAFE_ID.matches(projectId) && completedAtEpochMillis > 0L)
+        SafeOpaqueId.require(projectId, "projectId")
+        require(completedAtEpochMillis > 0L)
         val project = refreshProjects().firstOrNull { it.metadata.projectId == projectId } ?: return
         writeProjectMetadata(
             project.directoryUri,
@@ -432,7 +393,7 @@ class MangaLibraryStore(
     }
 
     fun renameProject(projectId: String, requestedTitle: String): MangaLibraryProject {
-        require(SAFE_ID.matches(projectId))
+        SafeOpaqueId.require(projectId, "projectId")
         val project = requireNotNull(refreshProjects().firstOrNull {
             it.metadata.projectId == projectId
         }) { "library project was not found" }
@@ -458,7 +419,7 @@ class MangaLibraryStore(
     }
 
     fun deleteProject(projectId: String): Boolean {
-        require(SAFE_ID.matches(projectId))
+        SafeOpaqueId.require(projectId, "projectId")
         val project = refreshProjects().firstOrNull { it.metadata.projectId == projectId } ?: return false
         val deleted = DocumentsContract.deleteDocument(resolver, project.directoryUri)
         if (deleted) MangaLibraryCache.invalidate(cacheKey)
@@ -491,7 +452,6 @@ class MangaLibraryStore(
             ?.use { decodeProjectMetadata(it.readText()) }
             ?: return@runCatching null
         validateProjectMetadata(metadata)
-        if (metadata.schemaVersion != CURRENT_PROJECT_SCHEMA_VERSION) return@runCatching null
         val actualName = safeDirectoryName(directory.displayName)
         val normalizedMetadata = if (metadata.title == actualName) {
             metadata
@@ -518,11 +478,10 @@ class MangaLibraryStore(
 
     private fun validateProjectMetadata(metadata: MangaLibraryProjectMetadata) {
         require(
-            metadata.schemaVersion == CURRENT_PROJECT_SCHEMA_VERSION &&
-                SAFE_ID.matches(metadata.projectId) &&
+            metadata.schemaVersion in LEGACY_PROJECT_SCHEMA_VERSION..CURRENT_PROJECT_SCHEMA_VERSION &&
+                SafeOpaqueId.isValid(metadata.projectId) &&
                 metadata.title.isNotBlank() &&
-                metadata.createdAtEpochMillis >= 0L &&
-                SHA256.matches(metadata.sourceFingerprint),
+                metadata.createdAtEpochMillis >= 0L,
         )
     }
 
@@ -551,13 +510,13 @@ class MangaLibraryStore(
         .toList()
 
     private fun writeProjectMetadata(directoryUri: Uri, metadata: MangaLibraryProjectMetadata) {
+        val current = metadata.copy(schemaVersion = CURRENT_PROJECT_SCHEMA_VERSION)
         val content = JSONObject()
-            .put("schemaVersion", metadata.schemaVersion)
-            .put("projectId", metadata.projectId)
-            .put("title", metadata.title)
-            .put("createdAtEpochMillis", metadata.createdAtEpochMillis)
-            .put("sourceTreeUri", metadata.sourceTreeUri)
-            .put("sourceFingerprint", metadata.sourceFingerprint)
+            .put("schemaVersion", current.schemaVersion)
+            .put("projectId", current.projectId)
+            .put("title", current.title)
+            .put("createdAtEpochMillis", current.createdAtEpochMillis)
+            .put("sourceTreeUri", current.sourceTreeUri)
             .toString()
         val existing = children(directoryUri).singleOrNull {
             it.displayName == PROJECT_METADATA_FILE_NAME
@@ -582,7 +541,6 @@ class MangaLibraryStore(
             title = value.getString("title"),
             createdAtEpochMillis = value.getLong("createdAtEpochMillis"),
             sourceTreeUri = value.getString("sourceTreeUri"),
-            sourceFingerprint = value.getString("sourceFingerprint"),
         )
     }
 
@@ -644,20 +602,6 @@ class MangaLibraryStore(
         if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
     } ?: -1L
 
-    private fun documentSha256(uri: Uri): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val input = requireNotNull(resolver.openInputStream(uri)) { "source archive stream unavailable" }
-        input.buffered().use { stream ->
-            val buffer = ByteArray(COPY_BUFFER_SIZE)
-            while (true) {
-                val count = stream.read(buffer)
-                if (count < 0) break
-                if (count > 0) digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
     private fun rootDocumentUri(): Uri = DocumentsContract.buildDocumentUriUsingTree(
         rootTreeUri,
         DocumentsContract.getTreeDocumentId(rootTreeUri),
@@ -693,10 +637,6 @@ class MangaLibraryStore(
         }
     }
 
-    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
-
     private data class DocumentRef(
         val uri: Uri,
         val displayName: String,
@@ -711,7 +651,6 @@ class MangaLibraryStore(
         const val JSON_MIME_TYPE = "application/json"
         const val COPY_BUFFER_SIZE = 64 * 1024
         const val MAX_DIRECTORY_NAME_LENGTH = 80
-        val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         val OUTPUT_FILE = Regex("[0-9]{1,12}\\.(png|webp)", RegexOption.IGNORE_CASE)
         val SOURCE_FILE = Regex(".+\\.(jpe?g|png|webp)", RegexOption.IGNORE_CASE)
         val UNSAFE_DIRECTORY_CHARACTER = Regex("[/\\\\:*?\"<>|]")
@@ -725,7 +664,7 @@ class MangaLibraryStore(
     }
 }
 
-private const val CURRENT_PROJECT_SCHEMA_VERSION = 3
+private const val LEGACY_PROJECT_SCHEMA_VERSION = 3
+private const val CURRENT_PROJECT_SCHEMA_VERSION = 4
 private const val MAX_ARCHIVE_SOURCE_FILE_NAME_LENGTH = 180
-private val SHA256 = Regex("[0-9a-f]{64}")
 private val UNSAFE_ARCHIVE_FILE_NAME_CHARACTER = Regex("[/\\\\:*?\"<>|]")

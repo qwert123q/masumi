@@ -1,8 +1,5 @@
 package rs.masumi.app.translation
 
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import rs.masumi.core.translation.TranslationModelResponse
 import rs.masumi.core.translation.TranslationPromptMessages
 import rs.masumi.core.translation.TranslationProviderReference
@@ -71,10 +68,7 @@ class TranslationProviderSettings(
             displayName = providerName.ifBlank {
                 TranslationProviderCatalog.suggestedName(apiUrl)
             },
-            endpointHost = requireNotNull(normalizedEndpoint.toHttpUrlOrNull()).host,
-            endpointSha256 = MessageDigest.getInstance("SHA-256")
-                .digest(normalizedEndpoint.toByteArray(StandardCharsets.UTF_8))
-                .joinToString("") { "%02x".format(it) },
+            endpoint = normalizedEndpoint,
         )
     }
 

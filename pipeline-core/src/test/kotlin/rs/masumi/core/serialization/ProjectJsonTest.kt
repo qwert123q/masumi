@@ -8,6 +8,7 @@ import rs.masumi.core.model.PageRecord
 import rs.masumi.core.model.ProjectManifest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class ProjectJsonTest {
     private val codec = ProjectJson()
@@ -21,7 +22,6 @@ class ProjectJsonTest {
                 PageRecord(
                     order = 0,
                     pageId = "abc",
-                    sourceSha256 = "abc",
                     originalName = "001.jpg",
                     mediaType = "image/jpeg",
                     byteLength = 3,
@@ -31,6 +31,34 @@ class ProjectJsonTest {
         )
 
         assertEquals(manifest, codec.decodeManifest(codec.encodeManifest(manifest)))
+    }
+
+    @Test
+    fun `legacy source digest is ignored without changing its page identity or stored path`() {
+        val manifest = codec.decodeManifest(
+            """
+            {
+              "schemaVersion": 1,
+              "projectId": "project-legacy",
+              "createdAtEpochMillis": 1000,
+              "pages": [
+                {
+                  "order": 0,
+                  "pageId": "legacy-page-id",
+                  "sourceSha256": "${"a".repeat(64)}",
+                  "originalName": "001.jpg",
+                  "mediaType": "image/jpeg",
+                  "byteLength": 3,
+                  "storedPath": "sources/legacy-content-name.jpg"
+                }
+              ]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals("legacy-page-id", manifest.pages.single().pageId)
+        assertEquals("sources/legacy-content-name.jpg", manifest.pages.single().storedPath)
+        assertFalse(codec.encodeManifest(manifest).contains("sourceSha256"))
     }
 
     @Test

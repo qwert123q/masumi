@@ -15,7 +15,6 @@ object ExportJobReducer {
                 if (page.pageOrder == pageOrder) page.copy(
                     state = ExportPageState.RUNNING,
                     attemptCount = page.attemptCount + 1,
-                    outputSha256 = null,
                     byteLength = 0L,
                     reusedExisting = false,
                     error = null,
@@ -27,18 +26,16 @@ object ExportJobReducer {
     fun commitPage(
         job: ExportJobRecord,
         pageOrder: Int,
-        outputSha256: String,
         byteLength: Long,
         reusedExisting: Boolean,
         now: Long,
     ): ExportJobRecord {
-        require(SHA256.matches(outputSha256) && byteLength > 0L)
+        require(byteLength > 0L)
         require(job.pages.single { it.pageOrder == pageOrder }.state == ExportPageState.RUNNING)
         return job.updated(now).copy(
             pages = job.pages.map { page ->
                 if (page.pageOrder == pageOrder) page.copy(
                     state = ExportPageState.COMMITTED,
-                    outputSha256 = outputSha256,
                     byteLength = byteLength,
                     reusedExisting = reusedExisting,
                     error = null,
@@ -59,7 +56,6 @@ object ExportJobReducer {
             pages = job.pages.map { page ->
                 if (page.pageOrder == pageOrder) page.copy(
                     state = ExportPageState.PENDING,
-                    outputSha256 = null,
                     byteLength = 0L,
                     reusedExisting = false,
                     error = null,
@@ -76,7 +72,6 @@ object ExportJobReducer {
             pages = job.pages.map { page ->
                 if (page.state == ExportPageState.RUNNING) page.copy(
                     state = ExportPageState.PENDING,
-                    outputSha256 = null,
                     byteLength = 0L,
                     reusedExisting = false,
                     error = null,
@@ -94,7 +89,6 @@ object ExportJobReducer {
             pages = job.pages.map { page ->
                 if (page.state == ExportPageState.RUNNING) page.copy(
                     state = ExportPageState.PENDING,
-                    outputSha256 = null,
                     byteLength = 0L,
                     reusedExisting = false,
                     error = null,
@@ -116,6 +110,4 @@ object ExportJobReducer {
         require(now >= updatedAtEpochMillis)
         return copy(updatedAtEpochMillis = now)
     }
-
-    private val SHA256 = Regex("[0-9a-f]{64}")
 }

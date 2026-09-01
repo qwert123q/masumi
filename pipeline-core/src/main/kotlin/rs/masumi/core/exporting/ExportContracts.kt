@@ -42,13 +42,11 @@ data class ExportError(val code: String)
 data class ExportJobPage(
     val pageId: String,
     val pageOrder: Int,
-    val sourceSha256: String,
     val typesettingPageArtifactKey: String,
     val outputName: String,
     val source: ExportPageSource,
     val state: ExportPageState = ExportPageState.PENDING,
     val attemptCount: Int = 0,
-    val outputSha256: String? = null,
     val byteLength: Long = 0L,
     val reusedExisting: Boolean = false,
     val error: ExportError? = null,

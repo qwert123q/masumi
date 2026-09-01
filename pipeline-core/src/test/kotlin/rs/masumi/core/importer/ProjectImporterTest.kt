@@ -35,8 +35,10 @@ class ProjectImporterTest {
     }
 
     @Test
-    fun `imports ordered pages and reuses duplicate source objects`() {
-        val importer = importer(ids = listOf("project-1", "job-1"))
+    fun `imports ordered pages with independent ids without hashing duplicate content`() {
+        val importer = importer(
+            ids = listOf("project-1", "job-1", "page-1", "page-2", "page-3"),
+        )
 
         val outcome = importer.importProject(
             listOf(
@@ -50,9 +52,13 @@ class ProjectImporterTest {
             listOf("1.jpg", "2.jpg", "10.png"),
             outcome.manifest.pages.map { it.originalName },
         )
-        assertEquals(outcome.manifest.pages[0].pageId, outcome.manifest.pages[1].pageId)
+        assertEquals(listOf("page-1", "page-2", "page-3"), outcome.manifest.pages.map { it.pageId })
+        assertEquals(
+            listOf("sources/page-1.jpg", "sources/page-2.jpg", "sources/page-3.png"),
+            outcome.manifest.pages.map { it.storedPath },
+        )
         Files.list(outcome.projectDirectory.resolve("sources")).use { files ->
-            assertEquals(2, files.count())
+            assertEquals(3, files.count())
         }
         assertTrue(outcome.projectDirectory.resolve("manifest.json").exists())
         assertTrue(outcome.projectDirectory.resolve("reports/job-1.json").exists())
@@ -63,7 +69,7 @@ class ProjectImporterTest {
 
     @Test
     fun `failed source read publishes no project and writes sanitized reports`() {
-        val importer = importer(ids = listOf("project-1", "job-1"))
+        val importer = importer(ids = listOf("project-1", "job-1", "page-1"))
 
         val error = assertFailsWith<ProjectImportException> {
             importer.importProject(listOf(failing("1.jpg")))
@@ -115,6 +121,46 @@ class ProjectImporterTest {
 
         assertEquals(ImportErrorCode.PROJECT_ALREADY_EXISTS, error.code)
         assertTrue(existingStaging.resolve("owner.marker").exists())
+    }
+
+    @Test
+    fun `unsafe project id is rejected before it can escape the workspace`() {
+        val escapedProject = root.resolveSibling("${root.fileName}-escaped-project")
+        try {
+            val importer = importer(
+                ids = listOf(escapedProject.toAbsolutePath().toString(), "job-1", "page-1"),
+            )
+
+            assertFailsWith<IllegalArgumentException> {
+                importer.importProject(listOf(bytes("1.jpg", "page")))
+            }
+
+            assertFalse(escapedProject.exists())
+        } finally {
+            escapedProject.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `unsafe job id is rejected before reports can escape the workspace`() {
+        val escapedReport = root.resolveSibling("${root.fileName}-escaped-report")
+        val escapedJson = escapedReport.resolveSibling("${escapedReport.fileName}.json")
+        val escapedText = escapedReport.resolveSibling("${escapedReport.fileName}.txt")
+        try {
+            val importer = importer(
+                ids = listOf("project-1", escapedReport.toAbsolutePath().toString(), "page-1"),
+            )
+
+            assertFailsWith<IllegalArgumentException> {
+                importer.importProject(listOf(bytes("1.jpg", "page")))
+            }
+
+            assertFalse(escapedJson.exists())
+            assertFalse(escapedText.exists())
+        } finally {
+            Files.deleteIfExists(escapedJson)
+            Files.deleteIfExists(escapedText)
+        }
     }
 
     private fun importer(ids: List<String>): ProjectImporter = ProjectImporter(

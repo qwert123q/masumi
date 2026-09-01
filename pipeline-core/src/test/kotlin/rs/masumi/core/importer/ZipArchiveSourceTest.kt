@@ -29,7 +29,15 @@ class ZipArchiveSourceTest {
                 )
                 assertEquals("one", selected.accepted.first().source.openStream().reader().use { it.readText() })
 
-                val ids = ArrayDeque(listOf("archive-project", "archive-job"))
+                val ids = ArrayDeque(
+                    listOf(
+                        "archive-project",
+                        "archive-job",
+                        "archive-page-1",
+                        "archive-page-2",
+                        "archive-page-3",
+                    ),
+                )
                 val outcome = ProjectImporter(
                     workspaceRoot = workspace,
                     idSource = IdSource { ids.removeFirst() },

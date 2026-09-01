@@ -30,10 +30,8 @@ The OCR model package is pinned to immutable upstream metadata:
 | Upstream revision | `511b09642bb324401f15f97cc23bc67e8f0a291d` |
 | Language model file | `PaddleOCR-VL-1.6-GGUF.gguf` |
 | Language model byte length | `935769056` |
-| Language model SHA-256 | `f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8` |
 | Projector file | `PaddleOCR-VL-1.6-GGUF-mmproj.gguf` |
 | Projector byte length | `881770560` |
-| Projector SHA-256 | `204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a` |
 | License | Apache-2.0 |
 | Native runtime | `llama.cpp` tag `b8935` |
 | Prompt | `OCR:` |
@@ -48,29 +46,29 @@ The model store uses one package directory containing both files and metadata:
 workspace/
 └── models/
     ├── .staging/
-    │   └── <package-sha256>/
+    │   └── <storage-revision>/
     │       ├── PaddleOCR-VL-1.6-GGUF.gguf.part
     │       └── PaddleOCR-VL-1.6-GGUF-mmproj.gguf.part
     └── paddlepaddle--paddleocr-vl-1.6-gguf/
-        └── <package-sha256>/
+        └── <storage-revision>/
             ├── PaddleOCR-VL-1.6-GGUF.gguf
             ├── PaddleOCR-VL-1.6-GGUF-mmproj.gguf
             └── package.json
 ```
 
-`package-sha256` is derived from the ordered file digests and runtime contract. `package.json` records both file descriptors, the embedded model capabilities validated by native code, the llama.cpp runtime revision, compile backend, and acquisition time. It never records a temporary download URL, response headers, absolute path, or device information.
+The storage revision is a pinned human-readable package identifier. `package.json` records both filenames and byte lengths, the upstream package revision, embedded model capabilities validated by native code, the llama.cpp runtime revision, compile backend, and acquisition time. It never records a temporary download URL, response headers, absolute path, or device information.
 
 ### Resumable installation
 
-Each model file has an app-owned `*.part` file under a stable package-keyed staging directory, so a new OCR job can resume a download started by an earlier job. The expected URL, revision, length, and digest come from the pinned descriptor in code; the actual partial length is the durable downloaded-byte checkpoint. Installation follows these rules:
+Each model file has an app-owned `*.part` file under a stable storage-revision staging directory, so a new OCR job can resume a download started by an earlier job. The expected URL, revision, filename, and length come from the pinned descriptor in code; the actual partial length is the durable downloaded-byte checkpoint. Installation follows these rules:
 
 1. Reuse a partial file only from the current package-keyed staging directory and only when its actual length does not exceed the pinned file length.
 2. Resume with an HTTP `Range` request and require a compatible `206` response. If the server returns a full `200`, truncate the partial file and restart from byte zero.
-3. Stream bytes while updating progress. After completion, recompute SHA-256 from the complete file instead of trusting incremental state.
-4. Reject a length or digest mismatch, remove the invalid partial file, and retry once from byte zero.
+3. Stream bytes while updating progress and require the exact expected final length.
+4. Keep normalization state in an adjacent marker. If normalization was interrupted, discard that partial file and marker and restart the download from byte zero before converting again.
 5. Open both files through the native runtime and verify that the model has a decoder, the projector advertises vision support, and the embedded chat template can render the required image marker.
 6. Atomically publish the complete package directory. Consumers never open staging files.
-7. A transient native capability-load failure reports a safe error but never deletes files whose length, digest, and metadata have already passed integrity validation.
+7. A native capability-load failure reports a safe error and does not publish an unusable package. Existing compatible packages, including legacy-named directories, are discovered through safe metadata, filenames, lengths, and capability checks.
 
 ## Module boundaries
 
@@ -132,14 +130,14 @@ The values above are schema-owned configuration and participate in artifact iden
 
 ### Candidate identity
 
-`ocrRegionId` is the SHA-256 of a canonical record containing:
+`ocrRegionId` is a structural child ID containing the persisted OCR page artifact key and a stable candidate index based on:
 
 - page ID and detection page artifact key;
 - the sorted source detection region IDs;
 - consolidation schema version;
 - resulting semantic source class.
 
-Geometry, confidence, job ID, timestamps, and recognized text are excluded. Crop or model changes therefore invalidate OCR artifacts without changing the stable logical candidate identity.
+Geometry, confidence, timestamps, and recognized text are excluded. The ID is persisted before region work starts. Crop or model changes create a new page/run lineage while the source detection-region lineage remains explicit.
 
 ## Reading order
 
@@ -190,15 +188,15 @@ Bubble-associated candidates keep semantic status `REQUIRED_TEXT`. Free-text can
 
 ## Artifact identity and layout
 
-The OCR page artifact key contains:
+An OCR page artifact key is an opaque safe ID allocated before page work. Its explicit dependency record contains:
 
-- source SHA-256 and detection page artifact key;
+- source page ID, recorded byte length, and detection page artifact key;
 - OCR schema, consolidation, reading-order, crop, normalization, and quality-policy revisions;
 - both model-file descriptors and package key;
 - llama.cpp tag, ABI, native backend, and native build contract;
 - prompt and generation configuration.
 
-The run key hashes the ordered manifest entries, their detection page keys, and OCR page keys. Project ID, filenames, absolute paths, job IDs, timestamps, recognized output, timing, and device information are excluded.
+The run key is an opaque safe ID persisted with the ordered manifest entries, their detection page keys, OCR page keys, and declared OCR dependencies. Resume reuses it only when those explicit records still match; a changed dependency creates a new run.
 
 Published output uses this layout:
 
@@ -275,10 +273,10 @@ If a valid model cannot load within available memory or measured steady-state pa
 
 The following are job-fatal:
 
-- model or projector length, digest, or native capability mismatch;
+- model or projector length or native capability mismatch;
 - incompatible JNI or llama.cpp runtime revision;
 - corrupt detection input or strict OCR schema;
-- source digest mismatch;
+- an unsafe, missing, or wrong-length source;
 - unavailable workspace or failed final atomic publication;
 - model load failure or unrecoverable native initialization failure.
 
@@ -307,7 +305,7 @@ Pure Kotlin tests cover:
 
 - candidate overlap clustering, cross-class precedence, bubble association, and no proximity-only merge;
 - deterministic right-to-left reading order;
-- stable OCR region, page, and run identities;
+- persisted OCR run/page identities and structural region identities;
 - invalidation by every model, runtime, prompt, crop, and quality dependency;
 - text normalization and crop-attempt selection;
 - quality states for empty, repeated, truncated, agreeing, disagreeing, and low-probability output;
@@ -319,7 +317,7 @@ Pure Kotlin tests cover:
 Instrumentation uses generated images and a fake `OcrEngine` to cover:
 
 - visible-coordinate crop rendering and clipping;
-- model download resume, full-response restart, length mismatch, digest mismatch, and atomic package publication;
+- model download resume, full-response restart, interrupted-normalization recovery, length mismatch, capability mismatch, and atomic package publication;
 - foreground progress, token-level cancellation propagation, and service restart recovery;
 - reuse of committed regions without repeated fake inference;
 - preview colors, page detail ordering, and output dimensions;
@@ -340,7 +338,7 @@ Native host or connected tests cover:
 An external representative chapter and its evaluation notes remain outside the repository. Acceptance demonstrates:
 
 - every eligible candidate reaches a defined terminal state;
-- source and detection digests remain unchanged;
+- source and detection lineage, paths, and recorded byte lengths remain unchanged;
 - force-stopping and reopening the app repeats only the interrupted region;
 - cancellation stops token generation and preserves earlier checkpoints;
 - the app completes without native out-of-memory or uncontrolled concurrency;

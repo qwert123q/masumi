@@ -4,7 +4,7 @@ import android.provider.DocumentsContract
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.nio.file.Files
-import java.security.MessageDigest
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -58,7 +58,7 @@ class MangaLibraryStoreTest {
 
         assertEquals(1, projects.size)
         assertEquals("project-one", projects.single().metadata.projectId)
-        assertEquals(3, projects.single().metadata.schemaVersion)
+        assertEquals(4, projects.single().metadata.schemaVersion)
         assertEquals("第一话 开始", projects.single().metadata.title)
         assertEquals("第一话 开始", reloaded.documentDisplayName(project.mangaDirectoryUri))
         assertEquals("生肉", reloaded.documentDisplayName(project.sourceDirectoryUri!!))
@@ -83,22 +83,44 @@ class MangaLibraryStoreTest {
     }
 
     @Test
+    fun legacyShelfMetadataWithSourceFingerprintRemainsReadable() {
+        val store = MangaLibraryStore(context.contentResolver, treeUri)
+        val project = store.ensureProject("legacy-project", "旧项目", 123L, treeUri)
+        val metadata = requireNotNull(child(project.directoryUri, ".masumi-project.json"))
+        val legacy = JSONObject()
+            .put("schemaVersion", 3)
+            .put("projectId", "legacy-project")
+            .put("title", "旧项目")
+            .put("createdAtEpochMillis", 123L)
+            .put("sourceTreeUri", treeUri.toString())
+            .put("sourceFingerprint", "a".repeat(64))
+            .toString()
+        context.contentResolver.openOutputStream(metadata, "w")!!.use {
+            it.write(legacy.toByteArray())
+        }
+
+        val reloaded = MangaLibraryStore(context.contentResolver, treeUri)
+            .refreshProjects()
+            .single()
+
+        assertEquals("legacy-project", reloaded.metadata.projectId)
+        assertEquals(3, reloaded.metadata.schemaVersion)
+    }
+
+    @Test
     fun repeatImportsCreateIndependentFoldersThatCanBeRenamedAndDeleted() {
-        val fingerprint = "a".repeat(64)
         val store = MangaLibraryStore(context.contentResolver, treeUri)
         val older = store.ensureProject(
             "project-old",
             "铃井",
             1_000L,
             treeUri,
-            sourceFingerprint = fingerprint,
         )
         val newer = store.ensureProject(
             "project-new",
             "铃井",
             2_000L,
             treeUri,
-            sourceFingerprint = fingerprint,
         )
 
         assertNotEquals(older.mangaDirectoryUri, newer.mangaDirectoryUri)
@@ -124,26 +146,23 @@ class MangaLibraryStoreTest {
     }
 
     @Test
-    fun reusesByteIdenticalLegacyArchiveWithoutCreatingAStableNameCopy() {
+    fun reusesUniqueSameLengthLegacyArchiveWithoutCreatingAStableNameCopy() {
         val bytes = "raw-jpeg-content".toByteArray()
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(bytes)
-            .joinToString("") { "%02x".format(it) }
+        val pageId = "legacy-page"
         val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
         Files.createDirectories(cacheDirectory)
         val privateProject = Files.createTempDirectory(cacheDirectory, "library-source-")
         try {
-            val source = privateProject.resolve("sources/$digest.jpg")
+            val source = privateProject.resolve("sources/$pageId.jpg")
             Files.createDirectories(source.parent)
             Files.write(source, bytes)
             val page = PageRecord(
                 order = 0,
-                pageId = digest,
-                sourceSha256 = digest,
+                pageId = pageId,
                 originalName = "第 01 页.jpg",
                 mediaType = "image/jpeg",
                 byteLength = bytes.size.toLong(),
-                storedPath = "sources/$digest.jpg",
+                storedPath = "sources/$pageId.jpg",
             )
             val store = MangaLibraryStore(context.contentResolver, treeUri)
             val project = store.ensureProject(
@@ -151,7 +170,6 @@ class MangaLibraryStoreTest {
                 "铃井",
                 123L,
                 treeUri,
-                sourceFingerprint = mangaSourceFingerprint(listOf(page)),
             )
             createOutput(requireNotNull(project.sourceDirectoryUri), "第 01 页.jpg", bytes.decodeToString())
 
@@ -170,38 +188,36 @@ class MangaLibraryStoreTest {
     }
 
     @Test
-    fun legacyCollisionIsReusedOnlyByThePageWhoseContentMatches() {
+    fun ambiguousLegacyNameIsPreservedWhileBothPagesReceiveStableNames() {
         val firstBytes = "first-content".toByteArray()
         val secondBytes = "other-content".toByteArray()
         assertEquals(firstBytes.size, secondBytes.size)
-        val firstDigest = sha256(firstBytes)
-        val secondDigest = sha256(secondBytes)
+        val firstPageId = "first-page"
+        val secondPageId = "second-page"
         val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
         Files.createDirectories(cacheDirectory)
         val privateProject = Files.createTempDirectory(cacheDirectory, "library-source-collision-")
         try {
-            val firstSource = privateProject.resolve("sources/$firstDigest.jpg")
-            val secondSource = privateProject.resolve("sources/$secondDigest.jpg")
+            val firstSource = privateProject.resolve("sources/$firstPageId.jpg")
+            val secondSource = privateProject.resolve("sources/$secondPageId.jpg")
             Files.createDirectories(firstSource.parent)
             Files.write(firstSource, firstBytes)
             Files.write(secondSource, secondBytes)
             val firstPage = PageRecord(
                 order = 0,
-                pageId = firstDigest,
-                sourceSha256 = firstDigest,
+                pageId = firstPageId,
                 originalName = "chapter/page.jpg",
                 mediaType = "image/jpeg",
                 byteLength = firstBytes.size.toLong(),
-                storedPath = "sources/$firstDigest.jpg",
+                storedPath = "sources/$firstPageId.jpg",
             )
             val secondPage = PageRecord(
                 order = 1,
-                pageId = secondDigest,
-                sourceSha256 = secondDigest,
+                pageId = secondPageId,
                 originalName = "chapter\\page.jpg",
                 mediaType = "image/jpeg",
                 byteLength = secondBytes.size.toLong(),
-                storedPath = "sources/$secondDigest.jpg",
+                storedPath = "sources/$secondPageId.jpg",
             )
             val pages = listOf(firstPage, secondPage)
             val store = MangaLibraryStore(context.contentResolver, treeUri)
@@ -210,7 +226,6 @@ class MangaLibraryStoreTest {
                 "碰撞",
                 123L,
                 treeUri,
-                sourceFingerprint = mangaSourceFingerprint(pages),
             )
             createOutput(
                 requireNotNull(project.sourceDirectoryUri),
@@ -222,15 +237,23 @@ class MangaLibraryStoreTest {
 
             val archived = store.sourcePages("collision-project")
             assertEquals(
-                listOf("000001-$firstDigest-chapter_page.jpg", "chapter_page.jpg"),
+                listOf(
+                    "000001-$firstPageId-chapter_page.jpg",
+                    "000002-$secondPageId-chapter_page.jpg",
+                    "chapter_page.jpg",
+                ),
                 archived.map { it.name },
             )
             val archivedContent = archived.associate { page ->
                 page.name to context.contentResolver.openInputStream(page.uri)!!.use { it.readBytes() }
             }
             assertTrue(
-                requireNotNull(archivedContent["000001-$firstDigest-chapter_page.jpg"])
+                requireNotNull(archivedContent["000001-$firstPageId-chapter_page.jpg"])
                     .contentEquals(firstBytes),
+            )
+            assertTrue(
+                requireNotNull(archivedContent["000002-$secondPageId-chapter_page.jpg"])
+                    .contentEquals(secondBytes),
             )
             assertTrue(requireNotNull(archivedContent["chapter_page.jpg"]).contentEquals(secondBytes))
         } finally {
@@ -243,35 +266,33 @@ class MangaLibraryStoreTest {
         val firstBytes = "first-content".toByteArray()
         val secondBytes = "other-content".toByteArray()
         assertEquals(firstBytes.size, secondBytes.size)
-        val firstDigest = sha256(firstBytes)
-        val secondDigest = sha256(secondBytes)
+        val firstPageId = "first-page"
+        val secondPageId = "second-page"
         val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
         Files.createDirectories(cacheDirectory)
         val privateProject = Files.createTempDirectory(cacheDirectory, "library-stable-legacy-collision-")
         try {
-            val firstSource = privateProject.resolve("sources/$firstDigest.jpg")
-            val secondSource = privateProject.resolve("sources/$secondDigest.jpg")
+            val firstSource = privateProject.resolve("sources/$firstPageId.jpg")
+            val secondSource = privateProject.resolve("sources/$secondPageId.jpg")
             Files.createDirectories(firstSource.parent)
             Files.write(firstSource, firstBytes)
             Files.write(secondSource, secondBytes)
             val firstPage = PageRecord(
                 order = 0,
-                pageId = firstDigest,
-                sourceSha256 = firstDigest,
+                pageId = firstPageId,
                 originalName = "page.jpg",
                 mediaType = "image/jpeg",
                 byteLength = firstBytes.size.toLong(),
-                storedPath = "sources/$firstDigest.jpg",
+                storedPath = "sources/$firstPageId.jpg",
             )
             val occupiedStableName = mangaArchiveSourceFileName(firstPage)
             val secondPage = PageRecord(
                 order = 1,
-                pageId = secondDigest,
-                sourceSha256 = secondDigest,
+                pageId = secondPageId,
                 originalName = occupiedStableName,
                 mediaType = "image/jpeg",
                 byteLength = secondBytes.size.toLong(),
-                storedPath = "sources/$secondDigest.jpg",
+                storedPath = "sources/$secondPageId.jpg",
             )
             val pages = listOf(firstPage, secondPage)
             val store = MangaLibraryStore(context.contentResolver, treeUri)
@@ -280,7 +301,6 @@ class MangaLibraryStoreTest {
                 "稳定名碰撞",
                 123L,
                 treeUri,
-                sourceFingerprint = mangaSourceFingerprint(pages),
             )
             createOutput(
                 requireNotNull(project.sourceDirectoryUri),
@@ -315,22 +335,21 @@ class MangaLibraryStoreTest {
     fun differentLengthStableOccupantIsPreservedAndUsesDeterministicAlternate() {
         val sourceBytes = "longer-source-content".toByteArray()
         val occupiedBytes = "short".toByteArray()
-        val digest = sha256(sourceBytes)
+        val pageId = "length-page"
         val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
         Files.createDirectories(cacheDirectory)
         val privateProject = Files.createTempDirectory(cacheDirectory, "library-stable-length-collision-")
         try {
-            val source = privateProject.resolve("sources/$digest.jpg")
+            val source = privateProject.resolve("sources/$pageId.jpg")
             Files.createDirectories(source.parent)
             Files.write(source, sourceBytes)
             val page = PageRecord(
                 order = 0,
-                pageId = digest,
-                sourceSha256 = digest,
+                pageId = pageId,
                 originalName = "page.jpg",
                 mediaType = "image/jpeg",
                 byteLength = sourceBytes.size.toLong(),
-                storedPath = "sources/$digest.jpg",
+                storedPath = "sources/$pageId.jpg",
             )
             val stableName = mangaArchiveSourceFileName(page)
             val alternateName = mangaArchiveAlternativeSourceFileName(page, 2)
@@ -340,7 +359,6 @@ class MangaLibraryStoreTest {
                 "长度碰撞",
                 123L,
                 treeUri,
-                sourceFingerprint = mangaSourceFingerprint(listOf(page)),
             )
             createOutput(
                 requireNotNull(project.sourceDirectoryUri),
@@ -370,24 +388,23 @@ class MangaLibraryStoreTest {
     @Test
     fun occupiedPrimaryAndFirstAlternateArePreservedBeforeReusingSecondAlternate() {
         val sourceBytes = "expected-content".toByteArray()
-        val primaryBytes = "occupied-primary".toByteArray()
-        val firstAlternateBytes = "occupied-alternate".toByteArray()
-        val digest = sha256(sourceBytes)
+        val primaryBytes = "short".toByteArray()
+        val firstAlternateBytes = "also-short".toByteArray()
+        val pageId = "multi-collision-page"
         val cacheDirectory = instrumentation.targetContext.cacheDir.toPath()
         Files.createDirectories(cacheDirectory)
         val privateProject = Files.createTempDirectory(cacheDirectory, "library-stable-multi-collision-")
         try {
-            val source = privateProject.resolve("sources/$digest.jpg")
+            val source = privateProject.resolve("sources/$pageId.jpg")
             Files.createDirectories(source.parent)
             Files.write(source, sourceBytes)
             val page = PageRecord(
                 order = 0,
-                pageId = digest,
-                sourceSha256 = digest,
+                pageId = pageId,
                 originalName = "page.jpg",
                 mediaType = "image/jpeg",
                 byteLength = sourceBytes.size.toLong(),
-                storedPath = "sources/$digest.jpg",
+                storedPath = "sources/$pageId.jpg",
             )
             val stableName = mangaArchiveSourceFileName(page)
             val firstAlternateName = mangaArchiveAlternativeSourceFileName(page, 2)
@@ -398,7 +415,6 @@ class MangaLibraryStoreTest {
                 "连续碰撞",
                 123L,
                 treeUri,
-                sourceFingerprint = mangaSourceFingerprint(listOf(page)),
             )
             val sourceDirectory = requireNotNull(project.sourceDirectoryUri)
             createOutput(sourceDirectory, stableName, primaryBytes.decodeToString())
@@ -429,15 +445,33 @@ class MangaLibraryStoreTest {
         }
     }
 
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes)
-        .joinToString("") { "%02x".format(it) }
-
     private fun createOutput(parent: android.net.Uri, name: String, content: String): android.net.Uri {
         val uri = requireNotNull(
             DocumentsContract.createDocument(context.contentResolver, parent, "image/png", name),
         )
         context.contentResolver.openOutputStream(uri, "w")!!.use { it.write(content.toByteArray()) }
         return uri
+    }
+
+    private fun child(parent: android.net.Uri, name: String): android.net.Uri? {
+        val parentId = DocumentsContract.getDocumentId(parent)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
+        return context.contentResolver.query(
+            children,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            ),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                if (cursor.getString(1) == name) {
+                    return@use DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(0))
+                }
+            }
+            null
+        }
     }
 }

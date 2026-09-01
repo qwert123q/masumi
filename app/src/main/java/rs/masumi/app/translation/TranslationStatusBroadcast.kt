@@ -1,6 +1,7 @@
 package rs.masumi.app.translation
 
 import android.content.Intent
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.translation.TranslationJobStatus
 
 object TranslationStatusBroadcast {
@@ -37,8 +38,8 @@ object TranslationStatusBroadcast {
 
     fun create(packageName: String, progress: TranslationProgress): Intent {
         require(PACKAGE_NAME.matches(packageName))
-        require(SAFE_ID.matches(progress.projectId) && SAFE_ID.matches(progress.jobId))
-        require(SHA256.matches(progress.runArtifactKey))
+        require(SafeOpaqueId.isValid(progress.projectId) && SafeOpaqueId.isValid(progress.jobId))
+        require(SafeOpaqueId.isValid(progress.runArtifactKey))
         require(progress.errorCode == null || ERROR_CODE.matches(progress.errorCode))
         return Intent(ACTION).apply {
             setPackage(packageName)
@@ -67,7 +68,7 @@ object TranslationStatusBroadcast {
         val runKey = requireNotNull(intent.getStringExtra(EXTRA_RUN_ARTIFACT_KEY))
         val errorCode = intent.getStringExtra(EXTRA_ERROR_CODE)
         val currentWindow = intent.getIntExtra(EXTRA_CURRENT_WINDOW_INDEX, INVALID_INT)
-        require(SAFE_ID.matches(projectId) && SAFE_ID.matches(jobId) && SHA256.matches(runKey))
+        require(SafeOpaqueId.isValid(projectId) && SafeOpaqueId.isValid(jobId) && SafeOpaqueId.isValid(runKey))
         require(errorCode == null || ERROR_CODE.matches(errorCode))
         require(currentWindow >= NO_CURRENT_WINDOW)
         TranslationProgress(
@@ -93,7 +94,5 @@ object TranslationStatusBroadcast {
     private const val NO_CURRENT_WINDOW = -1
     private const val INVALID_INT = Int.MIN_VALUE
     private val PACKAGE_NAME = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
-    private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-    private val SHA256 = Regex("[0-9a-f]{64}")
     private val ERROR_CODE = Regex("[A-Z][A-Z0-9_]{0,127}")
 }

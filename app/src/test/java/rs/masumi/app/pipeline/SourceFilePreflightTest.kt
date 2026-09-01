@@ -9,7 +9,7 @@ import rs.masumi.core.model.PageRecord
 
 class SourceFilePreflightTest {
     @Test
-    fun `resolves safe regular source with recorded length without checking content hash`() {
+    fun `resolves safe regular source using recorded length without rereading content`() {
         withProjectDirectory { projectDirectory ->
             val source = projectDirectory.resolve("sources/page.bin")
             Files.createDirectories(source.parent)
@@ -17,8 +17,6 @@ class SourceFilePreflightTest {
             val page = page(
                 storedPath = "sources/page.bin",
                 byteLength = 4L,
-                // SHA-256 of the different, same-length byte sequence [1, 2, 3, 4].
-                sourceSha256 = "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
             )
 
             val resolved = SourceFilePreflight.resolve(projectDirectory, page)
@@ -86,11 +84,9 @@ class SourceFilePreflightTest {
     private fun page(
         storedPath: String,
         byteLength: Long,
-        sourceSha256: String = "b".repeat(64),
     ): PageRecord = PageRecord(
         order = 0,
-        pageId = sourceSha256,
-        sourceSha256 = sourceSha256,
+        pageId = "page-1",
         originalName = "page.bin",
         mediaType = "application/octet-stream",
         byteLength = byteLength,

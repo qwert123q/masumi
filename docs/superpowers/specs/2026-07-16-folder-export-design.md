@@ -6,32 +6,30 @@ Status: Active
 
 ## Purpose
 
-Export every page of the current manga project directly into a user-selected Android document-tree folder. The export contains ordinary PNG files only; it does not create ZIP, CBZ, PDF, or an extra wrapper directory.
+Export every page of the current manga project as one complete generation directory inside a user-selected Android document-tree folder. The export contains ordinary PNG files only; it does not create ZIP, CBZ, or PDF output.
 
 ## Input and fallback boundary
 
-- A published typesetting run and its passed or warning-only automatic quality run are exact dependencies of an export job.
+- A published typesetting run is the exact upstream dependency of an export job.
 - A committed flattened page is always preferred.
 - If a complete page was preserved by typesetting, export the committed cleanup page. If that is unavailable, normalize the immutable source page to PNG.
 - Region-level preservation inside an otherwise committed flattened page remains visible and is already recorded by the typesetting report.
-- A blocked quality report prevents export for that typesetting run.
-- Export never repeats detection, OCR, translation, cleanup, typesetting, or quality analysis.
+- Export never repeats detection, OCR, translation, cleanup, or typesetting.
 
 ## Destination contract
 
-- The selected document tree is the final destination; no subfolder is created.
+- The selected document tree is the parent destination. A job writes a private staging generation and promotes it to a uniquely named `masumi-generation-*` directory only after every page succeeds.
 - Pages use manifest order and deterministic zero-padded names: `0001.png`, `0002.png`, and so on. At least four digits are used, expanding for larger projects.
-- A matching existing file is reused only after its byte length and SHA-256 match the selected page.
-- A changed file is first written and verified under a job-scoped temporary name. Only then may matching final names be removed and the verified temporary document be promoted.
-- Every promoted file is read back and verified. A job succeeds only when the selected folder contains one digest-verified output for every manifest page.
-- After the complete expected set is verified, stale numeric PNG page names outside the current range and abandoned Masumi temporary documents are removed. Non-numeric files and directories are untouched.
+- Each page is written once, the document is closed successfully, and its final name and expected non-zero byte length are queried before checkpointing.
+- A job succeeds only when the staging generation contains exactly one correctly named output for every manifest page; the complete directory is then promoted atomically when the provider supports rename.
+- Pruning never removes numeric images or staging directories found at the selected root unless ownership by the current job can be proven. With the current post-promotion flow, pruning is a no-op because the job owns no remaining root entries.
 
 ## Recovery and privacy
 
-The destination tree URI is stored only in the app-private resumable job journal. Status broadcasts and the terminal report contain a one-way destination key, counts, digests, byte lengths, and safe error codes; they contain no URI, source name, OCR text, translation text, API setting, or credential.
+The destination tree URI is stored only in the app-private resumable job journal. Status broadcasts and the terminal report contain an opaque destination ID, counts, byte lengths, and safe error codes; they contain no URI, source name, OCR text, translation text, API setting, or credential.
 
-Cancellation resets only the active page. Already verified outputs are revalidated and reused when the task resumes. A destination write failure fails safely without mutating source or internal pipeline artifacts.
+Cancellation resets only the active page. Already closed outputs in the current job's staging generation are reused only when their unique name and recorded byte length match. A destination write failure fails safely without mutating source, internal pipeline artifacts, or unowned entries in the selected folder.
 
 ## Acceptance boundary
 
-The slice is complete when Android can select a writable folder, export and overwrite deterministic PNG pages, cancel and resume, verify every external file, report flattened/cleanup/source counts, and complete a real device export without archive support.
+The slice is complete when Android can select a writable folder, publish deterministic PNG pages as one complete generation, cancel and resume, verify names and byte lengths, report flattened/cleanup/source counts, and complete a real device export without archive support.

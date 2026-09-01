@@ -6,8 +6,8 @@ object ExportFixtures {
         qualityRunArtifactKey = "2".repeat(64),
     )
     const val destinationUri = "content://provider/tree/folder"
-    val destinationKey = ExportIdentity.destinationKey(destinationUri)
-    val exportKey = ExportIdentity.exportKey(destinationKey, dependencies)
+    const val destinationKey = "destination-1"
+    const val exportKey = "export-1"
 
     fun job(): ExportJobRecord = ExportJobRecord(
         jobId = "export-job",
@@ -22,7 +22,6 @@ object ExportFixtures {
             ExportJobPage(
                 pageId = "4".repeat(64),
                 pageOrder = 0,
-                sourceSha256 = "5".repeat(64),
                 typesettingPageArtifactKey = "6".repeat(64),
                 outputName = "0001.png",
                 source = ExportPageSource.FLATTENED,

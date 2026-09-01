@@ -14,7 +14,6 @@ import rs.masumi.core.modelpackage.ModelSignatureValidator
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.nio.file.Files
-import java.security.MessageDigest
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -74,14 +73,61 @@ class DetectorModelProviderTest {
         }
     }
 
+    @Test
+    fun reusesLegacyNamedPackageWithoutRedownloading() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val workspace = Files.createTempDirectory(context.cacheDir.toPath(), "provider-legacy-")
+        val bytes = "detector-model".encodeToByteArray()
+        val descriptor = descriptor(bytes)
+        val firstProvider = DefaultDetectorModelProvider(
+            workspaceRoot = workspace,
+            descriptor = descriptor,
+            streamSource = ModelStreamSource { ByteArrayInputStream(bytes) },
+            signatureValidator = ModelSignatureValidator { signature() },
+        )
+
+        try {
+            val installed = firstProvider.acquire("install-1") { _, _ -> }
+            val metadataPath = installed.parent.resolve("package.json")
+            val legacyMetadata = Files.newBufferedReader(metadataPath, Charsets.UTF_8).use { reader ->
+                reader.readText().replace(
+                    "  \"storageRevision\": \"${descriptor.storageRevision}\",\n",
+                    "",
+                )
+            }
+            Files.newBufferedWriter(metadataPath, Charsets.UTF_8).use { writer ->
+                writer.write(legacyMetadata)
+            }
+            val legacyDirectory = installed.parent.parent.resolve("legacy-opaque-directory")
+            Files.move(installed.parent, legacyDirectory)
+            val secondProvider = DefaultDetectorModelProvider(
+                workspaceRoot = workspace,
+                descriptor = descriptor,
+                streamSource = ModelStreamSource { throw IOException("must reuse installed package") },
+                signatureValidator = ModelSignatureValidator { signature() },
+            )
+
+            val reused = secondProvider.acquire("install-2") { _, _ -> }
+
+            assertEquals(legacyDirectory.resolve("model.onnx"), reused)
+            assertTrue(
+                Files.newBufferedReader(legacyDirectory.resolve("package.json"), Charsets.UTF_8).use { reader ->
+                    reader.readText().contains("storageRevision")
+                },
+            )
+        } finally {
+            workspace.toFile().deleteRecursively()
+        }
+    }
+
     private fun descriptor(bytes: ByteArray): DetectorModelDescriptor = DetectorModelDescriptor(
         modelId = "test/detector",
         storageKey = "test--detector",
+        storageRevision = "revision-1",
         repository = "test/detector",
         revision = "revision-1",
         fileName = "detector.onnx",
         byteLength = bytes.size.toLong(),
-        sha256 = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) },
         license = "Apache-2.0",
         opset = 18,
         runtimeRevision = "runtime:1",

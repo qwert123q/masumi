@@ -2,6 +2,7 @@ package rs.masumi.core.ocr
 
 import java.nio.file.Path
 import java.util.UUID
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.io.NioProjectFileSystem
 import rs.masumi.core.io.ProjectFileSystem
 import rs.masumi.core.serialization.OcrJson
@@ -14,15 +15,15 @@ class OcrArtifactStore(
     private val projectDirectory = projectDirectory.toAbsolutePath().normalize()
 
     fun writeJob(job: OcrJobRecord) {
-        requireSafeId(job.jobId, "jobId")
-        requireSha256(job.runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(job.jobId, "jobId")
+        SafeOpaqueId.require(job.runArtifactKey, "runArtifactKey")
         val jobs = projectDirectory.resolve("jobs")
         fileSystem.createDirectories(jobs)
         fileSystem.replaceUtf8(jobs.resolve("${job.jobId}.json"), json.encodeJob(job))
     }
 
     fun readJob(jobId: String): OcrJobRecord? {
-        requireSafeId(jobId, "jobId")
+        SafeOpaqueId.require(jobId, "jobId")
         val path = projectDirectory.resolve("jobs").resolve("$jobId.json")
         if (!fileSystem.exists(path)) return null
         val job = json.decodeJob(fileSystem.readUtf8(path))
@@ -42,8 +43,8 @@ class OcrArtifactStore(
         .toList()
 
     fun prepareRun(job: OcrJobRecord) {
-        requireSafeId(job.jobId, "jobId")
-        requireSha256(job.runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(job.jobId, "jobId")
+        SafeOpaqueId.require(job.runArtifactKey, "runArtifactKey")
         fileSystem.createDirectories(checkpointDirectory(job))
     }
 
@@ -56,7 +57,7 @@ class OcrArtifactStore(
         require(pages.all { page -> page.regions.any { it.ocrRegionId == ocrRegionId } }) {
             "region does not belong to duplicate page entries"
         }
-        requireSha256(ocrRegionId, "ocrRegionId")
+        SafeOpaqueId.require(ocrRegionId, "ocrRegionId")
         fileSystem.deleteIfExists(
             checkpointDirectory(job)
                 .resolve("pages")
@@ -114,7 +115,7 @@ class OcrArtifactStore(
     ): OcrRegionArtifact? = runCatching {
         requireMatchingPages(job, page.pageId)
         require(page.regions.any { it.ocrRegionId == ocrRegionId }) { "region does not belong to page" }
-        requireSha256(ocrRegionId, "ocrRegionId")
+        SafeOpaqueId.require(ocrRegionId, "ocrRegionId")
         val path = checkpointDirectory(job)
             .resolve("pages")
             .resolve(page.pageId)
@@ -221,7 +222,7 @@ class OcrArtifactStore(
     }
 
     fun readPublishedRun(runArtifactKey: String): OcrRunArtifact? {
-        requireSha256(runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(runArtifactKey, "runArtifactKey")
         val directory = publishedDirectory(runArtifactKey)
         val path = directory.resolve("artifact.json")
         if (!fileSystem.exists(path)) return null
@@ -234,7 +235,7 @@ class OcrArtifactStore(
     }
 
     fun readPublishedReport(runArtifactKey: String): OcrReport? {
-        requireSha256(runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(runArtifactKey, "runArtifactKey")
         val path = publishedDirectory(runArtifactKey).resolve("report.json")
         if (!fileSystem.exists(path)) return null
         return runCatching {
@@ -260,7 +261,6 @@ class OcrArtifactStore(
                     require(fileSystem.exists(artifactPath) && fileSystem.exists(previewPath))
                     val pageArtifact = json.decodePageArtifact(fileSystem.readUtf8(artifactPath))
                     require(pageArtifact.pageId == entry.pageId)
-                    require(pageArtifact.sourceSha256 == entry.sourceSha256)
                     require(pageArtifact.detectionPageArtifactKey == entry.detectionPageArtifactKey)
                     require(pageArtifact.pageArtifactKey == entry.pageArtifactKey)
                     require(pageArtifact.dependencies == artifact.dependencies)
@@ -282,7 +282,6 @@ class OcrArtifactStore(
     ) {
         require(artifact.schemaVersion == OCR_SCHEMA_VERSION) { "page schema mismatch" }
         require(artifact.pageId == page.pageId) { "page identity mismatch" }
-        require(artifact.sourceSha256 == page.sourceSha256) { "source digest mismatch" }
         require(artifact.detectionPageArtifactKey == page.detectionPageArtifactKey) {
             "detection page dependency mismatch"
         }
@@ -294,7 +293,7 @@ class OcrArtifactStore(
     }
 
     private fun requireValidRegionArtifact(artifact: OcrRegionArtifact) {
-        requireSha256(artifact.candidate.ocrRegionId, "ocrRegionId")
+        SafeOpaqueId.require(artifact.candidate.ocrRegionId, "ocrRegionId")
         require(artifact.state.isTerminal()) { "region artifact must be terminal" }
         require(artifact.selectedAttemptIndex == null || artifact.selectedAttemptIndex in artifact.attempts.indices) {
             "selected attempt is outside attempt list"
@@ -313,8 +312,8 @@ class OcrArtifactStore(
         }
 
     private fun checkpointDirectory(job: OcrJobRecord): Path {
-        requireSafeId(job.jobId, "jobId")
-        requireSha256(job.runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(job.jobId, "jobId")
+        SafeOpaqueId.require(job.runArtifactKey, "runArtifactKey")
         return projectDirectory.resolve("staging/ocr/${job.jobId}/${job.runArtifactKey}").normalize()
     }
 
@@ -357,16 +356,4 @@ class OcrArtifactStore(
         -> false
     }
 
-    private fun requireSafeId(value: String, field: String) {
-        require(SAFE_ID.matches(value)) { "$field contains unsafe characters" }
-    }
-
-    private fun requireSha256(value: String, field: String) {
-        require(SHA256.matches(value)) { "$field must be a lowercase SHA-256 digest" }
-    }
-
-    private companion object {
-        val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA256 = Regex("[0-9a-f]{64}")
-    }
 }

@@ -30,14 +30,10 @@ class ExpectedDestinationOutputTest {
     }
 
     @Test
-    fun `rename fallback discards the returned renamed document when uri changes`() {
-        assertEquals(
-            "renamed-uri",
-            unusableRenameDocument("temporary-uri", "renamed-uri"),
-        )
-        assertEquals(
-            "temporary-uri",
-            unusableRenameDocument("temporary-uri", null),
-        )
+    fun `destination output requires a present exact nonzero byte length`() {
+        assertTrue(destinationOutputLengthMatches(actualByteLength = 128L, expectedByteLength = 128L))
+        assertFalse(destinationOutputLengthMatches(actualByteLength = null, expectedByteLength = 128L))
+        assertFalse(destinationOutputLengthMatches(actualByteLength = 127L, expectedByteLength = 128L))
+        assertFalse(destinationOutputLengthMatches(actualByteLength = 0L, expectedByteLength = 0L))
     }
 }

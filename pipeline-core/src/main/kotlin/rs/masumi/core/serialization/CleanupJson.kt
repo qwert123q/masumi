@@ -14,7 +14,7 @@ class CleanupJson(
         prettyPrint = true
         encodeDefaults = true
         explicitNulls = true
-        ignoreUnknownKeys = false
+        ignoreUnknownKeys = true
     },
 ) {
     fun encodePageArtifact(value: PageCleanupArtifact): String = json.encodeToString(value)

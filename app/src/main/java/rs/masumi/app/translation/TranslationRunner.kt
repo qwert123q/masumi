@@ -1,7 +1,6 @@
 package rs.masumi.app.translation
 
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -14,6 +13,7 @@ import rs.masumi.core.importer.UuidIdSource
 import rs.masumi.core.model.PageRecord
 import rs.masumi.core.ocr.OcrPageState
 import rs.masumi.core.translation.PageTranslationArtifact
+import rs.masumi.core.translation.TRANSLATION_SCHEMA_VERSION
 import rs.masumi.core.translation.PageTranslationInput
 import rs.masumi.core.translation.ProtectedTranslationRegion
 import rs.masumi.core.translation.TranslationArtifactIdentity
@@ -43,6 +43,7 @@ import rs.masumi.core.translation.TranslationPromptRef
 import rs.masumi.core.translation.TranslationProtectionReason
 import rs.masumi.core.translation.TranslationProviderDependency
 import rs.masumi.core.translation.TranslationReport
+import rs.masumi.core.translation.TranslationRecoveryCompatibility
 import rs.masumi.core.translation.TranslationResponseValidator
 import rs.masumi.core.translation.TranslationResultState
 import rs.masumi.core.translation.TranslationRunArtifact
@@ -108,12 +109,14 @@ class TranslationRunner(
     ): TranslationRunResult {
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
-        val detectionRun = requireNotNull(catalog.latestPublishedRun(projectId)) {
+        val detectionRun = requireNotNull(catalog.publishedDetectionRuns(projectId).firstOrNull {
+            PipelineArtifactFreshness.detection(it.artifact, project.manifest)
+        }) {
             "completed detection run was not found"
         }
         val ocrRun = requireNotNull(
             catalog.publishedOcrRuns(projectId).firstOrNull {
-                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact.runArtifactKey)
+                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact)
             },
         ) {
             "completed OCR run was not found"
@@ -124,8 +127,7 @@ class TranslationRunner(
         // Series-level glossary keeps names and honorifics consistent across
         // chapters; it participates in the artifact identity, so a changed
         // glossary correctly invalidates cached translations.
-        val initialGlossary = glossaryMemory?.load().orEmpty()
-        val initialGlossarySha256 = TranslationArtifactIdentity.glossarySha256(initialGlossary)
+        val initialGlossary = mergeGlossary(emptyList(), glossaryMemory?.load().orEmpty())
         val dependencies = TranslationDependencies(
             ocrRunArtifactKey = ocrRun.artifact.runArtifactKey,
             policy = policy,
@@ -133,27 +135,27 @@ class TranslationRunner(
             batching = batching,
             outputValidation = outputValidation,
             provider = TranslationProviderDependency(
-                modelId = sanitizedModelId(settings.model),
+                modelId = settings.model.trim(),
                 temperature = settings.temperature,
                 maximumOutputTokens = settings.maximumOutputTokens,
                 requestJsonObjectFormat = settings.requestJsonObjectFormat,
                 reference = settings.artifactReference(),
             ),
-            initialGlossarySha256 = initialGlossarySha256,
+            initialGlossary = initialGlossary,
         )
         val windows = TranslationBatchPlanner(batching, promptBuilder).plan(
             canonicalInputs,
             initialGlossary.associate { entry -> entry.source to entry.translation },
         )
-        val pageKeys = occurrenceInputs.associate { input ->
-            input.pageOrder to TranslationArtifactIdentity.pageArtifactKey(input.ocrPageArtifactKey, dependencies)
-        }
-        val runKey = TranslationArtifactIdentity.runArtifactKey(
-            occurrenceInputs.map { it.pageOrder to pageKeys.getValue(it.pageOrder) },
-            dependencies,
-        )
         val store = TranslationArtifactStore(project.directory)
-        readPublishedResult(store, project, runKey, dependencies)?.let { cached ->
+        val reusable = catalog.publishedTranslationRuns(projectId).firstOrNull { published ->
+            published.artifact.schemaVersion == TRANSLATION_SCHEMA_VERSION &&
+                published.artifact.dependencies == dependencies &&
+                published.artifact.entries.map { it.pageOrder to it.pageId to it.ocrPageArtifactKey } ==
+                occurrenceInputs.map { it.pageOrder to it.pageId to it.ocrPageArtifactKey }
+        }
+        reusable?.let { published ->
+            val cached = requireNotNull(readPublishedResult(store, project, published.artifact.runArtifactKey, dependencies))
             onProgress(cached.job.toProgress())
             return cached
         }
@@ -163,8 +165,6 @@ class TranslationRunner(
             project = project,
             inputs = occurrenceInputs,
             windows = windows,
-            pageKeys = pageKeys,
-            runKey = runKey,
             dependencies = dependencies,
         )
         store.prepareRun(job)
@@ -187,7 +187,7 @@ class TranslationRunner(
                 .forEach { checkpoint ->
                     val artifact = store.readWindowCheckpoint(job, checkpoint.windowIndex)
                         ?: throw FatalTranslationException("COMMITTED_WINDOW_INVALID")
-                    require(artifact.inputGlossarySha256 == TranslationArtifactIdentity.glossarySha256(glossary))
+                    require(artifact.inputGlossary == glossary)
                     glossary = artifact.outputGlossary
                     artifact.items.forEach { outcomes[it.translationRegionId] = it }
                     windowArtifacts += artifact
@@ -198,13 +198,8 @@ class TranslationRunner(
                 if (checkpoint.state.isTerminal()) return@forEach
                 if (isCancelled()) throw TranslationCancellationSignal()
 
-                val inputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(glossary)
                 val activeWindow = planned.copy(glossary = glossary)
-                val windowKey = TranslationArtifactIdentity.windowArtifactKey(
-                    activeWindow,
-                    inputGlossarySha256,
-                    dependencies,
-                )
+                val windowKey = checkpoint.windowArtifactKey
                 job = persist(
                     TranslationJobReducer.prepareWindow(job, planned.windowIndex, windowKey, clock.millis()),
                     planned.windowIndex,
@@ -216,7 +211,6 @@ class TranslationRunner(
                 val artifact = executeWindow(
                     window = activeWindow,
                     windowKey = windowKey,
-                    inputGlossarySha256 = inputGlossarySha256,
                     inputGlossary = glossary,
                     settings = settings,
                     cancellation = ::isCancelled,
@@ -273,7 +267,6 @@ class TranslationRunner(
             val run = job.toRunArtifact(finishedAt)
             val report = job.toReport(finishedAt, windowArtifacts)
             val glossaryArtifact = TranslationGlossaryArtifact(
-                sha256 = TranslationArtifactIdentity.glossarySha256(glossary),
                 entries = glossary,
             )
             val published = store.publishRun(job, run, glossaryArtifact, report)
@@ -305,7 +298,6 @@ class TranslationRunner(
     internal fun executeWindow(
         window: TranslationBatchWindow,
         windowKey: String,
-        inputGlossarySha256: String,
         inputGlossary: List<TranslationGlossaryEntry>,
         settings: TranslationProviderSettings,
         cancellation: () -> Boolean,
@@ -316,8 +308,9 @@ class TranslationRunner(
             return TranslationWindowArtifact(
                 windowIndex = window.windowIndex,
                 windowArtifactKey = windowKey,
-                inputGlossarySha256 = inputGlossarySha256,
-                outputGlossarySha256 = inputGlossarySha256,
+                contextTranslationRegionIds = window.contextItems.map { it.input.translationRegionId },
+                translationRegionIds = window.items.map { it.input.translationRegionId },
+                inputGlossary = inputGlossary,
                 outputGlossary = inputGlossary,
                 items = items,
                 ignoredResponseIds = emptyList(),
@@ -446,8 +439,9 @@ class TranslationRunner(
             TranslationWindowArtifact(
                 windowIndex = window.windowIndex,
                 windowArtifactKey = windowKey,
-                inputGlossarySha256 = inputGlossarySha256,
-                outputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(outputGlossary),
+                contextTranslationRegionIds = window.contextItems.map { it.input.translationRegionId },
+                translationRegionIds = window.items.map { it.input.translationRegionId },
+                inputGlossary = inputGlossary,
                 outputGlossary = outputGlossary,
                 items = normalizedItems,
                 ignoredResponseIds = (validation.ignoredResponseIds + retryIgnoredResponseIds)
@@ -534,17 +528,39 @@ class TranslationRunner(
         project: ProjectRef,
         inputs: List<PageTranslationInput>,
         windows: List<TranslationBatchWindow>,
-        pageKeys: Map<Int, String>,
-        runKey: String,
         dependencies: TranslationDependencies,
     ): TranslationJobRecord {
-        val candidate = store.findResumableJob()?.takeIf {
-            it.projectId == project.manifest.projectId &&
-                it.runArtifactKey == runKey &&
-                it.dependencies == dependencies
+        val pageLineage = inputs.map { input ->
+            input.pageOrder to input.pageId to input.ocrPageArtifactKey
+        }
+        val windowLineage = windows.map { window ->
+            Triple(
+                window.windowIndex,
+                window.contextItems.map { item -> item.input.translationRegionId },
+                window.items.map { item -> item.input.translationRegionId },
+            )
+        }
+        val candidate = store.findRecoveryCandidates().firstNotNullOfOrNull { existing ->
+            if (
+                existing.projectId != project.manifest.projectId ||
+                existing.schemaVersion != TRANSLATION_SCHEMA_VERSION ||
+                existing.pages.map { page -> page.pageOrder to page.pageId to page.ocrPageArtifactKey } != pageLineage
+            ) {
+                return@firstNotNullOfOrNull null
+            }
+            val existingWindowLineage = existing.windows.map { window ->
+                Triple(window.windowIndex, window.contextTranslationRegionIds, window.translationRegionIds)
+            }
+            if (existing.dependencies == dependencies && existingWindowLineage == windowLineage) {
+                TranslationRecoverySelection(existing)
+            } else {
+                TranslationRecoveryCompatibility.upgradeLegacyJob(existing, dependencies, windows)
+                    ?.let { upgraded -> TranslationRecoverySelection(upgraded, legacySource = existing) }
+            }
         }
         if (candidate != null) {
-            val recovered = TranslationJobReducer.recoverInterrupted(candidate, clock.millis())
+            candidate.legacySource?.let(store::discardPageCheckpoints)
+            val recovered = TranslationJobReducer.recoverInterrupted(candidate.job, clock.millis())
             recovered.windows
                 .filter { it.state == TranslationWindowState.PENDING }
                 .minOfOrNull(TranslationJobWindow::windowIndex)
@@ -553,12 +569,13 @@ class TranslationRunner(
                     // preceding window. Delete the complete untrusted suffix
                     // before journalling its PENDING state so recovery remains
                     // crash-safe and cannot collide with stale checkpoints.
-                    store.discardWindowSuffix(candidate, firstWindowIndex)
+                    store.discardWindowSuffix(candidate.job, firstWindowIndex)
                 }
             store.writeJob(recovered)
             return recovered
         }
         val now = clock.millis()
+        val runKey = idSource.nextId()
         return TranslationJobRecord(
             jobId = idSource.nextId(),
             projectId = project.manifest.projectId,
@@ -569,11 +586,8 @@ class TranslationRunner(
             windows = windows.map { window ->
                 TranslationJobWindow(
                     windowIndex = window.windowIndex,
-                    windowArtifactKey = TranslationArtifactIdentity.windowArtifactKey(
-                        window,
-                        dependencies.initialGlossarySha256,
-                        dependencies,
-                    ),
+                    windowArtifactKey = TranslationArtifactIdentity.windowArtifactKey(runKey, window.windowIndex),
+                    contextTranslationRegionIds = window.contextItems.map { it.input.translationRegionId },
                     translationRegionIds = window.items.map { it.input.translationRegionId },
                 )
             },
@@ -582,13 +596,18 @@ class TranslationRunner(
                     pageId = input.pageId,
                     pageOrder = input.pageOrder,
                     ocrPageArtifactKey = input.ocrPageArtifactKey,
-                    pageArtifactKey = pageKeys.getValue(input.pageOrder),
+                    pageArtifactKey = TranslationArtifactIdentity.pageArtifactKey(runKey, input.pageOrder),
                     translationRegionIds = input.items.map { it.translationRegionId },
                     protectedOcrRegionCount = input.protectedRegions.size,
                 )
             },
         ).also(store::writeJob)
     }
+
+    private data class TranslationRecoverySelection(
+        val job: TranslationJobRecord,
+        val legacySource: TranslationJobRecord? = null,
+    )
 
     private fun readPublishedResult(
         store: TranslationArtifactStore,
@@ -737,14 +756,6 @@ class TranslationRunner(
         item.state == TranslationResultState.TRANSLATED ||
             item.preserveReason == TranslationPreserveReason.POLICY_PRESERVED
 
-    private fun sanitizedModelId(model: String): String {
-        val normalized = model.trim()
-        if (normalized.length in 1..128 && SAFE_MODEL_ID.matches(normalized)) return normalized
-        val digest = MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
-        return "model-${digest.take(16)}"
-    }
-
     private fun Throwable.toFatalError(): TranslationError = when (this) {
         is TerminalProviderFailure -> error
         is FatalTranslationException -> TranslationError(code)
@@ -786,7 +797,6 @@ class TranslationRunner(
 
     private companion object {
         const val EXPECTED_PROVIDER_CALLS = 2
-        val SAFE_MODEL_ID = Regex("[A-Za-z0-9._:/-]+")
         val NON_PUBLISHABLE_REASONS = setOf(
             TranslationPreserveReason.MISSING_RESPONSE,
             TranslationPreserveReason.DUPLICATE_RESPONSE,

@@ -11,7 +11,9 @@ class ProjectJson(
         prettyPrint = true
         encodeDefaults = true
         explicitNulls = true
-        ignoreUnknownKeys = false
+        // Removed identity fields remain in older manifests. They are ignored
+        // so their page IDs and stored paths can continue to be used as-is.
+        ignoreUnknownKeys = true
     },
 ) {
     fun encodeManifest(manifest: ProjectManifest): String = json.encodeToString(manifest)

@@ -11,14 +11,12 @@ Pinned upstream package:
 - Release: `beta-0.3`
 - File: `comictextdetector.pt.onnx`
 - Size: `94,669,756` bytes
-- SHA-256: `1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f`
 - ONNX opset: 11
 
 Bundled derivative:
 
 - File: `app/src/main/assets/models/comic-text-segmenter-512.onnx`
 - Size: `65,568,382` bytes
-- SHA-256: `688cb2b55bc14e29957bb4dad768e7420a4b1f740b84ffadc83ecaac63846485`
 - Input: `images`, float32 `[1, 3, 512, 512]`
 - Output: `seg`, float32 `[1, 1, 512, 512]`
 

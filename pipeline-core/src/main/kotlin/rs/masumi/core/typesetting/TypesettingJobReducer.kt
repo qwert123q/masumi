@@ -17,6 +17,7 @@ object TypesettingJobReducer {
                     attemptCount = it.attemptCount + 1,
                     artifactPath = null,
                     imagePath = null,
+                    imageByteLength = 0L,
                     error = null,
                 ) else it
             },
@@ -28,11 +29,13 @@ object TypesettingJobReducer {
         pageOrder: Int,
         artifactPath: String,
         imagePath: String,
+        imageByteLength: Long,
         typesetRegionCount: Int,
         preservedRegionCount: Int,
         now: Long,
     ): TypesettingJobRecord {
         require(job.pages.single { it.pageOrder == pageOrder }.state == TypesettingPageState.RUNNING)
+        require(imageByteLength > 0L)
         require(typesetRegionCount >= 0 && preservedRegionCount >= 0)
         return job.updated(now).copy(
             pages = job.pages.map {
@@ -40,6 +43,7 @@ object TypesettingJobReducer {
                     state = TypesettingPageState.COMMITTED,
                     artifactPath = artifactPath,
                     imagePath = imagePath,
+                    imageByteLength = imageByteLength,
                     typesetRegionCount = typesetRegionCount,
                     preservedRegionCount = preservedRegionCount,
                 ) else it
@@ -89,6 +93,7 @@ object TypesettingJobReducer {
                     state = TypesettingPageState.PENDING,
                     artifactPath = null,
                     imagePath = null,
+                    imageByteLength = 0L,
                     error = null,
                 ) else it
             },

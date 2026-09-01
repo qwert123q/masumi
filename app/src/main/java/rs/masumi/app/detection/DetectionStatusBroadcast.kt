@@ -2,6 +2,7 @@ package rs.masumi.app.detection
 
 import android.content.Intent
 import rs.masumi.core.detection.DetectionJobStatus
+import rs.masumi.core.identity.SafeOpaqueId
 
 object DetectionStatusBroadcast {
     const val ACTION = "rs.masumi.app.action.DETECTION_STATUS"
@@ -34,9 +35,9 @@ object DetectionStatusBroadcast {
 
     fun create(packageName: String, progress: DetectionProgress): Intent {
         require(PACKAGE_NAME.matches(packageName)) { "package name is invalid" }
-        require(SAFE_ID.matches(progress.projectId)) { "project ID is invalid" }
-        require(SAFE_ID.matches(progress.jobId)) { "job ID is invalid" }
-        require(SHA256.matches(progress.runArtifactKey)) { "run artifact key is invalid" }
+        require(SafeOpaqueId.isValid(progress.projectId)) { "project ID is invalid" }
+        require(SafeOpaqueId.isValid(progress.jobId)) { "job ID is invalid" }
+        require(SafeOpaqueId.isValid(progress.runArtifactKey)) { "run artifact key is invalid" }
         require(progress.errorCode == null || ERROR_CODE.matches(progress.errorCode)) {
             "error code is invalid"
         }
@@ -66,9 +67,9 @@ object DetectionStatusBroadcast {
         val status = DetectionJobStatus.valueOf(requireNotNull(intent.getStringExtra(EXTRA_STATUS)))
         val currentOrder = intent.getIntExtra(EXTRA_CURRENT_ORDER, INVALID_INT)
         val errorCode = intent.getStringExtra(EXTRA_ERROR_CODE)
-        require(SAFE_ID.matches(projectId))
-        require(SAFE_ID.matches(jobId))
-        require(SHA256.matches(runArtifactKey))
+        require(SafeOpaqueId.isValid(projectId))
+        require(SafeOpaqueId.isValid(jobId))
+        require(SafeOpaqueId.isValid(runArtifactKey))
         require(errorCode == null || ERROR_CODE.matches(errorCode))
         require(currentOrder >= NO_CURRENT_ORDER)
         DetectionProgress(
@@ -96,7 +97,5 @@ object DetectionStatusBroadcast {
     private const val INVALID_INT = Int.MIN_VALUE
     private const val INVALID_LONG = Long.MIN_VALUE
     private val PACKAGE_NAME = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
-    private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-    private val SHA256 = Regex("[0-9a-f]{64}")
     private val ERROR_CODE = Regex("[A-Z][A-Z0-9_]{0,127}")
 }

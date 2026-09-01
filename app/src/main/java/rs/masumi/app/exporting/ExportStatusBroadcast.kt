@@ -2,6 +2,7 @@ package rs.masumi.app.exporting
 
 import android.content.Intent
 import rs.masumi.core.exporting.ExportJobStatus
+import rs.masumi.core.identity.SafeOpaqueId
 
 object ExportStatusBroadcast {
     const val ACTION = "rs.masumi.app.action.EXPORT_STATUS"
@@ -35,8 +36,8 @@ object ExportStatusBroadcast {
 
     fun create(packageName: String, progress: ExportProgress): Intent {
         require(PACKAGE_NAME.matches(packageName))
-        require(SAFE_ID.matches(progress.projectId) && SAFE_ID.matches(progress.jobId))
-        require(SHA256.matches(progress.exportKey))
+        require(SafeOpaqueId.isValid(progress.projectId) && SafeOpaqueId.isValid(progress.jobId))
+        require(SafeOpaqueId.isValid(progress.exportKey))
         require(progress.errorCode == null || ERROR_CODE.matches(progress.errorCode))
         return Intent(ACTION).apply {
             setPackage(packageName)
@@ -64,7 +65,7 @@ object ExportStatusBroadcast {
         val exportKey = requireNotNull(intent.getStringExtra(EXTRA_EXPORT_KEY))
         val errorCode = intent.getStringExtra(EXTRA_ERROR_CODE)
         val currentOrder = intent.getIntExtra(EXTRA_CURRENT_PAGE_ORDER, INVALID_INT)
-        require(SAFE_ID.matches(projectId) && SAFE_ID.matches(jobId) && SHA256.matches(exportKey))
+        require(SafeOpaqueId.isValid(projectId) && SafeOpaqueId.isValid(jobId) && SafeOpaqueId.isValid(exportKey))
         require(errorCode == null || ERROR_CODE.matches(errorCode))
         require(currentOrder >= NO_CURRENT_PAGE)
         ExportProgress(
@@ -89,7 +90,5 @@ object ExportStatusBroadcast {
     private const val NO_CURRENT_PAGE = -1
     private const val INVALID_INT = Int.MIN_VALUE
     private val PACKAGE_NAME = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
-    private val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-    private val SHA256 = Regex("[0-9a-f]{64}")
     private val ERROR_CODE = Regex("[A-Z][A-Z0-9_]{0,127}")
 }

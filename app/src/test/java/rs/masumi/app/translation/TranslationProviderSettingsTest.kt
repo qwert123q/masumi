@@ -2,7 +2,6 @@ package rs.masumi.app.translation
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TranslationProviderSettingsTest {
@@ -21,8 +20,7 @@ class TranslationProviderSettingsTest {
 
         assertEquals("deepseek", reference.profileId)
         assertEquals("DeepSeek", reference.displayName)
-        assertEquals("api.deepseek.com", reference.endpointHost)
-        assertTrue(reference.endpointSha256.matches(Regex("[0-9a-f]{64}")))
+        assertEquals("https://api.deepseek.com/chat/completions", reference.endpoint)
         assertFalse(reference.toString().contains(secret))
     }
 
@@ -41,8 +39,7 @@ class TranslationProviderSettingsTest {
 
         assertEquals("cpa-lan", reference.profileId)
         assertEquals("CPA LAN", reference.displayName)
-        assertEquals("192.168.50.2", reference.endpointHost)
-        assertTrue(reference.endpointSha256.matches(Regex("[0-9a-f]{64}")))
+        assertEquals("http://192.168.50.2:8317/v1/chat/completions", reference.endpoint)
         assertFalse(reference.toString().contains(secret))
     }
 }

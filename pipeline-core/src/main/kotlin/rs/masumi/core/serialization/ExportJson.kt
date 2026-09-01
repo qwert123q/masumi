@@ -11,7 +11,7 @@ class ExportJson(
         prettyPrint = true
         encodeDefaults = true
         explicitNulls = true
-        ignoreUnknownKeys = false
+        ignoreUnknownKeys = true
     },
 ) {
     fun encodeJob(value: ExportJobRecord): String = json.encodeToString(value)

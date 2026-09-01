@@ -14,7 +14,6 @@ data class ProjectManifest(
 data class PageRecord(
     val order: Int,
     val pageId: String,
-    val sourceSha256: String,
     val originalName: String,
     val mediaType: String,
     val byteLength: Long,

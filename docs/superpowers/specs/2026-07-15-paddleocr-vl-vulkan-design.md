@@ -43,9 +43,9 @@ The native runtime dependency identity changes from a CPU-only backend to:
 - backend policy: `vulkan-preferred-cpu-fallback`;
 - build contract: `mtmd-vulkan-safe-f16-t6-image-adaptive-v1`.
 
-This identity participates in OCR artifact keys and therefore invalidates CPU-only or fixed-16-token OCR cache entries safely. Detector preprocessing identity also records the `WIDTH_HEIGHT` original-size order, invalidating geometrically incorrect detection artifacts. The thread count remains unchanged; actual visual-token counts are measured per crop.
+This contract is recorded as an explicit OCR dependency, so CPU-only or fixed-16-token OCR cache entries are not reused. Detector dependencies also record the `WIDTH_HEIGHT` original-size order, preventing reuse of geometrically incorrect detection artifacts. The thread count remains unchanged; actual visual-token counts are measured per crop.
 
-The immutable upstream BF16 files remain the download trust root. During unpublished installation staging, Masumi deterministically rewrites BF16 tensor payloads and tensor types to F16 without changing lengths or offsets, verifies separate installed hashes, and only then publishes the package. This avoids Android vendor-driver BF16 compiler crashes while retaining the complete model rather than substituting a smaller OCR engine.
+The pinned upstream BF16 files remain the normalization input. During unpublished installation staging, Masumi deterministically rewrites BF16 tensor payloads and tensor types to F16 without changing lengths or offsets, records normalization state, validates the resulting length and native capabilities, and only then publishes the package. Interrupted normalization discards its marked partial file and restarts from a clean download so conversion is never applied twice. This avoids Android vendor-driver BF16 compiler crashes while retaining the complete model rather than substituting a smaller OCR engine.
 
 Android Vulkan initialization also serializes compute-pipeline compilation, disables unsafe subgroup DMMV/F16-compute paths, and uses the portable kernels. These are runtime compatibility constraints, not device-name checks; the public cache identity records the resulting build contract rather than hardware details.
 
@@ -71,7 +71,7 @@ Every failed GPU-open path must free the context, projector, model, backend-owne
 
 ## Kotlin contracts and auditability
 
-`NativePaddleOcrEngine.open` will request the Vulkan-preferred policy for real OCR work. Model-package capability validation will deliberately open a CPU-only validation handle. Package validity must depend on model structure and file integrity, not on temporary GPU memory pressure or Vulkan availability.
+`NativePaddleOcrEngine.open` will request the Vulkan-preferred policy for real OCR work. Model-package capability validation will deliberately open a CPU-only validation handle. Package validity depends on filenames, lengths, model structure, and required capabilities, not on temporary GPU memory pressure or Vulkan availability.
 
 The portable OCR attempt artifact will record the actual execution backend as `VULKAN` or `CPU`, including failed attempts when an engine backend had already been selected. This field provides evidence for performance tests and prevents a successful CPU fallback from being mistaken for Vulkan acceleration. Backend preference is not derived from, and artifacts do not store, a device name.
 
@@ -93,9 +93,9 @@ The existing constraints remain unchanged:
 | CPU initialization fails | Return the existing sanitized initialization error; do not start OCR. |
 | GPU inference or decode fails after open | Keep the engine on Vulkan and apply the existing crop-attempt retry and terminal-state policy. |
 | Cancellation occurs | Stop through the existing cooperative cancellation path and release transient resources. |
-| Native capability validation fails transiently | Preserve already verified model-package files and return a safe capability error. |
+| Native capability validation fails transiently | Preserve complete staged model files and return a safe capability error without publishing them. |
 
-The model store must never delete length-, digest-, and metadata-verified files merely because Vulkan initialization or a transient native capability check failed.
+The model store must never delete a previously published package whose filenames, lengths, metadata, and capabilities remain valid merely because Vulkan initialization fails transiently.
 
 ## Test strategy
 

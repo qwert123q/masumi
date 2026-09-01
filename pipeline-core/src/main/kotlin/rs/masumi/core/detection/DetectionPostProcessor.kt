@@ -71,12 +71,7 @@ object DetectionPostProcessor {
             rawQueries += query.toRawRecord(rawBox, nonFiniteIndexes, RawQueryValidation.ACCEPTED)
             val acceptedClass = requireNotNull(detectorClass)
             val region = DetectedRegion(
-                regionId = DetectionIdentity.regionId(
-                    pageId = pageId,
-                    pageArtifactKey = pageArtifactKey,
-                    queryIndex = query.queryIndex,
-                    detectorClass = acceptedClass,
-                ),
+                regionId = DetectionIdentity.regionId(pageArtifactKey, query.queryIndex),
                 queryIndex = query.queryIndex,
                 detectorClass = acceptedClass,
                 confidence = query.score.toDouble(),

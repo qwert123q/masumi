@@ -6,7 +6,7 @@ The foundation slice imports an immutable manga chapter, analyzes every page wit
 
 The design has three goals:
 
-1. Import hashes source bytes once for immutable identity and deduplication; later stages use bounded source preflight and exact versioned artifact lineage instead of repeated whole-file hashing.
+1. Import copies source bytes once into immutable app storage; all stages use opaque IDs, bounded source preflight, and explicit versioned artifact lineage.
 2. Cancellation, process loss, or one bad region never requires reimporting or repeating committed work.
 3. Source images, credentials, filesystem details, and raw exception text never enter public artifacts or status broadcasts.
 
@@ -26,20 +26,20 @@ The design has three goals:
 - the cancellable single-attempt OpenAI-compatible translation provider, safe error mapping, and usage parsing;
 - conservative adaptive glyph masking, bubble fill, and free-text boundary inpainting;
 - horizontal and vertical Chinese layout, deterministic maximum-readable-size fitting, and adaptive free-text contrast;
-- Android document-tree write permission, staged generation publication, one final-file read-back for each new output, and exact filename-set verification at directory promotion;
+- Android document-tree write permission, staged generation publication, byte-length checks, and exact filename-set verification at directory promotion;
 - progress display, safe preview navigation, and recognized-text details.
 
 `pipeline-core` owns portable behavior:
 
-- media selection, natural ordering, streaming copy, and SHA-256 hashing;
+- media selection, natural ordering, streaming copy, and opaque ID allocation;
 - strict import, detection, and OCR JSON contracts;
-- deterministic detection/OCR page, run, candidate, and region identities;
+- opaque detection/OCR run identities and structurally derived page, candidate, and region identities;
 - raw-query validation, thresholding, clipping, and class separation;
 - OCR candidate consolidation, Japanese reading order, crop policy, normalization, and quality decisions;
 - the strict OCR-to-translation input boundary, translation policy identity, and structured model-response contracts;
 - cleanup, typesetting, and folder-export dependency, policy, job/report, identity, and recovery contracts;
 - legal job/page/region transitions, retry, cancellation, and interruption recovery;
-- model-package source/installed length and hash checks, deterministic GGUF normalization, signature checks, and metadata checks;
+- model-package source/installed length checks, deterministic GGUF normalization, signature checks, and metadata checks;
 - job journals, region/page checkpoints, reports, and atomic publication.
 
 No Android class is referenced by `pipeline-core`.
@@ -49,26 +49,26 @@ No Android class is referenced by `pipeline-core`.
 1. Enumerate only direct children of the selected folder.
 2. Reject directories, hidden entries, and unsupported media.
 3. Sort accepted pages naturally by display name.
-4. Copy each page into staging while computing SHA-256.
-5. Reuse one stored source object when multiple entries contain identical bytes.
+4. Allocate an opaque page ID and copy each page once into staging while counting bytes.
+5. Keep each ordered import entry independently addressable, even when files happen to contain identical bytes.
 6. Write the manifest and import reports.
 7. Atomically move the complete project into the visible project collection.
 
 If a source read or storage operation fails, staging is removed and no project directory is published. A sanitized failure report is retained when storage remains available.
 
-## Runtime validation and hashing boundary
+## Runtime validation boundary
 
-- Import is the only stage that reads every source byte to establish its SHA-256 identity. The digest remains part of immutable page and cache identities.
-- Later source consumers validate the project-relative path, root containment, regular-file existence, recorded byte length, successful image decode when pixels are needed, and the exact page/dependency lineage. They do not recompute the source SHA-256 during ordinary processing.
-- Ordinary reads of locally and atomically published artifacts validate strict metadata, safe relative paths, file presence, and dependency lineage without rehashing image bytes. Creation-time digests may remain recorded in the contracts for identity and diagnostics.
-- Full-content verification remains where it protects a distinct trust boundary: downloaded model packages retain length and SHA-256 checks, and each newly written SAF output receives one final-file read-back before its page checkpoint is committed.
+- First-party code does not compute content-derived identity or integrity values. Existing legacy-shaped IDs and model directories remain readable as ordinary opaque names.
+- Source consumers validate the project-relative path, root containment, regular-file existence, recorded byte length, successful image decode when pixels are needed, and exact page/dependency lineage.
+- Locally published artifacts validate strict metadata, safe relative paths, file presence, explicit dependencies, and atomic-publication structure.
+- Model packages retain byte-length, metadata, tensor-shape, and runtime-capability checks. Folder export retains atomic publication, byte-length checks, and exact expected filenames without rereading complete files to derive content summaries.
 
 ## Detection flow
 
-1. Strictly read the manifest, validate contiguous order and page lineage, and preflight each unique source by safe relative path, regular-file existence, and recorded byte length without recomputing its digest.
-2. Derive each page artifact key from source SHA, schema, pinned model, runtime, preprocessing, and thresholds; derive the run key from ordered page keys.
+1. Read the manifest, validate contiguous order and page lineage, and preflight each source by safe relative path, regular-file existence, and recorded byte length.
+2. Reuse an explicitly compatible published or recoverable run, otherwise allocate an opaque run ID and derive ordered page/region IDs structurally from it.
 3. Reuse a complete published run, or recover a compatible cancelled/interrupted job.
-4. Acquire the model through a job-owned staging directory and verify byte length, SHA-256, and tensor signature before publication.
+4. Acquire the model through a job-owned staging directory and verify byte length and tensor signature before publication.
 5. Process unique source objects sequentially. Duplicate manifest entries share inference and region JSON but receive separate ordered previews.
 6. Journal `RUNNING`, decode and orient in memory, infer exactly 300 queries, post-process, render a derived preview, checkpoint files, then journal `COMMITTED`.
 7. On a page-processing failure, close and rebuild the detector once. A second failure becomes `PRESERVED_SOURCE`; the run continues.
@@ -81,7 +81,7 @@ Source-preflight, model-package, checkpoint-write, and final-publication failure
 
 1. Strictly load the current published detection run and include its identity in every OCR cache key.
 2. Consolidate overlapping text proposals without proximity-only merging, retain their provenance, associate dialogue-box context, and assign deterministic reading order. Before inference, discard only low-confidence free-text candidates that are implausibly narrow for that page or touch a page edge; in-box text is never removed by this gate.
-3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify the canonical BF16 digests, deterministically normalize both files to F16 in unpublished staging, verify the installed digests, then validate the pair through the CPU native path before publication.
+3. Acquire the pinned language model and multimodal projector with resumable HTTP ranges. Verify expected lengths, deterministically normalize both files to F16 in unpublished staging, then validate the pair through the CPU native path before publication.
 4. Prefer one Vulkan engine for the job and retry initialization with CPU when no usable accelerator can open. If the Vulkan device is lost during inference, contain the native exception, finish the same crop on CPU, record a bounded cooldown marker, and probe Vulkan again after that cooldown instead of pinning the whole job to CPU. Process unique source pages and regions sequentially; duplicate page entries reuse OCR work while retaining ordered previews.
 5. Render padded, tight, and contextual crops at their actual dimensions. The projector selects a crop-adaptive workload within the pinned 64–2048 visual-token range. Record raw and normalized text, actual backend, token probabilities, dimensions, stop flags, timings, and sanitized errors for every attempt.
 6. Accept a result only when the quality policy has sufficient token probability or agreement between attempts. Low-confidence free-text proposals also require Han, Hiragana, or Katakana before agreement can accept them, so repeated digit/symbol hallucinations remain preserved. Confirmed empty regions are explicit; uncertain and failed regions retain the source artwork.
@@ -93,7 +93,7 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 
 ## Cleanup flow
 
-1. Load the latest published translation run and its exact published OCR dependency; validate every ordered page's lineage and bounded source preflight before decoding, without recomputing source digests.
+1. Load the latest published translation run and its exact published OCR dependency; validate every ordered page's lineage and bounded source preflight before decoding.
 2. Join accepted translation items to OCR geometry by stable region ID. Preserved translations and protected OCR regions are never cleanup targets.
 3. Estimate a local background from each target perimeter, select high-contrast glyph pixels, dilate small gaps, and reject empty or implausibly large masks.
 4. Fill in-bubble glyph masks with the local background. Repair translated free-text masks by propagating colors inward from their boundary.
@@ -113,11 +113,11 @@ The pinned OCR package is about 1.82 GB combined. It is downloaded on first use,
 ## Folder export flow
 
 1. Select a writable Android document tree. Export writes into a job-scoped staging directory and publishes that complete directory as a named output generation.
-2. Bind the job directly to the exact published typesetting run and a one-way destination key. Resolve its cleanup dependency only for per-page fallback; no runtime quality artifact gates export. The private job journal retains the URI only for recovery.
+2. Bind the job directly to the exact published typesetting run and an opaque destination ID. Resolve its cleanup dependency only for per-page fallback; no runtime quality artifact gates export. The private job journal retains the URI only for recovery.
 3. Name pages by manifest order with zero-padded image filenames. Prefer the flattened page, then a committed cleanup fallback, then an encoded immutable source fallback.
-4. Ordinary local artifact resolution validates metadata, safe paths, presence, decode where required, and exact lineage without rehashing the stored artifact. The export job hashes the output bytes it is about to publish so an external copy can be checked or resumed safely.
-5. Reuse an existing destination page only after its recorded length and SHA-256 match. For a newly written page, promote or create the final document and read that final file back exactly once to verify length and SHA-256 before checkpointing it.
-6. Before promoting the staging directory, compare the complete set of image filenames with the expected set. Directory promotion does not reread or rehash page contents.
+4. Ordinary local artifact resolution validates metadata, safe paths, presence, decode where required, and exact lineage.
+5. Reuse an existing destination page when its expected name and recorded byte length match. Publish new pages atomically and checkpoint their names and byte lengths.
+6. Before promoting the staging directory, compare the complete set of image filenames with the expected set. Directory promotion does not reread page contents.
 7. Recover cancellation or process loss at the active page, revalidate earlier external checkpoints as needed, then write a sanitized internal report with source-kind and reuse counts. Best-effort pruning runs only after the published export job and report are durable.
 
 ## Runtime quality boundary
@@ -129,10 +129,10 @@ Renderer correctness is enforced by focused tests and strict typesetting contrac
 ```text
 workspace/
 ├── models/
-│   ├── <detector-package>/<sha256>/
+│   ├── <detector-package>/<revision-or-legacy-id>/
 │   │   ├── model.onnx
 │   │   └── package.json
-│   └── <ocr-package>/<package-sha256>/
+│   └── <ocr-package>/<revision-or-legacy-id>/
 │       ├── PaddleOCR-VL-1.6-GGUF.gguf
 │       ├── PaddleOCR-VL-1.6-GGUF-mmproj.gguf
 │       └── package.json
@@ -140,7 +140,7 @@ workspace/
 │   └── <project-id>/
 │       ├── manifest.json
 │       ├── sources/
-│       │   └── <sha256>.<extension>
+│       │   └── <page-id>.<extension>
 │       ├── reports/
 │       │   ├── <import-job-id>.json
 │       │   ├── <import-job-id>.txt
@@ -218,8 +218,8 @@ All paths stored in JSON are project-relative. The source manifest records the o
 - Structured responses are reconciled by stable ID. A missing or invalid item preserves its source pixels without discarding valid sibling results.
 - Chapter windows are greedily filled under a versioned estimated-token budget and a 12-item response bound, carry only bounded preceding context, and never truncate one oversized source item.
 - Prompt context IDs are read-only. Only IDs from the current item array may appear in a response, exactly once each.
-- Endpoint URLs and credentials are runtime-only settings and never enter project artifacts, reports, logs, or cache identity.
-- Android stores the endpoint, key, and model in application-private preferences and runs translation in its own foreground service with structured progress, cancellation, and automatic interrupted-job recovery.
+- Translation dependency records contain the normalized provider endpoint and selected model so reuse is explicit. Credentials remain application-private and never enter project artifacts, reports, logs, or status broadcasts.
+- Android stores the endpoint, key, and model in application-private preferences and runs translation in its own foreground service with structured progress, cancellation, and interrupted-job recovery.
 - Detection, OCR, translation, cleanup, typesetting, and export foreground services hold a bounded partial wake lock only while work is active. Before new work, the UI requests Android's battery-optimization exemption because some OEM schedulers disable ordinary wake locks for non-exempt apps. Every service releases its lock on terminal completion, cancellation teardown, or destruction.
 - Translation network calls use bounded OkHttp timeouts and exactly one transport attempt. Network, timeout, HTTP, and malformed-response failures expose only safe metadata and stop the stage immediately.
 - Missing, duplicate, invalid-role, or blank required responses fail without publication and do not trigger batch salvage. Only Japanese-bearing or source-echo items receive one isolated semantic quality repair; a second semantically invalid result remains protected while valid siblings publish normally.
@@ -228,28 +228,28 @@ All paths stored in JSON are project-relative. The source manifest records the o
 
 ## Invariants
 
-- Imported source objects are immutable and receive their full-content SHA-256 identity during import. Downstream source preflight validates safe path, existence, recorded length, decode when consumed, and lineage without routine rehashing.
+- Imported source objects are immutable and receive opaque IDs during import. Downstream source preflight validates safe path, existence, recorded length, decode when consumed, and lineage.
 - A visible imported project and a visible detection run are each complete atomic publications.
-- Repeated bytes may share source and detection work while remaining separate ordered pages.
+- Every ordered page remains independently addressable; compatible published stage work is reused through explicit dependency records.
 - A committed page has validated region JSON and one preview for every referenced order.
 - Cancellation happens only between pages; interruption recovery discards only the page that was running.
 - A preserved page retains its source and stable error code and never fabricates regions.
-- Unknown JSON fields are rejected so schema drift is explicit.
+- Current contracts write only current fields, while decoders tolerate removed legacy fields so existing projects remain readable.
 - Model identity, runtime revision, preprocessing, and thresholds participate in cache identity.
 - OCR identity also includes the detection dependency, model/projector package, native runtime build contract, consolidation, reading-order, crop, normalization, quality, and generation policy.
 - A committed OCR region has a validated terminal checkpoint; a committed OCR page has validated page JSON and ordered previews.
 - At most one OCR engine and one crop inference are active. Cancellation and recovery never discard earlier terminal regions.
 - Per-page detection and OCR always use each source page and crop's real dimensions; a later webtoon reading mode cannot alter OCR geometry or cache identity.
-- Unknown OCR JSON fields are rejected, and all stored paths remain inside the project or model-package roots.
+- OCR writers emit only the current contract. Readers tolerate removed legacy fields while validating every required field, safe opaque ID, and stored path inside the project or model-package roots.
 - Cleanup changes pixels only inside an accepted glyph mask for a region with a valid translation; protected or unsafe regions retain source pixels.
 - Cleanup releases the decoded source immediately after creating its mutable page copy, bounds inpainting frontier allocations with primitive buffers, and runs with the Android large-image heap to avoid high-resolution page OOM fallback.
-- Cleanup identity includes the exact translation run and every policy field. A committed cleanup page has validated JSON and an atomically published PNG with a creation-time digest; ordinary reads do not recompute it.
+- Cleanup compatibility includes the exact translation run and every policy field. A committed cleanup page has validated JSON and an atomically published PNG with a recorded byte length.
 - Cleanup cancellation and process recovery discard only the active page and never repeat OCR or translation.
 - Typesetting changes only regions with accepted translation and committed cleanup. A layout below the readability floor preserves its cleaned pixels.
-- Typesetting identity includes the exact cleanup, translation, and OCR dependencies plus every layout policy field. A committed page has validated JSON and an atomically published flattened image with a creation-time digest; ordinary reads do not recompute it.
+- Typesetting compatibility includes the exact cleanup, translation, and OCR dependencies plus every layout policy field. A committed page has validated JSON and an atomically published flattened image with a recorded byte length.
 - Typesetting cancellation and process recovery discard only the active page and never repeat cleanup or any earlier stage.
-- Folder export follows typesetting directly and publishes exactly one image per manifest page. Its report contains a destination digest, never the document-tree URI.
-- Each newly written SAF final file receives exactly one content read-back. Publishing the complete generation validates the exact filename set without an additional content pass.
+- Folder export follows typesetting directly and publishes exactly one image per manifest page. Its public report contains an opaque destination ID, never the document-tree URI.
+- Publishing a complete SAF generation validates byte lengths and the exact filename set without a full-content verification pass.
 - Export may replace deterministic page names inside its staging generation and prunes older managed outputs only after the new generation and its durable success record are complete; unrelated destination documents are never deleted.
 - Export cancellation and recovery revalidate committed external outputs and never repeat any localization stage.
 

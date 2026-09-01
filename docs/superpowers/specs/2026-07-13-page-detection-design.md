@@ -40,7 +40,6 @@ The first detector package is pinned to immutable upstream metadata:
 | Upstream revision | `16e8a622f91fabc6b5b65c96d32d1183f8843546` |
 | File | `detector-v4-s_int8.onnx` |
 | Byte length | `11120765` |
-| SHA-256 | `5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79` |
 | License | Apache-2.0 |
 | ONNX opset | 18 |
 
@@ -52,18 +51,18 @@ The model store uses this layout:
 workspace/
 └── models/
     └── <model-id>/
-        └── <model-sha256>/
+        └── <storage-revision>/
             ├── model.onnx
             └── package.json
 ```
 
-`package.json` records the package schema version, model ID, upstream repository and revision, original filename, exact byte length, SHA-256, license, ONNX signature, and acquisition time. It contains no download credentials or temporary URL query parameters.
+`package.json` records the package schema version, model ID, storage revision, upstream repository and revision, original filename, exact byte length, license, ONNX signature, and acquisition time. It contains no download credentials or temporary URL query parameters.
 
 ### Download and publication
 
 1. Download to a uniquely owned `*.part` file.
-2. Stream the response while counting bytes and calculating SHA-256.
-3. Reject any length or digest mismatch.
+2. Stream the response while counting bytes.
+3. Reject an unexpected final length.
 4. Open the candidate with ONNX Runtime and validate the expected input and output signature.
 5. Write `package.json` beside the candidate.
 6. Atomically publish the complete model package directory.
@@ -97,29 +96,21 @@ The first acceptance threshold is `0.25` for every class. The threshold is inten
 
 For accepted candidates, boxes are normalized to left, top, right, bottom order and clipped to the page bounds. Non-finite boxes and boxes with no positive area after clipping are excluded from accepted candidates but remain present in the raw query list with a stable rejection reason.
 
-## Artifact identity
+## Artifact identity and reuse
 
-The design uses two keys with different scopes.
+Run and page artifact keys are persisted opaque safe IDs. New independent keys come from `IdSource`; child region IDs may be derived structurally from the persisted page artifact key and the model query coordinates described below.
 
 ### Page artifact key
 
-`pageArtifactKey` is the SHA-256 of a canonical record containing:
-
-- the exact source SHA-256;
-- detection artifact schema version;
-- model repository, upstream revision, file SHA-256, and runtime revision;
-- preprocessing configuration hash;
-- threshold configuration hash.
-
-It does not include project ID, page order, job ID, timestamps, filenames, or floating-point output. The same source bytes under the same detector contract therefore produce the same page artifact key across projects and runs.
+`pageArtifactKey` is allocated and persisted before page work begins. A committed page is reusable only when its explicit dependency record matches the source page ID and recorded length, detection artifact schema, model repository and revision, runtime revision, preprocessing configuration, and threshold configuration.
 
 ### Run artifact key
 
-`runArtifactKey` is the SHA-256 of a canonical record containing the ordered manifest entries and their page artifact keys. It identifies one complete project-level detection result and changes when the chapter composition, order, model, schema, preprocessing, or threshold changes.
+`runArtifactKey` is allocated and persisted when a new detection job is created. Resume reuses that ID only when the job's ordered page lineage and every declared schema, model, preprocessing, and threshold dependency still match. A changed dependency creates a new run with new page keys.
 
 ### Region identity
 
-Every accepted candidate receives a deterministic `regionId` derived from:
+Every accepted candidate receives a structural `regionId` derived from:
 
 - `pageId`;
 - `pageArtifactKey`;
@@ -152,11 +143,11 @@ While a run is incomplete, its files live under a job-owned checkpoint at `stagi
 
 `artifact.json` records the run schema, detector package reference, preprocessing and threshold configuration, creation time, and ordered manifest entries. Each entry references its page artifact key, terminal state, regions file, and preview file.
 
-Identical source objects share one `pages/<page-id>/regions.json`. Each ordered manifest entry still receives its own preview name and report entry so duplicate pages remain visible in chapter order.
+Each manifest page owns one `pages/<page-id>/regions.json`. Duplicate source bytes remain independent ordered pages and receive independent page artifacts and previews.
 
 `regions.json` contains:
 
-- schema version, page ID, source SHA-256, and page artifact key;
+- schema version, page ID, recorded source length, and page artifact key;
 - visible width, height, and applied orientation;
 - exact detector package and configuration references;
 - all 300 raw queries with query index, label, score, raw box, and validation result;
@@ -182,7 +173,7 @@ No preview operation writes to the source path or changes the source manifest.
 The pure Kotlin module owns portable contracts and deterministic behavior:
 
 - model package and detector configuration records;
-- canonical hashing for page and run artifact keys;
+- opaque run and page artifact ID allocation;
 - stable region ID generation;
 - raw query, accepted region, page result, job journal, and report schemas;
 - box normalization, finite-value checks, clipping, and rejection reasons;
@@ -235,7 +226,7 @@ The coordinator follows these rules:
 
 1. Persist the job description before starting model acquisition.
 2. Validate or acquire the pinned model package.
-3. Compute page artifact keys and reuse only artifacts whose complete dependency record and hashes validate.
+3. Allocate or restore page artifact keys and reuse only artifacts whose complete explicit dependency records validate.
 4. Before processing a page, atomically journal it as `RUNNING`.
 5. Write regions and preview into a page-owned temporary directory inside the job checkpoint.
 6. Flush and atomically promote the completed page data to a durable checkpoint; this is not yet a public run artifact.
@@ -251,11 +242,11 @@ Cancellation is cooperative at page boundaries. The current page may finish and 
 
 The following are job-fatal because further results cannot be trusted or published safely:
 
-- model download length or SHA-256 mismatch;
+- model download length mismatch;
 - incompatible ONNX signature;
 - corrupt or unsupported artifact schema;
 - unavailable project workspace or atomic publication failure;
-- invalid source hash relative to the immutable manifest.
+- an unsafe, missing, or wrong-length source relative to the immutable manifest.
 
 A page decode, inference, tensor-conversion, or preview-generation failure is retried once. Before retrying an inference failure, the current ONNX session is closed and rebuilt. Before retrying a decode or preview failure, the source is reopened and temporary page output is cleared.
 
@@ -287,7 +278,7 @@ Implementation follows test-driven development.
 
 Pure Kotlin tests cover:
 
-- canonical page and run artifact key generation;
+- opaque run/page key persistence and structural region ID generation;
 - cache invalidation for every declared dependency;
 - stable region IDs independent of geometry changes;
 - box normalization, clipping, non-finite rejection, and zero-area rejection;
@@ -307,7 +298,7 @@ Android tests use a fake detector interface and synthetic images to cover:
 - tensor shape, RGB order, and rescaling;
 - preview colors and output dimensions;
 - foreground coordinator progress and restart recovery;
-- model package rejection for bad length, digest, or signature;
+- model package rejection for bad length or signature;
 - cleanup of partial model and page staging.
 
 Automated tests do not depend on downloading the real model. A separate runtime smoke check validates the pinned model signature and executes one representative page when the model package is available.
@@ -317,7 +308,7 @@ Automated tests do not depend on downloading the real model. A separate runtime 
 Acceptance on a representative imported chapter proves that:
 
 - every ordered manifest entry reaches `COMMITTED` or `PRESERVED_SOURCE`;
-- source SHA-256 values still match the import manifest after the run;
+- every source still resolves within the project root with its recorded byte length;
 - every committed page has valid region JSON and a viewable annotated preview;
 - process termination during analysis resumes without repeating validated pages;
 - cancellation stops before another page starts and retains completed work;
@@ -332,7 +323,7 @@ Development installation reuses the existing debug package. Routine verification
 Committed source, tests, fixtures, logs, screenshots, and documentation must not contain:
 
 - user, account, device, or host identifiers;
-- evaluation corpus names, page counts, paths, images, hashes, or evaluation notes;
+- evaluation corpus names, page counts, paths, images, or evaluation notes;
 - API keys, bearer tokens, signed URLs, or provider response bodies;
 - absolute local filesystem paths or document URIs.
 

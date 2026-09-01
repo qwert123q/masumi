@@ -11,7 +11,7 @@
 
 - [x] Resolve flattened, cleanup fallback, or source fallback bytes for every manifest page.
 - [x] Publish deterministic zero-padded PNG names through the Storage Access Framework.
-- [x] Verify temporary and final documents by length and SHA-256 before checkpointing.
+- [x] Close each written document and verify its unique name and expected non-zero byte length before checkpointing.
 
 ## Task 3: Add Android execution and UI
 
@@ -22,5 +22,5 @@
 ## Task 4: Verify
 
 - [x] Run core, Android instrumentation, build, and lint suites.
-- [x] Exercise create, reuse, replacement, and digest verification through Android's real document-provider contract on device.
+- [x] Exercise generation creation, safe promotion, final-name/length checks, and preservation of unowned root entries through Android's real document-provider contract on device.
 - [x] Scan repository content for private environment, device, corpus, and credential data.

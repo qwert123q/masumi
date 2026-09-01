@@ -12,8 +12,8 @@ import rs.masumi.core.serialization.CleanupJson
 
 /**
  * Installs the pinned model from the APK into the app-private workspace so
- * ONNX Runtime can memory-map it by path. The package store verifies length,
- * SHA-256, and tensor signature before publishing it atomically.
+ * ONNX Runtime can memory-map it by path. The package store verifies length
+ * and tensor signature before publishing it atomically.
  */
 class BundledTextSegmenterModelProvider(
     private val assets: AssetManager,
@@ -27,8 +27,7 @@ class BundledTextSegmenterModelProvider(
     private val json = CleanupJson()
 
     fun acquire(installId: String): Path {
-        val packageDirectory = packageDirectory()
-        return readTrustedPrivatePackage(packageDirectory)
+        return findTrustedPrivatePackage()
             ?: store.ensureInstalled(
                 installId = installId,
                 descriptor = descriptor,
@@ -36,6 +35,19 @@ class BundledTextSegmenterModelProvider(
                 openStream = { assets.open(descriptor.assetPath, AssetManager.ACCESS_STREAMING) },
                 signatureValidator = signatureValidator,
             )
+    }
+
+    private fun findTrustedPrivatePackage(): Path? {
+        val root = packageRoot()
+        if (!Files.isDirectory(root)) return null
+        val preferred = packageDirectory()
+        val candidates = Files.list(root).use { paths ->
+            paths.iterator().asSequence()
+                .filter(Files::isDirectory)
+                .sortedWith(compareBy<Path> { if (it == preferred) 0 else 1 }.thenBy { it.fileName.toString() })
+                .toList()
+        }
+        return candidates.firstNotNullOfOrNull(::readTrustedPrivatePackage)
     }
 
     private fun readTrustedPrivatePackage(directory: Path): Path? = runCatching {
@@ -51,13 +63,17 @@ class BundledTextSegmenterModelProvider(
             json.decodeTextSegmenterModelPackageMetadata(it.readText())
         }
         require(metadata.schemaVersion == 1 && metadata.model == descriptor.toModelRef())
+        require(metadata.storageRevision == descriptor.storageRevision)
+        require(metadata.signature.inputName.isNotBlank() && metadata.signature.outputName.isNotBlank())
+        require(metadata.signature.inputShape.isNotEmpty() && metadata.signature.outputShape.isNotEmpty())
         model
     }.getOrNull()
 
-    private fun packageDirectory(): Path = workspaceRoot
+    private fun packageRoot(): Path = workspaceRoot
         .resolve("models")
         .resolve(descriptor.storageKey)
-        .resolve(descriptor.sha256)
+
+    private fun packageDirectory(): Path = packageRoot().resolve(descriptor.storageRevision)
 
     private companion object {
         const val MODEL_FILE_NAME = "model.onnx"

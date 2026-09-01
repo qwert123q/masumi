@@ -2,6 +2,7 @@ package rs.masumi.core.importer
 
 import rs.masumi.core.io.NioProjectFileSystem
 import rs.masumi.core.io.ProjectFileSystem
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.model.ImportError
 import rs.masumi.core.model.ImportErrorCode
 import rs.masumi.core.model.ImportReport
@@ -12,7 +13,6 @@ import rs.masumi.core.serialization.ProjectJson
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 
 data class ImportOutcome(
@@ -29,8 +29,8 @@ class ProjectImporter(
     private val fileSystem: ProjectFileSystem = NioProjectFileSystem(),
 ) {
     fun importProject(sources: List<SourceCandidate>): ImportOutcome {
-        val projectId = idSource.nextId()
-        val jobId = idSource.nextId()
+        val projectId = SafeOpaqueId.require(idSource.nextId(), "projectId")
+        val jobId = SafeOpaqueId.require(idSource.nextId(), "jobId")
         val startedAt = clock.millis()
         val selection = SourceSelector.select(sources)
         val stagingDirectory = workspaceRoot.resolve("staging").resolve(projectId)
@@ -63,27 +63,25 @@ class ProjectImporter(
             fileSystem.createDirectories(stagingReports)
             fileSystem.createDirectories(stagingTemporary)
 
+            val pageIds = mutableSetOf<String>()
             val pages = selection.accepted.mapIndexed { order, selected ->
+                val pageId = idSource.nextId()
+                SafeOpaqueId.require(pageId, "pageId")
+                require(pageIds.add(pageId)) { "page ID must be unique" }
                 val temporaryFile = stagingTemporary.resolve("$order.part")
-                val copied = copyAndHash(selected.source, temporaryFile)
-                byteCount += copied.byteCount
-                val storedPath = "sources/${copied.sha256}.${selected.mediaType.extension}"
+                val copiedByteCount = copySource(selected.source, temporaryFile)
+                byteCount += copiedByteCount
+                val storedPath = "sources/$pageId.${selected.mediaType.extension}"
                 val storedFile = stagingDirectory.resolve(storedPath)
-
-                if (fileSystem.exists(storedFile)) {
-                    fileSystem.deleteIfExists(temporaryFile)
-                } else {
-                    fileSystem.moveFile(temporaryFile, storedFile)
-                }
+                fileSystem.moveFile(temporaryFile, storedFile)
 
                 importedCount += 1
                 PageRecord(
                     order = order,
-                    pageId = copied.sha256,
-                    sourceSha256 = copied.sha256,
+                    pageId = pageId,
                     originalName = selected.source.displayName,
                     mediaType = selected.mediaType.mimeType,
-                    byteLength = copied.byteCount,
+                    byteLength = copiedByteCount,
                     storedPath = storedPath,
                 )
             }
@@ -142,8 +140,7 @@ class ProjectImporter(
         }
     }
 
-    private fun copyAndHash(source: SourceCandidate, target: Path): CopyResult {
-        val digest = MessageDigest.getInstance("SHA-256")
+    private fun copySource(source: SourceCandidate, target: Path): Long {
         var byteCount = 0L
 
         BufferedInputStream(source.openStream()).use { input ->
@@ -154,7 +151,6 @@ class ProjectImporter(
                     if (read < 0) break
                     if (read == 0) continue
 
-                    digest.update(buffer, 0, read)
                     output.write(buffer, 0, read)
                     byteCount += read
                 }
@@ -162,10 +158,7 @@ class ProjectImporter(
             }
         }
 
-        return CopyResult(
-            sha256 = digest.digest().joinToString(separator = "") { byte -> "%02x".format(byte) },
-            byteCount = byteCount,
-        )
+        return byteCount
     }
 
     private fun ImportReport.toText(): String = buildString {
@@ -214,9 +207,4 @@ class ProjectImporter(
     }
 
     private fun failureReportPath(jobId: String): String = "failed-reports/$jobId.json"
-
-    private data class CopyResult(
-        val sha256: String,
-        val byteCount: Long,
-    )
 }

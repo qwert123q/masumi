@@ -6,6 +6,7 @@ import rs.masumi.app.detection.PublishedOcrRun
 import rs.masumi.app.detection.PublishedTranslationRun
 import rs.masumi.app.detection.PublishedTypesettingRun
 import rs.masumi.core.cleanup.CleanupPolicy
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.modelpackage.PinnedAotInpainter
 import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.typesetting.TypesettingPolicy
@@ -78,13 +79,15 @@ object WorkspaceJanitor {
 
         // Also retain the current compatible lineage. During a staged rerun it
         // can coexist with a newer timestamped artifact from an old identity.
-        val currentDetection = catalog.latestPublishedRun(projectId)
+        val currentDetection = catalog.publishedDetectionRuns(projectId).firstOrNull {
+            PipelineArtifactFreshness.detection(it.artifact, project.manifest)
+        }
         keep(STAGE_DETECTION, currentDetection?.artifact?.runArtifactKey)
         val currentOcr = currentDetection?.let { detection ->
             catalog.publishedOcrRuns(projectId).firstOrNull {
                 PipelineArtifactFreshness.ocr(
                     it.artifact,
-                    detection.artifact.runArtifactKey,
+                    detection.artifact,
                 )
             }
         }
@@ -93,7 +96,7 @@ object WorkspaceJanitor {
             catalog.publishedTranslationRuns(projectId).firstOrNull {
                 PipelineArtifactFreshness.translation(
                     it.artifact,
-                    ocr.artifact.runArtifactKey,
+                    ocr.artifact,
                 )
             }
         }
@@ -108,7 +111,7 @@ object WorkspaceJanitor {
             )?.takeIf {
                 PipelineArtifactFreshness.cleanup(
                     it.artifact,
-                    translation.artifact.runArtifactKey,
+                    translation.artifact,
                 )
             }
         }
@@ -118,7 +121,9 @@ object WorkspaceJanitor {
                 projectId = projectId,
                 cleanupRunArtifactKey = cleanup.artifact.runArtifactKey,
                 policy = TypesettingPolicy(),
-            )
+            )?.takeIf {
+                PipelineArtifactFreshness.typesetting(it.artifact, cleanup.artifact)
+            }
         }
         keepTypesetting(currentTypesetting)
 
@@ -142,7 +147,7 @@ object WorkspaceJanitor {
         var freed = 0L
         directDirectories(stageRoot).forEach { runDirectory ->
             val runKey = runDirectory.fileName.toString()
-            if (!SHA256.matches(runKey)) return@forEach
+            if (!SafeOpaqueId.isValid(runKey)) return@forEach
             if (runKey in keep) return@forEach
             if (touchedSince(runDirectory, cutoff)) return@forEach
             freed += deleteRecursively(runDirectory)
@@ -243,6 +248,5 @@ object WorkspaceJanitor {
         STAGE_TYPESETTING,
         LEGACY_STAGE_QUALITY,
     )
-    private val SHA256 = Regex("[0-9a-f]{64}")
     private const val COLD_RUN_MINUTES = 30L
 }

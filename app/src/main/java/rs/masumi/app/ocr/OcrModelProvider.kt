@@ -41,15 +41,27 @@ class DefaultOcrModelProvider(
         installId: String,
         progress: (downloaded: Long, total: Long) -> Unit,
     ): InstalledOcrModelPackage {
-        val packageDirectory = packageDirectory()
-        return readTrustedPrivatePackage(packageDirectory)
+        return findTrustedPrivatePackage()
             ?: store.ensureInstalled(
-                installId = descriptor.packageSha256,
+                installId = descriptor.storageRevision,
                 descriptor = descriptor,
                 source = rangeSource,
                 capabilityValidator = capabilityValidator,
                 onProgress = progress,
             )
+    }
+
+    private fun findTrustedPrivatePackage(): InstalledOcrModelPackage? {
+        val root = packageRoot()
+        if (!Files.isDirectory(root)) return null
+        val preferred = packageDirectory()
+        val candidates = Files.list(root).use { paths ->
+            paths.iterator().asSequence()
+                .filter(Files::isDirectory)
+                .sortedWith(compareBy<Path> { if (it == preferred) 0 else 1 }.thenBy { it.fileName.toString() })
+                .toList()
+        }
+        return candidates.firstNotNullOfOrNull(::readTrustedPrivatePackage)
     }
 
     private fun readTrustedPrivatePackage(directory: Path): InstalledOcrModelPackage? = runCatching {
@@ -64,6 +76,7 @@ class DefaultOcrModelProvider(
         require(Files.getLastModifiedTime(projector).toMillis() <= metadataTime)
         val metadata = Files.newBufferedReader(metadataPath).use { json.decodeModelPackageMetadata(it.readText()) }
         require(metadata.schemaVersion == 1)
+        require(metadata.storageRevision == descriptor.storageRevision)
         require(metadata.modelPackage == descriptor.toRef())
         require(metadata.runtime == descriptor.runtime.toRef())
         require(metadata.prompt == descriptor.prompt)
@@ -75,10 +88,11 @@ class DefaultOcrModelProvider(
         InstalledOcrModelPackage(model, projector, metadata)
     }.getOrNull()
 
-    private fun packageDirectory(): Path = workspaceRoot
+    private fun packageRoot(): Path = workspaceRoot
         .resolve("models")
         .resolve(descriptor.storageKey)
-        .resolve(descriptor.packageSha256)
+
+    private fun packageDirectory(): Path = packageRoot().resolve(descriptor.storageRevision)
 
     private companion object {
         const val PACKAGE_METADATA_FILE_NAME = "package.json"

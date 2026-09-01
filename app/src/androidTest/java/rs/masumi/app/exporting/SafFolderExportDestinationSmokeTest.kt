@@ -2,11 +2,11 @@ package rs.masumi.app.exporting
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.ByteArrayOutputStream
-import java.security.MessageDigest
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -16,7 +16,7 @@ import rs.masumi.app.TestDocumentsProvider
 @RunWith(AndroidJUnit4::class)
 class SafFolderExportDestinationSmokeTest {
     @Test
-    fun publishesReusesAndReplacesVerifiedPngInGrantedTree() {
+    fun publishesReusesSameLengthAndReplacesDifferentLengthOutputInGrantedTree() {
         val context = InstrumentationRegistry.getInstrumentation().context
         TestDocumentsProvider.clearDynamicDocuments(context)
         val destinationUri = DocumentsContract.buildTreeDocumentUri(
@@ -28,16 +28,19 @@ class SafFolderExportDestinationSmokeTest {
                 context.contentResolver,
                 destinationUri.toString(),
                 "folder-smoke",
-                rs.masumi.app.library.OutputGeneration.publishedName(1L, "a".repeat(64)),
+                rs.masumi.app.library.OutputGeneration.publishedName(1L, "export-run.a"),
             )
             val first = png(Color.WHITE)
-            val second = png(Color.LTGRAY)
+            val sameLengthDifferentBytes = first.copyOf().apply {
+                this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte()
+            }
+            val differentLength = first + 0.toByte()
 
-            val initial = destination.publish("0001.png", first, sha256(first)) { false }
-            val reused = destination.publish("0001.png", first, sha256(first)) { false }
-            val replaced = destination.publish("0001.png", second, sha256(second)) { false }
-            destination.publish("0002.png", first, sha256(first)) { false }
-            destination.publish("0003.png", first, sha256(first)) { false }
+            val initial = destination.publish("0001.png", first) { false }
+            val reused = destination.publish("0001.png", sameLengthDifferentBytes) { false }
+            val replaced = destination.publish("0001.png", differentLength) { false }
+            destination.publish("0002.png", first) { false }
+            destination.publish("0003.png", first) { false }
             destination.commitCompleteSet(
                 listOf(
                     ExpectedDestinationOutput("0001.png"),
@@ -50,9 +53,9 @@ class SafFolderExportDestinationSmokeTest {
             assertFalse(initial.reusedExisting)
             assertTrue(reused.reusedExisting)
             assertFalse(replaced.reusedExisting)
-            assertTrue(destination.matches("0001.png", sha256(second), second.size.toLong()))
-            assertTrue(destination.matches("0002.png", sha256(first), first.size.toLong()))
-            assertTrue(destination.matches("0003.png", sha256(first), first.size.toLong()))
+            assertTrue(destination.matches("0001.png", differentLength.size.toLong()))
+            assertTrue(destination.matches("0002.png", first.size.toLong()))
+            assertTrue(destination.matches("0003.png", first.size.toLong()))
         } finally {
             TestDocumentsProvider.clearDynamicDocuments(context)
         }
@@ -82,18 +85,88 @@ class SafFolderExportDestinationSmokeTest {
                 context.contentResolver,
                 childDirectory.toString(),
                 "nested-folder-smoke",
-                rs.masumi.app.library.OutputGeneration.publishedName(1L, "b".repeat(64)),
+                rs.masumi.app.library.OutputGeneration.publishedName(1L, "export-run.b"),
             )
             val bytes = png(Color.WHITE)
 
-            destination.publish("0001.png", bytes, sha256(bytes)) { false }
+            destination.publish("0001.png", bytes) { false }
             destination.commitCompleteSet(
                 listOf(ExpectedDestinationOutput("0001.png")),
             )
 
-            assertTrue(destination.matches("0001.png", sha256(bytes), bytes.size.toLong()))
+            assertTrue(destination.matches("0001.png", bytes.size.toLong()))
         } finally {
             TestDocumentsProvider.clearDynamicDocuments(context)
+        }
+    }
+
+    @Test
+    fun pruneKeepsUnownedRootImageAndAnotherJobsStagingDirectory() {
+        val context = InstrumentationRegistry.getInstrumentation().context
+        TestDocumentsProvider.clearDynamicDocuments(context)
+        val treeUri = DocumentsContract.buildTreeDocumentUri(
+            TestDocumentsProvider.AUTHORITY,
+            TestDocumentsProvider.ROOT_ID,
+        )
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            TestDocumentsProvider.ROOT_ID,
+        )
+        try {
+            requireNotNull(
+                DocumentsContract.createDocument(
+                    context.contentResolver,
+                    parentUri,
+                    "image/png",
+                    "0001.png",
+                ),
+            )
+            requireNotNull(
+                DocumentsContract.createDocument(
+                    context.contentResolver,
+                    parentUri,
+                    DocumentsContract.Document.MIME_TYPE_DIR,
+                    ".masumi-staging-other",
+                ),
+            )
+            val destination = SafFolderExportDestination(
+                context.contentResolver,
+                treeUri.toString(),
+                "current-job",
+                rs.masumi.app.library.OutputGeneration.publishedName(2L, "export-run.current"),
+            )
+            val bytes = png(Color.WHITE)
+
+            destination.publish("0002.png", bytes) { false }
+            destination.commitCompleteSet(listOf(ExpectedDestinationOutput("0002.png")))
+            destination.pruneManagedOutputs()
+
+            val rootNames = childDisplayNames(treeUri)
+            assertTrue(rootNames.contains("0001.png"))
+            assertTrue(rootNames.contains(".masumi-staging-other"))
+        } finally {
+            TestDocumentsProvider.clearDynamicDocuments(context)
+        }
+    }
+
+    private fun childDisplayNames(treeUri: Uri): Set<String> {
+        val context = InstrumentationRegistry.getInstrumentation().context
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri,
+            TestDocumentsProvider.ROOT_ID,
+        )
+        return requireNotNull(
+            context.contentResolver.query(
+                childrenUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null,
+                null,
+                null,
+            ),
+        ).use { cursor ->
+            buildSet {
+                while (cursor.moveToNext()) add(cursor.getString(0))
+            }
         }
     }
 
@@ -108,7 +181,4 @@ class SafFolderExportDestinationSmokeTest {
             bitmap.recycle()
         }
     }
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 }

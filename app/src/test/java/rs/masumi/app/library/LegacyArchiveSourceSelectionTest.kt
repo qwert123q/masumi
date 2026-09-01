@@ -6,28 +6,12 @@ import rs.masumi.core.model.PageRecord
 
 class LegacyArchiveSourceSelectionTest {
     @Test
-    fun `exact unclaimed legacy content is reused`() {
+    fun `unique unclaimed legacy file with the expected length is reused`() {
         assertEquals(
             LegacyArchiveSourceAction.REUSE_LEGACY,
             selectLegacyArchiveSourceAction(
                 expectedByteLength = 128L,
-                expectedSha256 = "a".repeat(64),
                 legacyByteLength = 128L,
-                legacySha256 = "a".repeat(64),
-                legacyAlreadyClaimed = false,
-            ),
-        )
-    }
-
-    @Test
-    fun `same-length legacy content with another digest writes the stable name`() {
-        assertEquals(
-            LegacyArchiveSourceAction.WRITE_STABLE,
-            selectLegacyArchiveSourceAction(
-                expectedByteLength = 128L,
-                expectedSha256 = "a".repeat(64),
-                legacyByteLength = 128L,
-                legacySha256 = "b".repeat(64),
                 legacyAlreadyClaimed = false,
             ),
         )
@@ -39,9 +23,7 @@ class LegacyArchiveSourceSelectionTest {
             LegacyArchiveSourceAction.WRITE_STABLE,
             selectLegacyArchiveSourceAction(
                 expectedByteLength = 128L,
-                expectedSha256 = "a".repeat(64),
                 legacyByteLength = 127L,
-                legacySha256 = "a".repeat(64),
                 legacyAlreadyClaimed = false,
             ),
         )
@@ -53,39 +35,19 @@ class LegacyArchiveSourceSelectionTest {
             LegacyArchiveSourceAction.WRITE_STABLE,
             selectLegacyArchiveSourceAction(
                 expectedByteLength = 128L,
-                expectedSha256 = "a".repeat(64),
                 legacyByteLength = 128L,
-                legacySha256 = "a".repeat(64),
                 legacyAlreadyClaimed = true,
             ),
         )
     }
 
     @Test
-    fun `legacy content with an unavailable digest writes the stable name`() {
-        assertEquals(
-            LegacyArchiveSourceAction.WRITE_STABLE,
-            selectLegacyArchiveSourceAction(
-                expectedByteLength = 128L,
-                expectedSha256 = "a".repeat(64),
-                legacyByteLength = 128L,
-                legacySha256 = null,
-                legacyAlreadyClaimed = false,
-            ),
-        )
-    }
-
-    @Test
     fun `legacy name reserved for another page stable name is never reused`() {
-        val digest = "a".repeat(64)
-
         assertEquals(
             LegacyArchiveSourceAction.WRITE_STABLE,
             selectLegacyArchiveSourceAction(
                 expectedByteLength = 128L,
-                expectedSha256 = digest,
                 legacyByteLength = 128L,
-                legacySha256 = digest,
                 legacyAlreadyClaimed = false,
                 legacyNameReservedForStablePage = true,
             ),
@@ -94,43 +56,36 @@ class LegacyArchiveSourceSelectionTest {
 
     @Test
     fun `occupied stable name has a deterministic alternate`() {
-        val digest = "a".repeat(64)
         val page = PageRecord(
             order = 0,
-            pageId = digest,
-            sourceSha256 = digest,
+            pageId = "page-a",
             originalName = "page.jpg",
             mediaType = "image/jpeg",
             byteLength = 128L,
-            storedPath = "sources/$digest.jpg",
+            storedPath = "sources/page-a.jpg",
         )
         val alternate = mangaArchiveAlternativeSourceFileName(page, 2)
 
-        assertEquals("000001-$digest-page~2.jpg", alternate)
+        assertEquals("000001-page-a-page~2.jpg", alternate)
     }
 
     @Test
-    fun `same-length stable candidate with different content is rejected`() {
+    fun `same-length stable candidate is reusable without reading content`() {
         val reusable = isReusableArchiveSourceCandidate(
             expectedByteLength = 128L,
-            expectedSha256 = "a".repeat(64),
             candidateByteLength = 128L,
-            candidateSha256 = "b".repeat(64),
             candidateAlreadyClaimed = false,
             candidateNameReservedForAnotherPage = false,
         )
 
-        assertEquals(false, reusable)
+        assertEquals(true, reusable)
     }
 
     @Test
     fun `different-length stable candidate is rejected`() {
-        val digest = "a".repeat(64)
         val reusable = isReusableArchiveSourceCandidate(
             expectedByteLength = 128L,
-            expectedSha256 = digest,
             candidateByteLength = 127L,
-            candidateSha256 = digest,
             candidateAlreadyClaimed = false,
             candidateNameReservedForAnotherPage = false,
         )
@@ -143,7 +98,6 @@ class LegacyArchiveSourceSelectionTest {
         val page = PageRecord(
             order = 0,
             pageId = "a".repeat(64),
-            sourceSha256 = "a".repeat(64),
             originalName = "chapter/page.jpeg",
             mediaType = "image/jpeg",
             byteLength = 128L,

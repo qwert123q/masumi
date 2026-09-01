@@ -5,6 +5,7 @@ import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.detection.DetectionReport
 import rs.masumi.core.detection.DetectionRunArtifact
 import rs.masumi.core.detection.PageDetectionArtifact
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.model.ProjectManifest
 import rs.masumi.core.ocr.OcrArtifactStore
 import rs.masumi.core.ocr.OcrPageState
@@ -80,7 +81,7 @@ class ProjectCatalog(
     private val projectsDirectory = workspaceRoot.toAbsolutePath().normalize().resolve("projects")
 
     fun openProject(projectId: String): ProjectRef? {
-        require(SAFE_ID.matches(projectId)) { "projectId contains unsafe characters" }
+        SafeOpaqueId.require(projectId, "projectId")
         val directory = projectsDirectory.resolve(projectId).normalize()
         require(directory.parent == projectsDirectory) { "project path escaped the workspace" }
         return readProject(directory)
@@ -93,14 +94,14 @@ class ProjectCatalog(
                 .thenBy { it.manifest.projectId },
         )
 
-    fun latestPublishedRun(projectId: String): PublishedDetectionRun? {
-        val project = openProject(projectId) ?: return null
+    fun publishedDetectionRuns(projectId: String): List<PublishedDetectionRun> {
+        val project = openProject(projectId) ?: return emptyList()
         val artifactRoot = project.directory.resolve("artifacts/detection")
         val store = DetectionArtifactStore(project.directory)
         return directDirectories(artifactRoot)
             .mapNotNull { directory ->
                 val runKey = directory.fileName.toString()
-                if (!SHA256.matches(runKey)) return@mapNotNull null
+                if (!SafeOpaqueId.isValid(runKey)) return@mapNotNull null
                 val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
                 val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
                 if (artifact.projectId != projectId || report.projectId != projectId) {
@@ -108,17 +109,20 @@ class ProjectCatalog(
                 }
                 PublishedDetectionRun(directory, artifact, report)
             }
-            .maxWithOrNull(
-                compareBy<PublishedDetectionRun> { it.artifact.createdAtEpochMillis }
-                    .thenBy { it.artifact.runArtifactKey },
+            .sortedWith(
+                compareByDescending<PublishedDetectionRun> { it.artifact.createdAtEpochMillis }
+                    .thenByDescending { it.artifact.runArtifactKey },
             )
     }
+
+    fun latestPublishedRun(projectId: String): PublishedDetectionRun? =
+        publishedDetectionRuns(projectId).firstOrNull()
 
     fun readPublishedPage(
         run: PublishedDetectionRun,
         pageId: String,
     ): PageDetectionArtifact? = runCatching {
-        require(SHA256.matches(pageId)) { "pageId must be a SHA-256 digest" }
+        SafeOpaqueId.require(pageId, "pageId")
         val entries = run.artifact.entries.filter { it.pageId == pageId }
         require(entries.isNotEmpty()) { "page does not belong to detection run" }
         require(entries.all { it.state == DetectionPageState.COMMITTED }) {
@@ -133,7 +137,6 @@ class ProjectCatalog(
             detectionJson.decodePageArtifact(reader.readText())
         }.also { page ->
             require(page.pageId == pageId)
-            require(page.sourceSha256 == pageId)
             require(entries.all { it.pageArtifactKey == page.pageArtifactKey })
             require(page.model == run.artifact.model)
             require(page.preprocessing == run.artifact.preprocessing)
@@ -148,7 +151,7 @@ class ProjectCatalog(
         return directDirectories(artifactRoot)
             .mapNotNull { directory ->
                 val runKey = directory.fileName.toString()
-                if (!SHA256.matches(runKey)) return@mapNotNull null
+                if (!SafeOpaqueId.isValid(runKey)) return@mapNotNull null
                 val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
                 val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
                 if (artifact.projectId != projectId || report.projectId != projectId) {
@@ -166,7 +169,7 @@ class ProjectCatalog(
         publishedOcrRuns(projectId).firstOrNull()
 
     fun publishedOcrRun(projectId: String, runKey: String): PublishedOcrRun? {
-        if (!SHA256.matches(runKey)) return null
+        if (!SafeOpaqueId.isValid(runKey)) return null
         val project = openProject(projectId) ?: return null
         val store = OcrArtifactStore(project.directory)
         val artifact = store.readPublishedRun(runKey) ?: return null
@@ -176,7 +179,7 @@ class ProjectCatalog(
     }
 
     fun readPublishedOcrPage(run: PublishedOcrRun, pageId: String): PageOcrArtifact? = runCatching {
-        require(SHA256.matches(pageId))
+        SafeOpaqueId.require(pageId, "pageId")
         val entries = run.artifact.entries.filter { it.pageId == pageId }
         require(entries.isNotEmpty() && entries.all { it.state == OcrPageState.COMMITTED })
         val relativePaths = entries.map { requireNotNull(it.artifactPath) }.distinct()
@@ -199,7 +202,7 @@ class ProjectCatalog(
         return directDirectories(artifactRoot)
             .mapNotNull { directory ->
                 val runKey = directory.fileName.toString()
-                if (!SHA256.matches(runKey)) return@mapNotNull null
+                if (!SafeOpaqueId.isValid(runKey)) return@mapNotNull null
                 val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
                 val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
                 if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
@@ -215,7 +218,7 @@ class ProjectCatalog(
         publishedTranslationRuns(projectId).firstOrNull()
 
     fun publishedTranslationRun(projectId: String, runKey: String): PublishedTranslationRun? {
-        if (!SHA256.matches(runKey)) return null
+        if (!SafeOpaqueId.isValid(runKey)) return null
         val project = openProject(projectId) ?: return null
         val store = TranslationArtifactStore(project.directory, translationJson)
         val artifact = store.readPublishedRun(runKey) ?: return null
@@ -237,7 +240,7 @@ class ProjectCatalog(
         return directDirectories(artifactRoot)
             .mapNotNull { directory ->
                 val runKey = directory.fileName.toString()
-                if (!SHA256.matches(runKey)) return@mapNotNull null
+                if (!SafeOpaqueId.isValid(runKey)) return@mapNotNull null
                 val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
                 val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
                 if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
@@ -261,7 +264,7 @@ class ProjectCatalog(
     }
 
     fun publishedCleanupRun(projectId: String, runKey: String): PublishedCleanupRun? {
-        if (!SHA256.matches(runKey)) return null
+        if (!SafeOpaqueId.isValid(runKey)) return null
         val project = openProject(projectId) ?: return null
         val store = CleanupArtifactStore(project.directory)
         val artifact = store.readPublishedRun(runKey) ?: return null
@@ -289,7 +292,7 @@ class ProjectCatalog(
         return directDirectories(artifactRoot)
             .mapNotNull { directory ->
                 val runKey = directory.fileName.toString()
-                if (!SHA256.matches(runKey)) return@mapNotNull null
+                if (!SafeOpaqueId.isValid(runKey)) return@mapNotNull null
                 val artifact = store.readPublishedRun(runKey) ?: return@mapNotNull null
                 val report = store.readPublishedReport(runKey) ?: return@mapNotNull null
                 if (artifact.projectId != projectId || report.projectId != projectId) return@mapNotNull null
@@ -307,7 +310,7 @@ class ProjectCatalog(
     }
 
     fun publishedTypesettingRun(projectId: String, runKey: String): PublishedTypesettingRun? {
-        if (!SHA256.matches(runKey)) return null
+        if (!SafeOpaqueId.isValid(runKey)) return null
         val project = openProject(projectId) ?: return null
         val store = TypesettingArtifactStore(project.directory, typesettingJson)
         val artifact = store.readPublishedRun(runKey) ?: return null
@@ -336,7 +339,7 @@ class ProjectCatalog(
         }
         require(manifest.schemaVersion == PROJECT_SCHEMA_VERSION)
         require(manifest.projectId == directory.fileName.toString())
-        require(SAFE_ID.matches(manifest.projectId))
+        SafeOpaqueId.require(manifest.projectId, "projectId")
         require(manifest.pages.isNotEmpty())
         require(manifest.pages.map { it.order } == manifest.pages.indices.toList())
         ProjectRef(directory.toAbsolutePath().normalize(), manifest)
@@ -351,7 +354,5 @@ class ProjectCatalog(
 
     private companion object {
         const val PROJECT_SCHEMA_VERSION = 1
-        val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA256 = Regex("[0-9a-f]{64}")
     }
 }

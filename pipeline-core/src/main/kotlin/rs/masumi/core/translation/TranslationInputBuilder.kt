@@ -36,12 +36,7 @@ class TranslationInputBuilder(
         require(selected.normalizedText.isNotBlank()) { "recognized OCR region requires non-blank text" }
         if (!TranslationSourceText.isTranslationCandidate(selected.normalizedText)) return null
         return TranslationInputItem(
-            translationRegionId = TranslationIdentity.regionId(
-                ocrPageArtifactKey = page.pageArtifactKey,
-                ocrRegionId = region.candidate.ocrRegionId,
-                policy = policy,
-                prompt = prompt,
-            ),
+            translationRegionId = TranslationIdentity.regionId(region.candidate.ocrRegionId),
             ocrRegionId = region.candidate.ocrRegionId,
             readingOrderRank = region.candidate.readingOrderRank,
             sourceText = selected.normalizedText,

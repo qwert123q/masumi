@@ -60,7 +60,6 @@ data class DetectorModelRef(
     val repository: String,
     val revision: String,
     val fileName: String,
-    val sha256: String,
     val byteLength: Long,
     val license: String,
     val opset: Int,
@@ -117,7 +116,6 @@ data class DetectedRegion(
 data class PageDetectionArtifact(
     val schemaVersion: Int = DETECTION_SCHEMA_VERSION,
     val pageId: String,
-    val sourceSha256: String,
     val pageArtifactKey: String,
     val visibleWidth: Int,
     val visibleHeight: Int,

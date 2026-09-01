@@ -7,7 +7,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -15,6 +14,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -85,7 +85,7 @@ class OcrRunnerTest {
     fun cancelledRunReusesTerminalRegionAndDuplicatePageWorkOnResume() {
         withWorkspace { workspace ->
             val source = createProjectAndDetection(workspace, candidateCount = 2, duplicatePage = true)
-            val before = sha256(Files.readAllBytes(source))
+            val before = Files.readAllBytes(source)
             val requestCount = intArrayOf(0)
             val cancellation = AtomicBoolean(false)
             val runner = runner(workspace) {
@@ -99,7 +99,7 @@ class OcrRunnerTest {
 
             assertEquals(OcrJobStatus.CANCELLED, cancelled.job.status)
             assertEquals(1, requestCount[0])
-            assertEquals(before, sha256(Files.readAllBytes(source)))
+            assertArrayEquals(before, Files.readAllBytes(source))
 
             val resumed = runner.run(PROJECT_ID, { false }) { }
 
@@ -107,7 +107,7 @@ class OcrRunnerTest {
             assertEquals(2, requestCount[0])
             assertEquals(2, resumed.runArtifact?.entries?.size)
             assertNotNull(resumed.publishedDirectory)
-            assertEquals(before, sha256(Files.readAllBytes(source)))
+            assertArrayEquals(before, Files.readAllBytes(source))
         }
     }
 
@@ -290,13 +290,12 @@ class OcrRunnerTest {
         val sources = project.resolve("sources")
         Files.createDirectories(sources)
         val bytes = png()
-        val pageId = sha256(bytes)
+        val pageId = "source-page"
         val source = sources.resolve("$pageId.png")
         Files.write(source, bytes)
         val page = PageRecord(
             order = 0,
             pageId = pageId,
-            sourceSha256 = pageId,
             originalName = "page.png",
             mediaType = "image/png",
             byteLength = bytes.size.toLong(),
@@ -374,10 +373,6 @@ class OcrRunnerTest {
             bitmap.recycle()
         }
     }
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes)
-        .joinToString("") { "%02x".format(it) }
 
     private fun withWorkspace(block: (Path) -> Unit) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

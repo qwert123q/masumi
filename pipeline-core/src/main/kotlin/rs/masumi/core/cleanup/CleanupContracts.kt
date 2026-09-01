@@ -11,7 +11,6 @@ data class CleanupMaskModelRef(
     val repository: String,
     val revision: String,
     val fileName: String,
-    val sha256: String,
     val byteLength: Long,
     val license: String,
     val opset: Int,
@@ -24,7 +23,6 @@ data class CleanupNeuralModelRef(
     val repository: String,
     val revision: String,
     val fileName: String,
-    val sha256: String,
     val byteLength: Long,
     val license: String,
     val opset: Int,
@@ -144,12 +142,13 @@ data class PageCleanupArtifact(
     val schemaVersion: Int = CLEANUP_SCHEMA_VERSION,
     val pageId: String,
     val pageOrder: Int,
-    val sourceSha256: String,
     val translationPageArtifactKey: String,
     val pageArtifactKey: String,
     val visibleWidth: Int,
     val visibleHeight: Int,
-    val cleanedImageSha256: String,
+    // Zero is accepted only when decoding a legacy checkpoint that predated
+    // persisted byte lengths; stores still require the image itself to be non-empty.
+    val cleanedImageByteLength: Long = 0L,
     val dependencies: CleanupDependencies,
     val regions: List<CleanupRegionArtifact>,
 )
@@ -174,13 +173,13 @@ data class CleanupError(val code: String)
 data class CleanupJobPage(
     val pageId: String,
     val pageOrder: Int,
-    val sourceSha256: String,
     val translationPageArtifactKey: String,
     val pageArtifactKey: String,
     val state: CleanupPageState = CleanupPageState.PENDING,
     val attemptCount: Int = 0,
     val artifactPath: String? = null,
     val imagePath: String? = null,
+    val imageByteLength: Long = 0L,
     val cleanedRegionCount: Int = 0,
     val preservedRegionCount: Int = 0,
     val error: CleanupError? = null,
@@ -205,12 +204,12 @@ data class CleanupJobRecord(
 data class CleanupRunEntry(
     val pageId: String,
     val pageOrder: Int,
-    val sourceSha256: String,
     val translationPageArtifactKey: String,
     val pageArtifactKey: String,
     val state: CleanupPageState,
     val artifactPath: String? = null,
     val imagePath: String? = null,
+    val imageByteLength: Long = 0L,
     val error: CleanupError? = null,
 )
 

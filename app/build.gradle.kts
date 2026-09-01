@@ -1,5 +1,3 @@
-import java.security.MessageDigest
-
 plugins {
     id("com.android.application")
     kotlin("android")
@@ -95,40 +93,25 @@ dependencies {
 
 val verifyBundledModels by tasks.registering {
     group = "verification"
-    description = "Verifies the exact bundled ONNX model assets before building."
+    description = "Verifies bundled ONNX model assets are present with their expected lengths."
     val specifications = listOf(
-        Triple(
+        Pair(
             file("src/main/assets/models/comic-text-segmenter-512.onnx"),
             65_568_382L,
-            "688cb2b55bc14e29957bb4dad768e7420a4b1f740b84ffadc83ecaac63846485",
         ),
-        Triple(
+        Pair(
             file("src/main/assets/models/aot-inpainting.onnx"),
             23_009_155L,
-            "e0d8f438ca9567eccc9d358963427601b6f64a650cbe6189ec82fc43830a0390",
         ),
     )
     inputs.files(specifications.map { it.first })
     doLast {
-        specifications.forEach { (model, expectedBytes, expectedSha256) ->
+        specifications.forEach { (model, expectedBytes) ->
             check(model.isFile) {
                 "Missing bundled model ${model.name}; run tools/prepare-bundled-models.sh"
             }
             check(model.length() == expectedBytes) {
                 "Bundled model ${model.name} has an unexpected byte length"
-            }
-            val digest = MessageDigest.getInstance("SHA-256")
-            model.inputStream().buffered().use { input ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    digest.update(buffer, 0, read)
-                }
-            }
-            val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
-            check(actualSha256 == expectedSha256) {
-                "Bundled model ${model.name} has an unexpected SHA-256"
             }
         }
     }

@@ -130,7 +130,6 @@ class OcrCandidateConsolidatorTest {
         width: Int = 200,
     ) = PageDetectionArtifact(
         pageId = "page-1",
-        sourceSha256 = "source-sha",
         pageArtifactKey = "detection-key",
         visibleWidth = width,
         visibleHeight = 300,
@@ -140,7 +139,6 @@ class OcrCandidateConsolidatorTest {
             repository = "example/detector",
             revision = "revision",
             fileName = "detector.onnx",
-            sha256 = "detector-sha",
             byteLength = 1L,
             license = "Apache-2.0",
             opset = 17,

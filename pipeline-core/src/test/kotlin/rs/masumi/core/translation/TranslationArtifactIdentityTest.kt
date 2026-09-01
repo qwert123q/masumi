@@ -2,39 +2,12 @@ package rs.masumi.core.translation
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
 
 class TranslationArtifactIdentityTest {
     @Test
-    fun `identity covers model batching and initial glossary while glossary order is stable`() {
-        val base = TranslationArtifactFixtures.dependencies
-        val baseline = TranslationArtifactIdentity.pageArtifactKey("b".repeat(64), base)
-        val changed = listOf(
-            base.copy(provider = base.provider.copy(modelId = "other-model")),
-            base.copy(batching = base.batching.copy(maximumContextItems = 12)),
-            base.copy(batching = base.batching.copy(maximumItemsPerWindow = 8)),
-            base.copy(outputValidation = base.outputValidation.copy(revision = "changed-validator")),
-            base.copy(
-                provider = base.provider.copy(
-                    reference = TranslationProviderReference(
-                        displayName = "Other",
-                        endpointHost = "other.example",
-                        endpointSha256 = "e".repeat(64),
-                    ),
-                ),
-            ),
-            base.copy(initialGlossarySha256 = "f".repeat(64)),
-        ).map { TranslationArtifactIdentity.pageArtifactKey("b".repeat(64), it) }
-
-        assertEquals(64, baseline.length)
-        changed.forEach { assertNotEquals(baseline, it) }
-        assertEquals(
-            TranslationArtifactIdentity.glossarySha256(
-                listOf(TranslationGlossaryEntry("B", "乙"), TranslationGlossaryEntry("A", "甲")),
-            ),
-            TranslationArtifactIdentity.glossarySha256(
-                listOf(TranslationGlossaryEntry("A", "甲"), TranslationGlossaryEntry("B", "乙")),
-            ),
-        )
+    fun `page and window identities are structural children and OCR region lineage is inherited`() {
+        assertEquals("translation-run.page.0002", TranslationArtifactIdentity.pageArtifactKey("translation-run", 2))
+        assertEquals("translation-run.window.0005", TranslationArtifactIdentity.windowArtifactKey("translation-run", 5))
+        assertEquals("ocr-run.page.0002.region.0001", TranslationIdentity.regionId("ocr-run.page.0002.region.0001"))
     }
 }

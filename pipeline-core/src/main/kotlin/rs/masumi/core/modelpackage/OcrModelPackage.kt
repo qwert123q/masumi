@@ -18,12 +18,10 @@ enum class OcrModelFileNormalization {
 data class OcrModelFileDescriptor(
     val fileName: String,
     val byteLength: Long,
-    val sha256: String,
     val downloadUrl: String,
-    val installedSha256: String = sha256,
     val normalization: OcrModelFileNormalization = OcrModelFileNormalization.NONE,
 ) {
-    fun toRef(): OcrModelFileRef = OcrModelFileRef(fileName, byteLength, installedSha256)
+    fun toRef(): OcrModelFileRef = OcrModelFileRef(fileName, byteLength)
 }
 
 @Serializable
@@ -47,11 +45,11 @@ data class OcrNativeRuntimeDescriptor(
 data class OcrModelPackageDescriptor(
     val packageId: String,
     val storageKey: String,
+    val storageRevision: String,
     val repository: String,
     val revision: String,
     val model: OcrModelFileDescriptor,
     val projector: OcrModelFileDescriptor,
-    val packageSha256: String,
     val license: String,
     val prompt: String,
     val runtime: OcrNativeRuntimeDescriptor,
@@ -62,7 +60,6 @@ data class OcrModelPackageDescriptor(
         revision = revision,
         model = model.toRef(),
         projector = projector.toRef(),
-        packageSha256 = packageSha256,
         license = license,
     )
 }
@@ -77,6 +74,7 @@ data class OcrModelCapabilities(
 @Serializable
 data class OcrModelPackageMetadata(
     val schemaVersion: Int = 1,
+    val storageRevision: String = "",
     val modelPackage: OcrModelPackageRef,
     val runtime: OcrRuntimeRef,
     val prompt: String,
@@ -113,7 +111,6 @@ class OcrRangeResponse(
 
 enum class OcrModelPackageErrorCode(val safeMessage: String) {
     LENGTH_MISMATCH("OCR model file length did not match the pinned package"),
-    HASH_MISMATCH("OCR model file digest did not match the pinned package"),
     RANGE_MISMATCH("OCR model server returned an invalid range response"),
     CAPABILITY_MISMATCH("OCR model and projector capabilities did not match"),
     INSTALL_IO("OCR model package could not be installed"),
@@ -131,25 +128,21 @@ object PinnedPaddleOcrVl {
     val descriptor = OcrModelPackageDescriptor(
         packageId = "PaddlePaddle/PaddleOCR-VL-1.6-GGUF",
         storageKey = "PaddlePaddle--PaddleOCR-VL-1.6-GGUF",
+        storageRevision = "paddleocr-vl-1.6-f16-v1",
         repository = "PaddlePaddle/PaddleOCR-VL-1.6-GGUF",
         revision = REVISION,
         model = OcrModelFileDescriptor(
             fileName = "PaddleOCR-VL-1.6-GGUF.gguf",
             byteLength = 935_769_056L,
-            sha256 = "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8",
             downloadUrl = "$BASE_URL/PaddleOCR-VL-1.6-GGUF.gguf",
-            installedSha256 = "8d13cb7c4f685e891f411584263db03b038701c110023e6cc6557901f83ab97e",
             normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
         ),
         projector = OcrModelFileDescriptor(
             fileName = "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
             byteLength = 881_770_560L,
-            sha256 = "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a",
             downloadUrl = "$BASE_URL/PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
-            installedSha256 = "d7e99b91293e706525a2ea68c84507705bc9352d630d5cfb5f6e7b0be25a72a8",
             normalization = OcrModelFileNormalization.GGUF_BF16_TO_F16,
         ),
-        packageSha256 = "7f09a652e09641b5f594218eca04017ca38da6dbe84d0cbf26e309313480b40e",
         license = "Apache-2.0",
         prompt = "OCR:",
         runtime = OcrNativeRuntimeDescriptor(

@@ -27,12 +27,14 @@ internal class CurrentPipelineArtifactsReader(
 
     fun read(projectId: String): CurrentPipelineArtifacts? {
         val project = catalog.openProject(projectId) ?: return null
-        val detection = catalog.latestPublishedRun(projectId)
+        val detection = catalog.publishedDetectionRuns(projectId).firstOrNull {
+            PipelineArtifactFreshness.detection(it.artifact, project.manifest)
+        }
         val ocr = detection?.let { currentDetection ->
             catalog.publishedOcrRuns(projectId).firstOrNull {
                 PipelineArtifactFreshness.ocr(
                     it.artifact,
-                    currentDetection.artifact.runArtifactKey,
+                    currentDetection.artifact,
                 )
             }
         }
@@ -40,7 +42,7 @@ internal class CurrentPipelineArtifactsReader(
             catalog.publishedTranslationRuns(projectId).firstOrNull {
                 PipelineArtifactFreshness.translation(
                     it.artifact,
-                    currentOcr.artifact.runArtifactKey,
+                    currentOcr.artifact,
                 )
             }
         }
@@ -55,7 +57,7 @@ internal class CurrentPipelineArtifactsReader(
             )?.takeIf {
                 PipelineArtifactFreshness.cleanup(
                     it.artifact,
-                    currentTranslation.artifact.runArtifactKey,
+                    currentTranslation.artifact,
                 )
             }
         }
@@ -64,7 +66,7 @@ internal class CurrentPipelineArtifactsReader(
                 projectId = projectId,
                 cleanupRunArtifactKey = currentCleanup.artifact.runArtifactKey,
                 policy = TypesettingPolicy(),
-            )
+            )?.takeIf { PipelineArtifactFreshness.typesetting(it.artifact, currentCleanup.artifact) }
         }
         return CurrentPipelineArtifacts(project, detection, ocr, translation, cleanup, typesetting)
     }

@@ -1,10 +1,8 @@
 package rs.masumi.core.detection
 
-import kotlinx.serialization.SerializationException
 import rs.masumi.core.serialization.DetectionJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class DetectionJsonTest {
@@ -20,14 +18,12 @@ class DetectionJsonTest {
     }
 
     @Test
-    fun `unknown page artifact field is rejected`() {
+    fun `legacy page artifact fields are ignored`() {
         val codec = DetectionJson()
         val encoded = codec.encodePageArtifact(fixturePageArtifact())
-        val changed = encoded.replaceFirst("{", "{\"unexpected\":true,")
+        val changed = encoded.replaceFirst("{", "{\"sourceSha256\":\"legacy\",")
 
-        assertFailsWith<SerializationException> {
-            codec.decodePageArtifact(changed)
-        }
+        assertEquals(fixturePageArtifact(), codec.decodePageArtifact(changed))
     }
 
     @Test
@@ -97,7 +93,6 @@ class DetectionJsonTest {
             repository = "public/model",
             revision = "revision-1",
             fileName = "model.onnx",
-            sha256 = "c".repeat(64),
             byteLength = 100,
             license = "Apache-2.0",
             opset = 18,
@@ -108,7 +103,6 @@ class DetectionJsonTest {
 
         return PageDetectionArtifact(
             pageId = sourceSha,
-            sourceSha256 = sourceSha,
             pageArtifactKey = artifactKey,
             visibleWidth = 100,
             visibleHeight = 200,

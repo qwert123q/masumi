@@ -74,26 +74,27 @@ class DetectionRunner(
     ): DetectionRunResult {
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
         val manifest = project.manifest
-        val pageKeys = manifest.pages.associate { page ->
-            page.pageId to DetectionIdentity.pageArtifactKey(
-                sourceSha256 = page.sourceSha256,
-                schemaVersion = DETECTION_SCHEMA_VERSION,
-                model = model,
-                preprocessing = preprocessing,
-                thresholds = thresholds,
-            )
-        }
-        val runKey = DetectionIdentity.runArtifactKey(
-            manifest.pages.map { page -> page.order to pageKeys.getValue(page.pageId) },
-        )
         val store = DetectionArtifactStore(project.directory)
 
-        readPublishedResult(store, project.directory, manifest, runKey)?.let { cached ->
+        val reusable = catalog.publishedDetectionRuns(projectId).firstOrNull { published ->
+            published.artifact.schemaVersion == DETECTION_SCHEMA_VERSION &&
+                published.artifact.model == model &&
+                published.artifact.preprocessing == preprocessing &&
+                published.artifact.thresholds == thresholds &&
+                published.artifact.entries.map { it.order to it.pageId } ==
+                manifest.pages.map { it.order to it.pageId }
+        }
+        reusable?.let { published ->
+            val cached = requireNotNull(
+                readPublishedResult(store, project.directory, manifest, published.artifact.runArtifactKey),
+            )
             onProgress(cached.job.toProgress())
             return cached
         }
 
-        var job = recoverOrCreateJob(store, manifest, pageKeys, runKey)
+        var job = recoverOrCreateJob(store, manifest)
+        val pageKeys = job.pages.distinctBy(DetectionJobPage::pageId)
+            .associate { it.pageId to it.pageArtifactKey }
         var detector: ComicDetector? = null
         val pageArtifacts = mutableMapOf<String, PageDetectionArtifact>()
 
@@ -165,7 +166,6 @@ class DetectionRunner(
                         )
                         val pageArtifact = PageDetectionArtifact(
                             pageId = sourcePage.pageId,
-                            sourceSha256 = sourcePage.sourceSha256,
                             pageArtifactKey = pageKeys.getValue(sourcePage.pageId),
                             visibleWidth = page.bitmap.width,
                             visibleHeight = page.bitmap.height,
@@ -273,15 +273,14 @@ class DetectionRunner(
     private fun recoverOrCreateJob(
         store: DetectionArtifactStore,
         manifest: ProjectManifest,
-        pageKeys: Map<String, String>,
-        runKey: String,
     ): DetectionJobRecord {
-        val candidate = store.findResumableJob()?.takeIf { job ->
+        val candidate = store.findRecoveryCandidates().firstOrNull { job ->
+            job.schemaVersion == DETECTION_SCHEMA_VERSION &&
             job.projectId == manifest.projectId &&
-                job.runArtifactKey == runKey &&
                 job.model == model &&
                 job.preprocessing == preprocessing &&
-                job.thresholds == thresholds
+                job.thresholds == thresholds &&
+                job.pages.map { it.order to it.pageId } == manifest.pages.map { it.order to it.pageId }
         }
         if (candidate != null) {
             val recovered = when (candidate.status) {
@@ -307,6 +306,10 @@ class DetectionRunner(
         }
 
         val now = clock.millis()
+        val runKey = idSource.nextId()
+        val pageKeys = manifest.pages.distinctBy(PageRecord::pageId).associate { page ->
+            page.pageId to DetectionIdentity.pageArtifactKey(runKey, page.order)
+        }
         return DetectionJobRecord(
             jobId = idSource.nextId(),
             projectId = manifest.projectId,
@@ -334,9 +337,13 @@ class DetectionRunner(
     ): DetectionRunResult? {
         val artifact = store.readPublishedRun(runKey) ?: return null
         val report = store.readPublishedReport(runKey) ?: return null
+        require(artifact.schemaVersion == DETECTION_SCHEMA_VERSION)
         require(artifact.projectId == manifest.projectId)
         require(report.projectId == manifest.projectId)
-        require(artifact.entries.map(DetectionRunEntry::order) == manifest.pages.indices.toList())
+        require(artifact.model == model)
+        require(artifact.preprocessing == preprocessing)
+        require(artifact.thresholds == thresholds)
+        require(artifact.entries.map { it.order to it.pageId } == manifest.pages.map { it.order to it.pageId })
         var job = store.readJob(report.jobId)
         if (job == null || job.status != report.status || job.pages.any { it.state == DetectionPageState.RUNNING }) {
             job = DetectionJobRecord(
@@ -374,8 +381,6 @@ class DetectionRunner(
 
     private fun preflightSources(projectDirectory: Path, manifest: ProjectManifest): Map<String, Path> =
         manifest.pages.distinctBy(PageRecord::pageId).associate { page ->
-            require(SHA256.matches(page.pageId)) { "page ID is not a SHA-256 digest" }
-            require(page.pageId == page.sourceSha256) { "page and source digests differ" }
             val source = try {
                 SourceFilePreflight.resolve(projectDirectory, page)
             } catch (failure: SourceFilePreflightException) {
@@ -509,8 +514,4 @@ class DetectionRunner(
         val code: String,
         cause: Throwable? = null,
     ) : RuntimeException(code, cause)
-
-    private companion object {
-        val SHA256 = Regex("[0-9a-f]{64}")
-    }
 }

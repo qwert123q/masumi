@@ -11,6 +11,7 @@ interface ProjectFileSystem {
     fun createDirectory(path: Path)
     fun newOutputStream(path: Path): OutputStream
     fun exists(path: Path): Boolean
+    fun byteLength(path: Path): Long
     fun deleteIfExists(path: Path)
     fun moveFile(source: Path, target: Path)
     fun replaceFile(source: Path, target: Path)
@@ -39,6 +40,8 @@ class NioProjectFileSystem : ProjectFileSystem {
     )
 
     override fun exists(path: Path): Boolean = Files.exists(path)
+
+    override fun byteLength(path: Path): Long = Files.size(path)
 
     override fun deleteIfExists(path: Path) {
         Files.deleteIfExists(path)

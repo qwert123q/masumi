@@ -7,7 +7,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertArrayEquals
@@ -30,6 +29,9 @@ import rs.masumi.core.importer.IdSource
 import rs.masumi.core.model.PageRecord
 import rs.masumi.core.model.ProjectManifest
 import rs.masumi.core.modelpackage.PinnedPaddleOcrVl
+import rs.masumi.core.modelpackage.PinnedAotInpainter
+import rs.masumi.core.modelpackage.PinnedComicDetector
+import rs.masumi.core.modelpackage.PinnedComicTextSegmenter
 import rs.masumi.core.ocr.OcrAttemptArtifact
 import rs.masumi.core.ocr.OcrCandidate
 import rs.masumi.core.ocr.OcrCropStrategy
@@ -47,13 +49,23 @@ import rs.masumi.core.ocr.OcrRunEntry
 import rs.masumi.core.ocr.OcrSemanticStatus
 import rs.masumi.core.ocr.PageOcrArtifact
 import rs.masumi.core.detection.DetectorClass
+import rs.masumi.core.detection.DetectionJobStatus
+import rs.masumi.core.detection.DetectionPageState
+import rs.masumi.core.detection.DetectionPostProcessor
+import rs.masumi.core.detection.DetectionPreprocessingConfig
+import rs.masumi.core.detection.DetectionReport
+import rs.masumi.core.detection.DetectionRunArtifact
+import rs.masumi.core.detection.DetectionRunEntry
+import rs.masumi.core.detection.DetectionThresholdConfig
+import rs.masumi.core.detection.ModelQuery
+import rs.masumi.core.detection.PageDetectionArtifact
 import rs.masumi.core.detection.PixelBox
 import rs.masumi.core.detection.VisibleOrientation
+import rs.masumi.core.serialization.DetectionJson
 import rs.masumi.core.serialization.OcrJson
 import rs.masumi.core.serialization.ProjectJson
 import rs.masumi.core.serialization.TranslationJson
 import rs.masumi.core.translation.PageTranslationArtifact
-import rs.masumi.core.translation.TranslationArtifactIdentity
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationDependencies
 import rs.masumi.core.translation.TranslationGlossaryArtifact
@@ -78,6 +90,8 @@ class CleanupRunnerTest {
             publishProjectAndDependencies(workspace, sourceBytes)
             val runner = CleanupRunner(
                 workspaceRoot = workspace,
+                maskModel = PinnedComicTextSegmenter.descriptor.toModelRef(),
+                neuralModel = PinnedAotInpainter.descriptor.toModelRef(),
                 idSource = IdSource { "cleanup-job" },
             )
             val cancel = AtomicBoolean(false)
@@ -173,19 +187,18 @@ class CleanupRunnerTest {
     }
 
     private fun publishProjectAndDependencies(workspace: Path, sourceBytes: ByteArray) {
-        val sourceSha = sha256(sourceBytes)
+        val pageId = "source-page"
         val project = workspace.resolve("projects/$PROJECT_ID")
-        val source = project.resolve("sources/$sourceSha.png")
+        val source = project.resolve("sources/$pageId.png")
         Files.createDirectories(source.parent)
         Files.write(source, sourceBytes)
         val firstPage = PageRecord(
             order = 0,
-            pageId = sourceSha,
-            sourceSha256 = sourceSha,
+            pageId = pageId,
             originalName = "page.png",
             mediaType = "image/png",
             byteLength = sourceBytes.size.toLong(),
-            storedPath = "sources/$sourceSha.png",
+            storedPath = "sources/$pageId.png",
         )
         val pages = listOf(
             firstPage,
@@ -197,8 +210,82 @@ class CleanupRunnerTest {
                 ProjectManifest(projectId = PROJECT_ID, createdAtEpochMillis = 1L, pages = pages),
             ),
         )
+        publishDetection(project, pages)
         val ocr = publishOcr(project, pages)
         publishTranslation(project, pages, ocr)
+    }
+
+    private fun publishDetection(project: Path, pages: List<PageRecord>) {
+        val page = pages.first()
+        val runKey = "f".repeat(64)
+        val pageKey = "e".repeat(64)
+        val runDirectory = project.resolve("artifacts/detection/$runKey")
+        val regionsPath = "pages/${page.pageId}/regions.json"
+        Files.createDirectories(runDirectory.resolve("pages/${page.pageId}"))
+        Files.createDirectories(runDirectory.resolve("previews"))
+        val model = PinnedComicDetector.descriptor.toModelRef()
+        val preprocessing = DetectionPreprocessingConfig()
+        val thresholds = DetectionThresholdConfig()
+        val processed = DetectionPostProcessor.process(
+            pageId = page.pageId,
+            pageArtifactKey = pageKey,
+            pageWidth = 64,
+            pageHeight = 64,
+            thresholds = thresholds,
+            queries = List(300) { index ->
+                ModelQuery(index, 0L, 0f, floatArrayOf(0f, 0f, 1f, 1f))
+            },
+        )
+        val pageArtifact = PageDetectionArtifact(
+            pageId = page.pageId,
+            pageArtifactKey = pageKey,
+            visibleWidth = 64,
+            visibleHeight = 64,
+            orientation = VisibleOrientation.NORMAL,
+            model = model,
+            preprocessing = preprocessing,
+            thresholds = thresholds,
+            rawQueries = processed.rawQueries,
+            bubbleCandidates = processed.bubbles,
+            textRegions = processed.textRegions,
+        )
+        val entries = pages.map { orderedPage ->
+            DetectionRunEntry(
+                order = orderedPage.order,
+                pageId = orderedPage.pageId,
+                pageArtifactKey = pageKey,
+                state = DetectionPageState.COMMITTED,
+                regionsPath = regionsPath,
+                previewPath = "previews/${orderedPage.order.toString().padStart(4, '0')}.webp",
+            )
+        }
+        val run = DetectionRunArtifact(
+            runArtifactKey = runKey,
+            projectId = PROJECT_ID,
+            createdAtEpochMillis = 1L,
+            model = model,
+            preprocessing = preprocessing,
+            thresholds = thresholds,
+            entries = entries,
+        )
+        val report = DetectionReport(
+            jobId = "detection-job",
+            projectId = PROJECT_ID,
+            runArtifactKey = runKey,
+            startedAtEpochMillis = 0L,
+            finishedAtEpochMillis = 1L,
+            status = DetectionJobStatus.SUCCEEDED,
+            totalPageCount = pages.size,
+            committedPageCount = pages.size,
+            preservedPageCount = 0,
+            retryCount = 0,
+            classCounts = emptyMap(),
+        )
+        val json = DetectionJson()
+        writeUtf8(runDirectory.resolve(regionsPath), json.encodePageArtifact(pageArtifact))
+        entries.forEach { Files.write(runDirectory.resolve(requireNotNull(it.previewPath)), byteArrayOf(1)) }
+        writeUtf8(runDirectory.resolve("artifact.json"), json.encodeRun(run))
+        writeUtf8(runDirectory.resolve("report.json"), json.encodeReport(report))
     }
 
     private fun publishOcr(project: Path, pages: List<PageRecord>): OcrFixture {
@@ -248,7 +335,6 @@ class CleanupRunnerTest {
         )
         val pageArtifact = PageOcrArtifact(
             pageId = page.pageId,
-            sourceSha256 = page.sourceSha256,
             detectionPageArtifactKey = "e".repeat(64),
             pageArtifactKey = pageKey,
             visibleWidth = 64,
@@ -275,7 +361,6 @@ class CleanupRunnerTest {
                 OcrRunEntry(
                     order = orderedPage.order,
                     pageId = page.pageId,
-                    sourceSha256 = page.sourceSha256,
                     detectionPageArtifactKey = pageArtifact.detectionPageArtifactKey,
                     pageArtifactKey = pageKey,
                     state = OcrPageState.COMMITTED,
@@ -320,7 +405,6 @@ class CleanupRunnerTest {
         val translationRegionId = "3".repeat(64)
         val runDirectory = project.resolve("artifacts/translation/$runKey")
         Files.createDirectories(runDirectory)
-        val emptyGlossarySha = TranslationArtifactIdentity.glossarySha256(emptyList())
         val dependencies = TranslationDependencies(
             ocrRunArtifactKey = ocr.runKey,
             policy = TranslationPolicy(),
@@ -332,7 +416,7 @@ class CleanupRunnerTest {
                 maximumOutputTokens = 512,
                 requestJsonObjectFormat = true,
             ),
-            initialGlossarySha256 = emptyGlossarySha,
+            initialGlossary = emptyList(),
         )
         val pageArtifacts = pages.map { page ->
             PageTranslationArtifact(
@@ -399,7 +483,7 @@ class CleanupRunnerTest {
         }
         writeUtf8(
             runDirectory.resolve("glossary.json"),
-            json.encodeGlossary(TranslationGlossaryArtifact(sha256 = emptyGlossarySha, entries = emptyList())),
+            json.encodeGlossary(TranslationGlossaryArtifact(entries = emptyList())),
         )
         writeUtf8(runDirectory.resolve("artifact.json"), json.encodeRun(run))
         writeUtf8(runDirectory.resolve("report.json"), json.encodeReport(report))
@@ -435,9 +519,6 @@ class CleanupRunnerTest {
         Files.newBufferedWriter(path, Charsets.UTF_8).use { it.write(content) }
     }
 
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
-
     private data class OcrFixture(val runKey: String, val pageKey: String, val regionId: String)
 
     private class InMemoryExportDestination : FolderExportDestination {
@@ -447,15 +528,14 @@ class CleanupRunnerTest {
         var failNextPublish = false
         var pruneCalls = 0
 
-        override fun matches(outputName: String, expectedSha256: String, expectedByteLength: Long): Boolean {
+        override fun matches(outputName: String, expectedByteLength: Long): Boolean {
             val bytes = (staged[outputName] ?: files[outputName]) ?: return false
-            return bytes.size.toLong() == expectedByteLength && sha256Static(bytes) == expectedSha256
+            return bytes.isNotEmpty() && bytes.size.toLong() == expectedByteLength
         }
 
         override fun publish(
             outputName: String,
             bytes: ByteArray,
-            expectedSha256: String,
             cancellation: () -> Boolean,
         ): DestinationWriteResult {
             if (cancellation()) throw ExportCancellationSignal()
@@ -464,7 +544,7 @@ class CleanupRunnerTest {
                 throw ExportDestinationException("DESTINATION_WRITE_FAILED")
             }
             val existing = staged[outputName]
-            if (existing != null && sha256Static(existing) == expectedSha256) {
+            if (existing != null && existing.isNotEmpty() && existing.size == bytes.size) {
                 return DestinationWriteResult(reusedExisting = true)
             }
             staged[outputName] = bytes.copyOf()
@@ -500,7 +580,5 @@ class CleanupRunnerTest {
         const val PROJECT_ID = "cleanup-project"
         const val DESTINATION_URI = "content://provider/tree/export"
 
-        fun sha256Static(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-            .digest(bytes).joinToString("") { "%02x".format(it) }
     }
 }

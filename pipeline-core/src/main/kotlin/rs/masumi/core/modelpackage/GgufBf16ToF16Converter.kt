@@ -8,8 +8,8 @@ import java.nio.file.Path
  * Rewrites GGUF BF16 tensors as IEEE F16 without changing tensor lengths or offsets.
  *
  * The conversion is intentionally in-place inside an unpublished staging directory.
- * If the process is interrupted, package hash verification discards the staging file
- * and downloads a clean canonical source on the next attempt.
+ * If the process is interrupted, the incomplete staging file is rejected by its
+ * expected length and the next attempt resumes or restarts it safely.
  */
 object GgufBf16ToF16Converter {
     private const val GGUF_VERSION_2 = 2

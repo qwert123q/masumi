@@ -13,6 +13,7 @@ class OcrCandidateConsolidator(
 ) {
     fun consolidate(
         detectionPage: PageDetectionArtifact,
+        pageArtifactKey: String = detectionPage.pageArtifactKey,
         bubbles: List<DetectedRegion> = detectionPage.bubbleCandidates,
         textRegions: List<DetectedRegion> = detectionPage.textRegions,
     ): List<OcrCandidate> {
@@ -26,7 +27,10 @@ class OcrCandidateConsolidator(
             isObviouslySpuriousFreeText(candidate, detectionPage.visibleWidth)
         }
         return orderForJapaneseReading(candidates).mapIndexed { rank, candidate ->
-            candidate.copy(readingOrderRank = rank)
+            candidate.copy(
+                ocrRegionId = OcrIdentity.regionId(pageArtifactKey, rank),
+                readingOrderRank = rank,
+            )
         }
     }
 
@@ -86,7 +90,8 @@ class OcrCandidateConsolidator(
         }
         val association = bestBubble(candidateBox, bubbles)
         return OcrCandidate(
-            ocrRegionId = OcrIdentity.regionId(page.pageId, page.pageArtifactKey, sourceIds, semantic),
+            // Replaced with a structural persisted ID after reading order is finalized.
+            ocrRegionId = representative.regionId,
             sourceRegionIds = sourceIds,
             representativeSourceRegionId = representative.regionId,
             sourceClass = sourceClass,

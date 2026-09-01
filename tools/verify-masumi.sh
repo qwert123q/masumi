@@ -32,20 +32,23 @@ BASELINE_TRANSLATION_RUN_KEY="${MASUMI_BASELINE_TRANSLATION_RUN_KEY:-}"
 BASELINE_CLEANUP_RUN_KEY="${MASUMI_BASELINE_CLEANUP_RUN_KEY:-}"
 RUN_STARTED_EPOCH_MILLIS="${MASUMI_RUN_STARTED_EPOCH_MILLIS:-}"
 STAGE="${1:-compile}"
+SAFE_OPAQUE_ID_ERE='[A-Za-z0-9][A-Za-z0-9._-]{0,127}'
+NEEDS_DEVICE=false
 
 case "$STAGE" in
-  compile|device|report|all) ;;
+  compile|self-check) ;;
+  device|report|all) NEEDS_DEVICE=true ;;
   *)
-    echo "Usage: $0 {compile|device|report|all}" >&2
+    echo "Usage: $0 {compile|self-check|device|report|all}" >&2
     exit 2
     ;;
 esac
 
-if [ "$STAGE" != compile ] && [ -z "${ANDROID_SERIAL:-}" ]; then
+if [ "$NEEDS_DEVICE" = true ] && [ -z "${ANDROID_SERIAL:-}" ]; then
   echo "ANDROID_SERIAL is required for device, report, and all stages." >&2
   exit 2
 fi
-if [ "$STAGE" != compile ]; then
+if [ "$NEEDS_DEVICE" = true ]; then
   case "$TARGET_PROJECT_ID" in
     ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*)
       echo "MASUMI_TARGET_PROJECT_ID must be a safe explicit target identifier." >&2
@@ -58,9 +61,17 @@ if [ "$STAGE" != compile ]; then
   fi
   TARGET_PROJECT_ROOT="files/workspace/projects/$TARGET_PROJECT_ID"
   for optional_run_key in "$BASELINE_TRANSLATION_RUN_KEY" "$BASELINE_CLEANUP_RUN_KEY"; do
-    if [ -n "$optional_run_key" ] && ! [[ "$optional_run_key" =~ ^[0-9a-f]{64}$ ]]; then
-      echo "Baseline run keys must be lowercase SHA-256 values." >&2
-      exit 2
+    if [ -n "$optional_run_key" ]; then
+      case "$optional_run_key" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*)
+          echo "Baseline run keys must be safe opaque identifiers." >&2
+          exit 2
+          ;;
+      esac
+      if [ "${#optional_run_key}" -gt 128 ]; then
+        echo "Baseline run keys are too long." >&2
+        exit 2
+      fi
     fi
   done
   if [ -n "$RUN_STARTED_EPOCH_MILLIS" ] && ! [[ "$RUN_STARTED_EPOCH_MILLIS" =~ ^[0-9]{1,20}$ ]]; then
@@ -87,6 +98,103 @@ chmod 600 "$LOG" "$SUMMARY"
 
 note() { printf '%s\n' "$*" | tee -a "$SUMMARY" >>"$LOG"; }
 banner() { printf '\n===== %s =====\n' "$*" >>"$LOG"; }
+
+is_safe_opaque_id() {
+  local value="$1"
+  local pattern="^${SAFE_OPAQUE_ID_ERE}$"
+  [[ "$value" =~ $pattern ]]
+}
+
+extract_safe_json_id() {
+  local field="$1"
+  local pair value
+  case "$field" in
+    runArtifactKey|translationRunArtifactKey) ;;
+    *) return 1 ;;
+  esac
+  pair="$(
+    grep -E -o "\"$field\"[[:space:]]*:[[:space:]]*\"$SAFE_OPAQUE_ID_ERE\"" |
+      sed -n '1p'
+  )" || return 1
+  [ -n "$pair" ] || return 1
+  value="${pair#*:}"
+  value="${value#*\"}"
+  value="${value%%\"*}"
+  is_safe_opaque_id "$value" || return 1
+  printf '%s\n' "$value"
+}
+
+validate_latest_run_selector_output() {
+  local output="$1"
+  local pattern="^[0-9]{20}[[:space:]]${SAFE_OPAQUE_ID_ERE}$"
+  [[ "$output" =~ $pattern ]]
+}
+
+latest_published_selector_script() {
+  local artifact_root="$1"
+  case "$artifact_root" in
+    ""|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  printf '%s\n' "for artifact in $artifact_root/*/artifact.json; do [ -f \"\$artifact\" ] || continue; key=\"\${artifact%/artifact.json}\"; key=\"\${key##*/}\"; case \"\$key\" in \"\"|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) continue ;; esac; [ \"\${#key}\" -le 128 ] || continue; json_pair=\"\$(grep -E -o \"\\\"runArtifactKey\\\"[[:space:]]*:[[:space:]]*\\\"$SAFE_OPAQUE_ID_ERE\\\"\" \"\$artifact\" | sed -n \"1p\")\"; json_key=\"\${json_pair#*:}\"; json_key=\"\${json_key#*\\\"}\"; json_key=\"\${json_key%%\\\"*}\"; [ \"\$json_key\" = \"\$key\" ] || continue; created=\"\$(grep -E -o \"\\\"createdAtEpochMillis\\\"[[:space:]]*:[[:space:]]*[0-9]{1,20}\" \"\$artifact\" | sed -n \"1p\" | grep -E -o \"[0-9]{1,20}\$\")\"; [ -n \"\$created\" ] || continue; printf \"%020d %s\\n\" \"\$created\" \"\$key\"; done | sort | tail -n 1"
+}
+
+json_id_pair_script() {
+  local field="$1"
+  local remote_path="$2"
+  case "$field" in
+    runArtifactKey|translationRunArtifactKey) ;;
+    *) return 1 ;;
+  esac
+  case "$remote_path" in
+    ""|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  printf '%s\n' "grep -E -o \"\\\"$field\\\"[[:space:]]*:[[:space:]]*\\\"$SAFE_OPAQUE_ID_ERE\\\"\" \"$remote_path\" | sed -n \"1p\""
+}
+
+verify_opaque_id_self_check() {
+  local uuid='550e8400-e29b-41d4-a716-446655440000'
+  local structured='translation.run_2-page.0001'
+  local legacy fixture_root artifact_root selector_output lineage_pair
+  legacy="$(printf 'a%.0s' {1..64})"
+
+  is_safe_opaque_id "$uuid" || return 1
+  is_safe_opaque_id "$structured" || return 1
+  is_safe_opaque_id "$legacy" || return 1
+  if is_safe_opaque_id '.leading-dot'; then return 1; fi
+  if is_safe_opaque_id 'contains/slash'; then return 1; fi
+  if is_safe_opaque_id "$(printf 'a%.0s' {1..129})"; then return 1; fi
+  validate_latest_run_selector_output "00000000000000000042 $uuid" || return 1
+  [ "$(printf '%s\n' "{\"runArtifactKey\":\"$uuid\"}" | extract_safe_json_id runArtifactKey)" = "$uuid" ] ||
+    return 1
+  [ "$(printf '%s\n' "{\"translationRunArtifactKey\": \"$structured\"}" |
+    extract_safe_json_id translationRunArtifactKey)" = "$structured" ] || return 1
+  if printf '%s\n' '{"runArtifactKey":"unsafe/value"}' |
+    extract_safe_json_id runArtifactKey >/dev/null; then
+    return 1
+  fi
+
+  (
+    fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/masumi-opaque-self-check.XXXXXX")"
+    trap 'rm -rf "$fixture_root"' EXIT
+    artifact_root="$fixture_root/artifacts/translation"
+    mkdir -p "$artifact_root/$uuid" "$artifact_root/$legacy" "$artifact_root/mismatched-run"
+    printf '%s\n' "{\"runArtifactKey\":\"$uuid\",\"createdAtEpochMillis\":42}" \
+      >"$artifact_root/$uuid/artifact.json"
+    printf '%s\n' "{\"runArtifactKey\":\"$legacy\",\"createdAtEpochMillis\":41}" \
+      >"$artifact_root/$legacy/artifact.json"
+    printf '%s\n' '{"runArtifactKey":"different-run","createdAtEpochMillis":99}' \
+      >"$artifact_root/mismatched-run/artifact.json"
+    selector_output="$(sh -c "$(latest_published_selector_script "$artifact_root")")"
+    [ "$selector_output" = "00000000000000000042 $uuid" ] || exit 1
+    printf '%s\n' "{\"translationRunArtifactKey\":\"$structured\"}" \
+      >"$fixture_root/cleanup-artifact.json"
+    lineage_pair="$(
+      sh -c "$(json_id_pair_script translationRunArtifactKey "$fixture_root/cleanup-artifact.json")"
+    )"
+    [ "$(printf '%s\n' "$lineage_pair" | extract_safe_json_id translationRunArtifactKey)" = "$structured" ] ||
+      exit 1
+  ) || return 1
+}
 
 redact_output() {
   local -a expressions=(-e "s|$REPO_ROOT|<repo>|g")
@@ -116,21 +224,24 @@ run_stage() {
 
 verify_apk_models() {
   local apk="$REPO_ROOT/app/build/outputs/apk/debug/app-debug.apk"
-  local asset expected_bytes expected_sha actual_bytes actual_sha
+  local asset expected_bytes actual_bytes
   [ -f "$apk" ] || return 1
-  while read -r asset expected_bytes expected_sha; do
+  while read -r asset expected_bytes; do
     actual_bytes="$(unzip -p "$apk" "$asset" | wc -c | tr -d '[:space:]')"
-    actual_sha="$(unzip -p "$apk" "$asset" | shasum -a 256 | awk '{print $1}')"
     [ "$actual_bytes" = "$expected_bytes" ] || return 1
-    [ "$actual_sha" = "$expected_sha" ] || return 1
   done <<'EOF'
-assets/models/comic-text-segmenter-512.onnx 65568382 688cb2b55bc14e29957bb4dad768e7420a4b1f740b84ffadc83ecaac63846485
-assets/models/aot-inpainting.onnx 23009155 e0d8f438ca9567eccc9d358963427601b6f64a650cbe6189ec82fc43830a0390
+assets/models/comic-text-segmenter-512.onnx 65568382
+assets/models/aot-inpainting.onnx 23009155
 EOF
 }
 
 note "stage:   $STAGE"
 note "date:    $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+if [ "$STAGE" = self-check ]; then
+  run_stage "opaque ID selector self-check" verify_opaque_id_self_check
+  exit 0
+fi
 
 # adb is normally outside PATH on a fresh shell.
 if ! command -v adb >/dev/null 2>&1; then
@@ -142,7 +253,7 @@ if ! command -v adb >/dev/null 2>&1; then
   done
 fi
 
-if [ "$STAGE" != compile ]; then
+if [ "$NEEDS_DEVICE" = true ]; then
   command -v adb >/dev/null 2>&1 || {
     echo "adb was not found" >&2
     exit 1
@@ -177,20 +288,23 @@ fi
 # integers cross the adb boundary; private JSON, user text, and paths do not.
 latest_published_run_key() {
   local stage="$1"
-  local output
+  local output selector_script
   case "$stage" in
     translation|cleanup) ;;
     *) return 1 ;;
   esac
+  selector_script="$(
+    latest_published_selector_script "$TARGET_PROJECT_ROOT/artifacts/$stage"
+  )" || return 1
   if ! output="$(
     "${ADB[@]}" shell \
-      "run-as $PACKAGE sh -c 'for artifact in $TARGET_PROJECT_ROOT/artifacts/$stage/*/artifact.json; do [ -f \"\$artifact\" ] || continue; key=\"\${artifact%/artifact.json}\"; key=\"\${key##*/}\"; case \"\$key\" in *[!0-9a-f]*|\"\") continue ;; esac; [ \"\${#key}\" -eq 64 ] || continue; created=\"\$(grep createdAtEpochMillis \"\$artifact\" | head -n 1 | tr -cd \"0-9\")\"; [ -n \"\$created\" ] || continue; printf \"%020d %s\\n\" \"\$created\" \"\$key\"; done | sort | tail -n 1'" \
+      "run-as $PACKAGE sh -c '$selector_script'" \
       2>/dev/null
   )"; then
     return 1
   fi
   output="${output//$'\r'/}"
-  [[ "$output" =~ ^[0-9]{20}[[:space:]][0-9a-f]{64}$ ]] || return 1
+  validate_latest_run_selector_output "$output" || return 1
   printf '%s\n' "${output##* }"
 }
 
@@ -290,11 +404,23 @@ if [ "$STAGE" = report ] || [ "$STAGE" = all ]; then
   cleanup_run_key="$(latest_published_run_key cleanup)"
   target_translation_run_root="$TARGET_PROJECT_ROOT/artifacts/translation/$translation_run_key"
   target_cleanup_run_root="$TARGET_PROJECT_ROOT/artifacts/cleanup/$cleanup_run_key"
-  cleanup_translation_key="$(
+  cleanup_translation_selector="$(
+    json_id_pair_script translationRunArtifactKey "$target_cleanup_run_root/artifact.json"
+  )" || {
+    note "FAIL  cleanup translation selector is unsafe"
+    exit 1
+  }
+  cleanup_translation_pair="$(
     "${ADB[@]}" shell \
-      "run-as $PACKAGE sh -c 'grep translationRunArtifactKey $target_cleanup_run_root/artifact.json | grep -E -o \"[0-9a-f]{64}\" | head -n 1'" \
-      2>/dev/null | tr -d '\r[:space:]'
+      "run-as $PACKAGE sh -c '$cleanup_translation_selector'" \
+      2>/dev/null | tr -d '\r'
   )"
+  cleanup_translation_key="$(
+    printf '%s\n' "$cleanup_translation_pair" | extract_safe_json_id translationRunArtifactKey
+  )" || {
+    note "FAIL  cleanup translation lineage is missing or unsafe"
+    exit 1
+  }
   if [ "$cleanup_translation_key" != "$translation_run_key" ]; then
     note "FAIL  latest cleanup does not belong to the latest translation run"
     exit 1
@@ -324,9 +450,7 @@ if [ "$STAGE" = report ] || [ "$STAGE" = all ]; then
     exit 1
   fi
   if ! remote_file_contains "$target_cleanup_run_root/artifact.json" '"schemaVersion": 4' ||
-    ! remote_file_contains "$target_cleanup_run_root/artifact.json" '"revision": "comic-text-segmentation-local-residual-budgeted-aot-v33"' ||
-    ! remote_file_contains "$target_cleanup_run_root/artifact.json" '"sha256": "688cb2b55bc14e29957bb4dad768e7420a4b1f740b84ffadc83ecaac63846485"' ||
-    ! remote_file_contains "$target_cleanup_run_root/artifact.json" '"sha256": "e0d8f438ca9567eccc9d358963427601b6f64a650cbe6189ec82fc43830a0390"'; then
+    ! remote_file_contains "$target_cleanup_run_root/artifact.json" '"revision": "comic-text-segmentation-local-residual-budgeted-aot-v33"'; then
     note "FAIL  latest cleanup does not use the current policy and pinned models"
     exit 1
   fi

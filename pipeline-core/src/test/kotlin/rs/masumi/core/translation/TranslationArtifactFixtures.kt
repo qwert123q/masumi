@@ -15,21 +15,16 @@ internal object TranslationArtifactFixtures {
             reference = TranslationProviderReference(
                 profileId = "example",
                 displayName = "Example Provider",
-                endpointHost = "example.invalid",
-                endpointSha256 = "d".repeat(64),
+                endpoint = "https://example.invalid/v1",
             ),
         ),
-        initialGlossarySha256 = TranslationArtifactIdentity.glossarySha256(initialGlossary),
+        initialGlossary = initialGlossary,
     )
     val input = TranslationFixtures.input("1".repeat(64), 0, roleHint = TranslationRoleHint.DIALOGUE)
     val window = TranslationFixtures.window(listOf(input)).copy(batching = dependencies.batching)
-    val windowKey = TranslationArtifactIdentity.windowArtifactKey(
-        window,
-        dependencies.initialGlossarySha256,
-        dependencies,
-    )
-    val pageKey = TranslationArtifactIdentity.pageArtifactKey("b".repeat(64), dependencies)
-    val runKey = TranslationArtifactIdentity.runArtifactKey(listOf(0 to pageKey), dependencies)
+    const val runKey = "translation-run"
+    val windowKey = TranslationArtifactIdentity.windowArtifactKey(runKey, 0)
+    val pageKey = TranslationArtifactIdentity.pageArtifactKey(runKey, 0)
 
     fun outcome(state: TranslationResultState = TranslationResultState.TRANSLATED) = ValidatedTranslationItem(
         translationRegionId = input.translationRegionId,
@@ -50,7 +45,12 @@ internal object TranslationArtifactFixtures {
         updatedAtEpochMillis = 1L,
         dependencies = dependencies,
         windows = listOf(
-            TranslationJobWindow(0, windowKey, listOf(input.translationRegionId)),
+            TranslationJobWindow(
+                windowIndex = 0,
+                windowArtifactKey = windowKey,
+                contextTranslationRegionIds = emptyList(),
+                translationRegionIds = listOf(input.translationRegionId),
+            ),
         ),
         pages = listOf(
             TranslationJobPage(

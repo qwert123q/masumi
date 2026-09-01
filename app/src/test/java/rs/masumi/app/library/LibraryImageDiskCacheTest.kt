@@ -3,6 +3,8 @@ package rs.masumi.app.library
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.charset.StandardCharsets
+import java.util.Base64
+import java.util.UUID
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -13,6 +15,68 @@ class LibraryImageDiskCacheTest {
     @Test
     fun `default disk budget is 256 MiB`() {
         assertEquals(256L * 1024L * 1024L, LibraryImageDiskCache.MAX_BYTES)
+    }
+
+    @Test
+    fun `cache uses a random UUID filename and persists the original key in metadata`() {
+        val directory = Files.createTempDirectory("masumi-library-image-cache")
+        try {
+            val key = "content://library/漫画/cover?size=large"
+            val payload = ByteArray(32) { 9 }
+            LibraryImageDiskCache(directory, maxBytes = 1_024L).write(
+                key,
+                LibraryImageAssetKind.COVER,
+                payload,
+            )
+
+            val asset = Files.list(directory).use { paths ->
+                paths.filter { it.fileName.toString().endsWith(LibraryImageDiskCache.ASSET_SUFFIX) }
+                    .findFirst()
+                    .orElseThrow()
+            }
+            val stem = asset.fileName.toString().removeSuffix(LibraryImageDiskCache.ASSET_SUFFIX)
+            assertEquals(stem, UUID.fromString(stem).toString())
+            val metadata = directory.resolve("$stem${LibraryImageDiskCache.METADATA_SUFFIX}")
+            val encodedKey = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(key.toByteArray(StandardCharsets.UTF_8))
+            assertTrue(String(Files.readAllBytes(metadata), StandardCharsets.UTF_8).contains(encodedKey))
+            assertArrayEquals(payload, LibraryImageDiskCache(directory, 1_024L).read(key))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `instances sharing a directory observe entries written after construction`() {
+        val directory = Files.createTempDirectory("masumi-library-image-cache")
+        try {
+            val first = LibraryImageDiskCache(directory, maxBytes = 1_024L)
+            val second = LibraryImageDiskCache(directory, maxBytes = 1_024L)
+            val payload = ByteArray(32) { 5 }
+
+            second.write("reader-entry", LibraryImageAssetKind.READER_PAGE, payload)
+
+            assertArrayEquals(payload, first.read("reader-entry"))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `instances sharing a directory enforce one combined byte budget`() {
+        val directory = Files.createTempDirectory("masumi-library-image-cache")
+        try {
+            val maxBytes = 260L
+            val first = LibraryImageDiskCache(directory, maxBytes)
+            val second = LibraryImageDiskCache(directory, maxBytes)
+
+            first.write("shelf-entry", LibraryImageAssetKind.COVER, ByteArray(120) { 1 })
+            second.write("reader-entry", LibraryImageAssetKind.READER_PAGE, ByteArray(120) { 2 })
+
+            assertTrue("shared cache directory exceeded its byte budget", directorySizeBytes(directory) <= maxBytes)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
     }
 
     @Test
@@ -76,28 +140,19 @@ class LibraryImageDiskCacheTest {
     }
 
     @Test
-    fun `touch after process restart wins over legacy monotonic timestamps`() {
+    fun `restart discards legacy cache entries that have no persisted key`() {
         val directory = Files.createTempDirectory("masumi-library-image-cache")
         try {
-            val cache = LibraryImageDiskCache(directory, maxBytes = 600L)
-            cache.write("touched-after-restart", LibraryImageAssetKind.COVER, ByteArray(256) { 1 })
-            val firstMetadata = onlyNewMetadata(directory, emptySet())
-            cache.write("untouched-legacy", LibraryImageAssetKind.COVER, ByteArray(256) { 2 })
-            val secondMetadata = onlyNewMetadata(directory, setOf(firstMetadata))
+            val legacyStem = "a".repeat(64)
+            val legacyAsset = directory.resolve("$legacyStem${LibraryImageDiskCache.ASSET_SUFFIX}")
+            val legacyMetadata = directory.resolve("$legacyStem${LibraryImageDiskCache.METADATA_SUFFIX}")
+            Files.write(legacyAsset, ByteArray(32) { 1 })
+            Files.write(legacyMetadata, "v2|COVER|123".toByteArray(StandardCharsets.UTF_8))
 
-            // Simulate metadata written before a reboot, when System.nanoTime()
-            // belonged to a different clock epoch and cannot be ordered against
-            // access values from the new process.
-            Files.write(firstMetadata, "COVER|9000000000000000".toByteArray(StandardCharsets.UTF_8))
-            Files.write(secondMetadata, "COVER|9000000000000001".toByteArray(StandardCharsets.UTF_8))
+            LibraryImageDiskCache(directory, maxBytes = 600L)
 
-            val restarted = LibraryImageDiskCache(directory, maxBytes = 600L)
-            assertArrayEquals(ByteArray(256) { 1 }, restarted.read("touched-after-restart"))
-            restarted.write("replacement", LibraryImageAssetKind.COVER, ByteArray(256) { 3 })
-
-            assertArrayEquals(ByteArray(256) { 1 }, restarted.read("touched-after-restart"))
-            assertNull(restarted.read("untouched-legacy"))
-            assertArrayEquals(ByteArray(256) { 3 }, restarted.read("replacement"))
+            assertTrue(Files.notExists(legacyAsset))
+            assertTrue(Files.notExists(legacyMetadata))
         } finally {
             directory.toFile().deleteRecursively()
         }
@@ -218,7 +273,7 @@ class LibraryImageDiskCacheTest {
     fun `metadata promotion cannot push the directory over budget`() {
         val directory = Files.createTempDirectory("masumi-library-image-cache")
         try {
-            val maxBytes = 150L
+            val maxBytes = 170L
             val payload = ByteArray(120) { 4 }
             val cache = LibraryImageDiskCache(directory, maxBytes)
             cache.write("promoted-entry", LibraryImageAssetKind.COVER, payload)
@@ -234,14 +289,6 @@ class LibraryImageDiskCacheTest {
             directory.toFile().deleteRecursively()
         }
     }
-
-    private fun onlyNewMetadata(directory: Path, previous: Set<Path>): Path =
-        Files.list(directory).use { paths ->
-            paths.filter { it.fileName.toString().endsWith(LibraryImageDiskCache.METADATA_SUFFIX) }
-                .filter { it !in previous }
-                .findFirst()
-                .orElseThrow()
-        }
 
     private fun directorySizeBytes(directory: Path): Long =
         Files.list(directory).use { paths ->

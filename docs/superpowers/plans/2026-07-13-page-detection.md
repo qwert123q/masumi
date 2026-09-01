@@ -4,7 +4,7 @@
 
 **Goal:** Analyze every immutable page in an imported project with a pinned local ONNX comic detector and publish resumable region JSON, annotated previews, and a terminal report without modifying source images.
 
-**Architecture:** Keep schemas, deterministic IDs, post-processing, state transitions, model-package integrity, and atomic artifact publication in `pipeline-core`. Keep bitmap decoding, EXIF handling, tensor creation, ONNX Runtime, foreground execution, notifications, and preview UI in `app`; Android orchestration depends on detector and model-provider interfaces so tests use generated images and fake inference.
+**Architecture:** Keep schemas, opaque persisted IDs, post-processing, state transitions, model-package length/structure checks, and atomic artifact publication in `pipeline-core`. Keep bitmap decoding, EXIF handling, tensor creation, ONNX Runtime, foreground execution, notifications, and preview UI in `app`; Android orchestration depends on detector and model-provider interfaces so tests use generated images and fake inference.
 
 **Tech Stack:** Kotlin 2.3.0, JDK 17, Android SDK 36/minSdk 26, kotlinx.serialization JSON 1.9.0, ONNX Runtime Android 1.27.0, platform `ExifInterface`, `HttpURLConnection`, JUnit 4, Android instrumentation tests.
 
@@ -15,11 +15,11 @@
 Portable core:
 
 - `core/detection/DetectionContracts.kt`: serializable model, query, region, job, run, and report records.
-- `core/detection/DetectionIdentity.kt`: canonical SHA-256 page keys, run keys, and region IDs.
+- `core/detection/DetectionIdentity.kt`: opaque run/page IDs and structurally derived region IDs.
 - `core/detection/DetectionPostProcessor.kt`: output validation, clipping, thresholding, and class separation.
 - `core/detection/DetectionJobReducer.kt`: legal job/page transitions, retry, cancellation, recovery, and terminal status.
 - `core/detection/DetectionArtifactStore.kt`: journals, job-owned checkpoints, page commits, and atomic run publication.
-- `core/modelpackage/DetectorModelPackage.kt` and `DetectorModelPackageStore.kt`: pinned metadata, streamed integrity checks, signature callback, and atomic publication.
+- `core/modelpackage/DetectorModelPackage.kt` and `DetectorModelPackageStore.kt`: pinned metadata, exact-length checks, signature callback, and atomic publication.
 - `core/serialization/DetectionJson.kt`: strict detection JSON codecs.
 
 Android application:
@@ -87,7 +87,7 @@ git commit -m "feat: define detection artifact contracts"
 
 Expected: round-trip and unknown-field tests pass.
 
-## Task 2: Generate deterministic identities and accepted regions
+## Task 2: Persist opaque identities and generate accepted regions
 
 **Files:**
 - Create: `pipeline-core/src/main/kotlin/rs/masumi/core/detection/DetectionIdentity.kt`
@@ -97,7 +97,7 @@ Expected: round-trip and unknown-field tests pass.
 
 - [x] **Step 1: Write failing tests**
 
-Assert page keys change for source SHA, schema, model revision/SHA, runtime revision, preprocessing, or thresholds. Region IDs change for class/query but not geometry/confidence. Run keys depend on ordered page keys and reject duplicate/non-contiguous orders.
+Assert new run and page keys come from the injected `IdSource`, survive serialization, and are reused only when the explicit source lineage, schema, model revision, runtime revision, preprocessing, and thresholds match. Region IDs change for class/query but not geometry/confidence. Ordered page records reject duplicate or non-contiguous orders.
 
 Create exactly 300 model queries. Cover reversed/clipped coordinates, below-threshold score, unknown label, non-finite score/box, and zero-area boxes. Assert all raw records remain, bubble/text lists are separate, and `TEXT_FREE` is protected.
 
@@ -109,20 +109,14 @@ Create exactly 300 model queries. Cover reversed/clipped coordinates, below-thre
 
 Expected: compilation fails because identity and post-processing types do not exist.
 
-- [x] **Step 3: Implement canonical hashing and processing**
+- [x] **Step 3: Implement persisted IDs and processing**
 
 Expose:
 
 ```kotlin
 object DetectionIdentity {
-    fun pageArtifactKey(
-        sourceSha256: String,
-        schemaVersion: Int,
-        model: DetectorModelRef,
-        preprocessing: DetectionPreprocessingConfig,
-        thresholds: DetectionThresholdConfig,
-    ): String
-    fun runArtifactKey(entries: List<Pair<Int, String>>): String
+    fun newRunArtifactKey(idSource: IdSource): String
+    fun newPageArtifactKey(idSource: IdSource): String
     fun regionId(
         pageId: String,
         pageArtifactKey: String,
@@ -139,7 +133,7 @@ data class ModelQuery(
 )
 ```
 
-Hash fixed-order UTF-8 fields and length-prefix strings. Require lowercase 64-character SHA values and contiguous indexes. Post-processing requires queries `0..299`, validates score before threshold, validates four coordinates, normalizes and clips boxes, maps labels `0/1/2` only, and never merges bubbles with text.
+Validate all IDs through the shared safe-ID contract and require contiguous indexes. Persist allocated run and page IDs before work begins; derive region IDs structurally from the persisted page key, query index, and class. Post-processing requires queries `0..299`, validates score before threshold, validates four coordinates, normalizes and clips boxes, maps labels `0/1/2` only, and never merges bubbles with text.
 
 - [x] **Step 4: Run GREEN and commit**
 
@@ -215,15 +209,15 @@ git commit -m "feat: persist resumable detection jobs"
 - Modify: `pipeline-core/src/main/kotlin/rs/masumi/core/serialization/DetectionJson.kt`
 - Test: `pipeline-core/src/test/kotlin/rs/masumi/core/modelpackage/DetectorModelPackageStoreTest.kt`
 
-- [x] **Step 1: Write failing integrity tests**
+- [x] **Step 1: Write failing package-validation tests**
 
-Use generated bytes plus a fake signature validator. Exact length/SHA publishes `model.onnx` and metadata. Wrong length, SHA, or signature publishes nothing. Partial files are cleaned. Valid existing packages do not reopen the supplied stream. Distinct install IDs cannot delete each other's staging.
+Use generated bytes plus a fake signature validator. Exact length plus the required tensor signature publishes `model.onnx` and metadata. Wrong length or signature publishes nothing. Partial files are cleaned. Valid existing packages do not reopen the supplied stream. Distinct install IDs cannot delete each other's staging.
 
 - [x] **Step 2: Define the pinned descriptor and implement the store**
 
-Use repository `ogkalu/comic-text-and-bubble-detector`, revision `16e8a622f91fabc6b5b65c96d32d1183f8843546`, file `detector-v4-s_int8.onnx`, byte length `11120765`, SHA-256 `5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79`, Apache-2.0, opset 18, and runtime revision `onnxruntime-android:1.27.0`.
+Use repository `ogkalu/comic-text-and-bubble-detector`, revision `16e8a622f91fabc6b5b65c96d32d1183f8843546`, file `detector-v4-s_int8.onnx`, byte length `11120765`, storage revision `detector-v4-s-int8-r1`, Apache-2.0, opset 18, and runtime revision `onnxruntime-android:1.27.0`.
 
-Stream to `models/.staging/<install-id>/model.onnx.part`, count/hash, call `ModelSignatureValidator`, write safe metadata, rename to `model.onnx`, and atomically publish under `models/<storage-key>/<sha256>`. Revalidate existing packages before reuse.
+Stream to `models/.staging/<install-id>/model.onnx.part`, count bytes, call `ModelSignatureValidator`, write safe metadata, rename to `model.onnx`, and atomically publish under `models/<storage-key>/<storage-revision>`. Discover compatible legacy-named packages by safe metadata, filename, length, and signature so an installed model remains reusable.
 
 Add model-package metadata encode/decode methods to `DetectionJson` in the same task, after `DetectorModelPackageMetadata` exists.
 
@@ -313,7 +307,7 @@ git commit -m "feat: run pinned comic detector"
 
 - [x] **Step 1: Write fake-detector runner tests**
 
-Create temporary imported projects from generated images. Cover duplicate-source reuse, previews per order, unchanged source hashes, 300 raw queries, rebuilt-session retry, second-failure preservation, committed checkpoint reuse, page-boundary cancellation, and fatal model/source/publication errors.
+Create temporary imported projects from generated images. Cover independent duplicate-byte pages, previews per order, source path/length validation, 300 raw queries, rebuilt-session retry, second-failure preservation, committed checkpoint reuse, page-boundary cancellation, and fatal model/source/publication errors.
 
 - [x] **Step 2: Implement discovery and synchronous runner**
 
@@ -392,7 +386,7 @@ git commit -m "feat: inspect page detection results"
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/architecture/foundation.md`
-- Do not commit: model binaries, device output, screenshots, logs, corpus identifiers/counts/images/hashes, or absolute paths.
+- Do not commit: model binaries, device output, screenshots, logs, corpus identifiers/counts/images, or absolute paths.
 
 - [x] **Step 1: Run complete gates**
 

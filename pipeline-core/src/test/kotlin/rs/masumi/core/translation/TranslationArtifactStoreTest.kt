@@ -3,6 +3,9 @@ package rs.masumi.core.translation
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.exists
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -37,8 +40,9 @@ class TranslationArtifactStoreTest {
         val windowArtifact = TranslationWindowArtifact(
             windowIndex = 0,
             windowArtifactKey = job.windows.single().windowArtifactKey,
-            inputGlossarySha256 = job.dependencies.initialGlossarySha256,
-            outputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(glossary),
+            contextTranslationRegionIds = job.windows.single().contextTranslationRegionIds,
+            translationRegionIds = job.windows.single().translationRegionIds,
+            inputGlossary = job.dependencies.initialGlossary,
             outputGlossary = glossary,
             items = listOf(TranslationArtifactFixtures.outcome()),
             ignoredResponseIds = emptyList(),
@@ -105,7 +109,7 @@ class TranslationArtifactStoreTest {
         val published = store.publishRun(
             job,
             run,
-            TranslationGlossaryArtifact(sha256 = windowArtifact.outputGlossarySha256, entries = glossary),
+            TranslationGlossaryArtifact(entries = glossary),
             report,
         )
 
@@ -116,6 +120,69 @@ class TranslationArtifactStoreTest {
         assertEquals(run, assertNotNull(store.readPublishedRun(job.runArtifactKey)))
         assertEquals(report, assertNotNull(store.readPublishedReport(job.runArtifactKey)))
         assertEquals(glossary, assertNotNull(store.readPublishedGlossary(job.runArtifactKey)).entries)
+    }
+
+    @Test
+    fun `legacy window checkpoint receives explicit lineage and glossary from its trusted journal chain`() {
+        val initialGlossary = listOf(TranslationGlossaryEntry("既有", "已有"))
+        val contextId = "context-region"
+        val base = TranslationArtifactFixtures.job()
+        val job = base.copy(
+            dependencies = base.dependencies.copy(initialGlossary = initialGlossary),
+            windows = base.windows.map { window ->
+                window.copy(
+                    contextTranslationRegionIds = listOf(contextId),
+                    state = TranslationWindowState.COMMITTED,
+                    checkpointPath = "windows/0000-${window.windowArtifactKey}.json",
+                )
+            },
+        )
+        val artifact = TranslationWindowArtifact(
+            windowIndex = 0,
+            windowArtifactKey = job.windows.single().windowArtifactKey,
+            contextTranslationRegionIds = job.windows.single().contextTranslationRegionIds,
+            translationRegionIds = job.windows.single().translationRegionIds,
+            inputGlossary = initialGlossary,
+            outputGlossary = initialGlossary,
+            items = listOf(TranslationArtifactFixtures.outcome()),
+            ignoredResponseIds = emptyList(),
+            attemptCount = 1,
+            durationMillis = 1L,
+        )
+        val fields = Json.parseToJsonElement(rs.masumi.core.serialization.TranslationJson().encodeWindowArtifact(artifact))
+            .jsonObject
+            .toMutableMap()
+            .apply {
+                remove("contextTranslationRegionIds")
+                remove("translationRegionIds")
+                remove("inputGlossary")
+            }
+        val path = checkpoint(job).resolve(requireNotNull(job.windows.single().checkpointPath))
+        Files.createDirectories(path.parent)
+        Files.writeString(path, JsonObject(fields).toString())
+
+        val recovered = assertNotNull(store.readWindowCheckpoint(job, 0))
+
+        assertEquals(listOf(contextId), recovered.contextTranslationRegionIds)
+        assertEquals(job.windows.single().translationRegionIds, recovered.translationRegionIds)
+        assertEquals(initialGlossary, recovered.inputGlossary)
+    }
+
+    @Test
+    fun `legacy page checkpoints are discarded before their journal is upgraded to pending`() {
+        val base = TranslationArtifactFixtures.job()
+        val page = base.pages.single().copy(
+            state = TranslationPageState.COMMITTED,
+            artifactPath = "pages/0000-${base.pages.single().pageId}/translation.json",
+        )
+        val job = base.copy(pages = listOf(page))
+        val pagePath = checkpoint(job).resolve(requireNotNull(page.artifactPath))
+        Files.createDirectories(pagePath.parent)
+        Files.writeString(pagePath, "legacy page")
+
+        store.discardPageCheckpoints(job)
+
+        assertFalse(pagePath.exists())
     }
 
     @Test

@@ -15,7 +15,6 @@ Pinned artifact:
 - Upstream path: `onnx/aot-inpainting/aot_folded.onnx`
 - Local path: `app/src/main/assets/models/aot-inpainting.onnx`
 - Size: `23,009,155` bytes
-- SHA-256: `e0d8f438ca9567eccc9d358963427601b6f64a650cbe6189ec82fc43830a0390`
 - License: GPL-3.0-only
 - ONNX opset: 17
 - Inputs: `image`, float32 `[1, 3, H, W]`; `mask`, float32 `[1, 1, H, W]`

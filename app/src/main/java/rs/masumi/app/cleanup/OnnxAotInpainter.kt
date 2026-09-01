@@ -8,7 +8,6 @@ import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
 import android.graphics.Color
 import java.nio.FloatBuffer
-import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
@@ -328,9 +327,6 @@ class OnnxAotInpainter(
         ): OrtSession {
             val descriptor = PinnedAotInpainter.descriptor
             require(modelBytes.size.toLong() == descriptor.byteLength) { "AOT_MODEL_LENGTH_MISMATCH" }
-            val digest = MessageDigest.getInstance("SHA-256").digest(modelBytes)
-                .joinToString("") { byte -> "%02x".format(byte) }
-            require(digest == descriptor.sha256) { "AOT_MODEL_HASH_MISMATCH" }
             val session = OrtSession.SessionOptions().use { options ->
                 options.setIntraOpNumThreads(
                     (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, MAX_INTRA_OP_THREADS),

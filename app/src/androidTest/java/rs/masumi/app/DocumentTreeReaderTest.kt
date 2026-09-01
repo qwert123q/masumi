@@ -60,7 +60,14 @@ class DocumentTreeReaderTest {
 
         try {
             val sources = DocumentTreeReader(context.contentResolver).read(treeUri)
-            val ids = ArrayDeque(listOf("project-contract", "job-contract"))
+            val ids = ArrayDeque(
+                listOf(
+                    "project-contract",
+                    "job-contract",
+                    "page-contract-1",
+                    "page-contract-2",
+                ),
+            )
             val outcome = ProjectImporter(
                 workspaceRoot = workspace,
                 idSource = IdSource { ids.removeFirst() },

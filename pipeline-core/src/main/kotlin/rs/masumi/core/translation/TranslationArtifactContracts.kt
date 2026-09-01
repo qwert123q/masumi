@@ -6,8 +6,7 @@ import kotlinx.serialization.Serializable
 data class TranslationProviderReference(
     val profileId: String = "",
     val displayName: String = "",
-    val endpointHost: String = "",
-    val endpointSha256: String = "",
+    val endpoint: String = "",
 )
 
 @Serializable
@@ -29,7 +28,7 @@ data class TranslationDependencies(
     val batching: TranslationBatchingConfig,
     val outputValidation: TranslationOutputValidationConfig = TranslationOutputValidationConfig(),
     val provider: TranslationProviderDependency,
-    val initialGlossarySha256: String,
+    val initialGlossary: List<TranslationGlossaryEntry> = emptyList(),
 )
 
 @Serializable
@@ -66,9 +65,10 @@ data class TranslationWindowArtifact(
     val schemaVersion: Int = TRANSLATION_SCHEMA_VERSION,
     val windowIndex: Int,
     val windowArtifactKey: String,
-    val inputGlossarySha256: String,
-    val outputGlossarySha256: String,
-    val outputGlossary: List<TranslationGlossaryEntry>,
+    val contextTranslationRegionIds: List<String> = emptyList(),
+    val translationRegionIds: List<String> = emptyList(),
+    val inputGlossary: List<TranslationGlossaryEntry> = emptyList(),
+    val outputGlossary: List<TranslationGlossaryEntry> = emptyList(),
     val items: List<ValidatedTranslationItem>,
     val ignoredResponseIds: List<String>,
     val usage: TranslationUsage? = null,
@@ -94,6 +94,7 @@ data class PageTranslationArtifact(
 data class TranslationJobWindow(
     val windowIndex: Int,
     val windowArtifactKey: String,
+    val contextTranslationRegionIds: List<String> = emptyList(),
     val translationRegionIds: List<String>,
     val state: TranslationWindowState = TranslationWindowState.PENDING,
     val attemptCount: Int = 0,
@@ -156,7 +157,6 @@ data class TranslationRunArtifact(
 @Serializable
 data class TranslationGlossaryArtifact(
     val schemaVersion: Int = TRANSLATION_SCHEMA_VERSION,
-    val sha256: String,
     val entries: List<TranslationGlossaryEntry>,
 )
 

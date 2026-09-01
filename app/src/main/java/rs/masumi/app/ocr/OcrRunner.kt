@@ -14,6 +14,7 @@ import rs.masumi.app.detection.ProjectRef
 import rs.masumi.app.detection.PublishedDetectionRun
 import rs.masumi.app.pipeline.SourceFilePreflight
 import rs.masumi.app.pipeline.SourceFilePreflightException
+import rs.masumi.app.pipeline.PipelineArtifactFreshness
 import rs.masumi.core.detection.DetectionPageState
 import rs.masumi.core.detection.PageDetectionArtifact
 import rs.masumi.core.importer.IdSource
@@ -23,6 +24,7 @@ import rs.masumi.core.model.ProjectManifest
 import rs.masumi.core.modelpackage.OcrModelPackageException
 import rs.masumi.core.modelpackage.PinnedPaddleOcrVl
 import rs.masumi.core.ocr.OcrArtifactStore
+import rs.masumi.core.ocr.OCR_SCHEMA_VERSION
 import rs.masumi.core.ocr.OcrAttemptArtifact
 import rs.masumi.core.ocr.OcrCandidate
 import rs.masumi.core.ocr.OcrCandidateConsolidator
@@ -125,24 +127,43 @@ class OcrRunner(
     ): OcrRunResult {
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
-        val detectionRun = requireNotNull(catalog.latestPublishedRun(projectId)) {
+        val detectionRun = requireNotNull(catalog.publishedDetectionRuns(projectId).firstOrNull {
+            PipelineArtifactFreshness.detection(it.artifact, project.manifest)
+        }) {
             "completed detection run was not found"
         }
         validateDetectionDependency(project.manifest, detectionRun)
         val detectionPages = loadDetectionPages(project.manifest, detectionRun)
-        val candidates = detectionPages.mapValues { (_, page) -> consolidator.consolidate(page) }
-        val pageKeys = project.manifest.pages.associate { page ->
-            val detectionKey = detectionEntry(detectionRun, page.order).pageArtifactKey
-            page.pageId to OcrIdentity.pageArtifactKey(page.sourceSha256, detectionKey, dependencies)
-        }
-        val runKey = OcrIdentity.runArtifactKey(
-            project.manifest.pages.map { page -> page.order to pageKeys.getValue(page.pageId) },
-        )
         val store = OcrArtifactStore(project.directory)
-        readPublishedResult(store, project, detectionRun, runKey)?.let { cached ->
+        val reusable = catalog.publishedOcrRuns(projectId).firstOrNull { published ->
+            published.artifact.schemaVersion == OCR_SCHEMA_VERSION &&
+                published.artifact.detectionRunArtifactKey == detectionRun.artifact.runArtifactKey &&
+                published.artifact.dependencies == dependencies &&
+                published.artifact.entries.map { it.order to it.pageId to it.detectionPageArtifactKey } ==
+                project.manifest.pages.map { page ->
+                    val detectionEntry = detectionEntry(detectionRun, page.order)
+                    page.order to page.pageId to detectionEntry.pageArtifactKey
+                }
+        }
+        reusable?.let { published ->
+            val cached = requireNotNull(readPublishedResult(store, project, detectionRun, published.artifact.runArtifactKey))
             onProgress(cached.job.toProgress())
             return cached
         }
+
+        val recoveryCandidate = findRecoveryCandidate(store, project.manifest, detectionRun)
+        val runKey = recoveryCandidate?.runArtifactKey ?: idSource.nextId()
+        val pageKeys = recoveryCandidate?.pages
+            ?.distinctBy(OcrJobPage::pageId)
+            ?.associate { it.pageId to it.pageArtifactKey }
+            ?: project.manifest.pages.distinctBy(PageRecord::pageId).associate { page ->
+                page.pageId to OcrIdentity.pageArtifactKey(runKey, page.order)
+            }
+        val plannedCandidates = detectionPages.mapValues { (pageId, page) ->
+            consolidator.consolidate(page, pageKeys.getValue(pageId))
+        }
+        val candidates = recoveryCandidate?.let { bindPersistedRegionIds(it, plannedCandidates) }
+            ?: plannedCandidates
 
         var job = recoverOrCreateJob(
             store = store,
@@ -151,6 +172,7 @@ class OcrRunner(
             candidates = candidates,
             pageKeys = pageKeys,
             runKey = runKey,
+            candidate = recoveryCandidate,
         )
         activeStore.set(store)
         activeJob.set(job)
@@ -331,7 +353,6 @@ class OcrRunner(
 
                     val pageArtifact = rs.masumi.core.ocr.PageOcrArtifact(
                         pageId = sourcePage.pageId,
-                        sourceSha256 = sourcePage.sourceSha256,
                         detectionPageArtifactKey = detectionPage.pageArtifactKey,
                         pageArtifactKey = pageKeys.getValue(sourcePage.pageId),
                         visibleWidth = detectionPage.visibleWidth,
@@ -730,26 +751,8 @@ class OcrRunner(
         candidates: Map<String, List<OcrCandidate>>,
         pageKeys: Map<String, String>,
         runKey: String,
+        candidate: OcrJobRecord?,
     ): OcrJobRecord {
-        val candidate = store.findRecoveryCandidates()
-            .filter { job ->
-                job.projectId == manifest.projectId &&
-                job.detectionRunArtifactKey == detectionRun.artifact.runArtifactKey &&
-                job.runArtifactKey == runKey &&
-                job.dependencies == dependencies
-            }
-            .maxWithOrNull(
-                compareBy<OcrJobRecord> { job ->
-                    job.pages.distinctBy(OcrJobPage::pageId).sumOf { page ->
-                        page.regions.count { it.state.isTerminal() }
-                    }
-                }.thenBy { job ->
-                    job.pages.distinctBy(OcrJobPage::pageId).count { page ->
-                        page.state == OcrPageState.COMMITTED ||
-                            page.state == OcrPageState.PRESERVED_SOURCE
-                    }
-                }.thenBy(OcrJobRecord::updatedAtEpochMillis).thenBy(OcrJobRecord::jobId),
-            )
         if (candidate != null) {
             candidate.pages
                 .flatMap { page -> page.regions.filter { it.state == OcrRegionState.RUNNING }.map { page.pageId to it.ocrRegionId } }
@@ -784,7 +787,6 @@ class OcrRunner(
                     OcrJobPage(
                         order = page.order,
                         pageId = page.pageId,
-                        sourceSha256 = page.sourceSha256,
                         detectionPageArtifactKey = detectionEntry.pageArtifactKey,
                         pageArtifactKey = pageKeys.getValue(page.pageId),
                         state = OcrPageState.PRESERVED_SOURCE,
@@ -795,7 +797,6 @@ class OcrRunner(
                     OcrJobPage(
                         order = page.order,
                         pageId = page.pageId,
-                        sourceSha256 = page.sourceSha256,
                         detectionPageArtifactKey = detectionEntry.pageArtifactKey,
                         pageArtifactKey = pageKeys.getValue(page.pageId),
                         regions = candidates.getValue(page.pageId).map { item ->
@@ -805,6 +806,45 @@ class OcrRunner(
                 }
             },
         ).also(store::writeJob)
+    }
+
+    private fun findRecoveryCandidate(
+        store: OcrArtifactStore,
+        manifest: ProjectManifest,
+        detectionRun: PublishedDetectionRun,
+    ): OcrJobRecord? = store.findRecoveryCandidates()
+        .filter { job ->
+            job.schemaVersion == OCR_SCHEMA_VERSION &&
+                job.projectId == manifest.projectId &&
+                job.detectionRunArtifactKey == detectionRun.artifact.runArtifactKey &&
+                job.dependencies == dependencies &&
+                job.pages.map { it.order to it.pageId to it.detectionPageArtifactKey } ==
+                manifest.pages.map { page ->
+                    val detectionEntry = detectionEntry(detectionRun, page.order)
+                    page.order to page.pageId to detectionEntry.pageArtifactKey
+                }
+        }
+        .maxWithOrNull(
+            compareBy<OcrJobRecord> { job ->
+                job.pages.distinctBy(OcrJobPage::pageId).sumOf { page ->
+                    page.regions.count { it.state.isTerminal() }
+                }
+            }.thenBy { job ->
+                job.pages.distinctBy(OcrJobPage::pageId).count { page ->
+                    page.state == OcrPageState.COMMITTED || page.state == OcrPageState.PRESERVED_SOURCE
+                }
+            }.thenBy(OcrJobRecord::updatedAtEpochMillis).thenBy(OcrJobRecord::jobId),
+        )
+
+    private fun bindPersistedRegionIds(
+        job: OcrJobRecord,
+        planned: Map<String, List<OcrCandidate>>,
+    ): Map<String, List<OcrCandidate>> = planned.mapValues { (pageId, candidates) ->
+        val persisted = job.pages.first { it.pageId == pageId }.regions
+        require(persisted.size == candidates.size) { "OCR candidate lineage changed" }
+        candidates.zip(persisted).map { (candidate, checkpoint) ->
+            candidate.copy(ocrRegionId = checkpoint.ocrRegionId)
+        }
     }
 
     private fun readPublishedResult(
@@ -858,8 +898,6 @@ class OcrRunner(
 
     private fun preflightSources(projectDirectory: Path, manifest: ProjectManifest): Map<String, Path> =
         manifest.pages.distinctBy(PageRecord::pageId).associate { page ->
-            require(SHA256.matches(page.pageId)) { "page ID is not a SHA-256 digest" }
-            require(page.pageId == page.sourceSha256) { "page and source digests differ" }
             val source = try {
                 SourceFilePreflight.resolve(projectDirectory, page)
             } catch (failure: SourceFilePreflightException) {
@@ -878,7 +916,6 @@ class OcrRunner(
             OcrRunEntry(
                 order = page.order,
                 pageId = page.pageId,
-                sourceSha256 = page.sourceSha256,
                 detectionPageArtifactKey = page.detectionPageArtifactKey,
                 pageArtifactKey = page.pageArtifactKey,
                 state = page.state,
@@ -987,7 +1024,6 @@ class OcrRunner(
     private class FatalOcrException(val code: String) : RuntimeException(code)
 
     private companion object {
-        val SHA256 = Regex("[0-9a-f]{64}")
         const val OCR_WORKER_THREAD_PREFIX = "masumi-ocr-region-"
     }
 }

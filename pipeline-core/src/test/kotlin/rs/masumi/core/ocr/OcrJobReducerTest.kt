@@ -151,7 +151,6 @@ class OcrJobReducerTest {
     ) = OcrJobPage(
         order = 0,
         pageId = PAGE_ID,
-        sourceSha256 = PAGE_ID,
         detectionPageArtifactKey = DETECTION_KEY,
         pageArtifactKey = PAGE_KEY,
         state = state,

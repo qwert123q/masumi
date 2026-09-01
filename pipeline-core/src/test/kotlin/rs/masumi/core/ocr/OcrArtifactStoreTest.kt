@@ -184,7 +184,6 @@ class OcrArtifactStoreTest {
             OcrJobPage(
                 order = 0,
                 pageId = PAGE_ID,
-                sourceSha256 = PAGE_ID,
                 detectionPageArtifactKey = DETECTION_KEY,
                 pageArtifactKey = PAGE_KEY,
                 state = OcrPageState.RUNNING,
@@ -213,7 +212,6 @@ class OcrArtifactStoreTest {
     private fun pageArtifact(vararg regions: OcrRegionArtifact): PageOcrArtifact =
         OcrFixtures.pageArtifact().copy(
             pageId = PAGE_ID,
-            sourceSha256 = PAGE_ID,
             detectionPageArtifactKey = DETECTION_KEY,
             pageArtifactKey = PAGE_KEY,
             dependencies = OcrFixtures.dependencies(),
@@ -230,7 +228,6 @@ class OcrArtifactStoreTest {
             OcrRunEntry(
                 order = page.order,
                 pageId = page.pageId,
-                sourceSha256 = page.sourceSha256,
                 detectionPageArtifactKey = page.detectionPageArtifactKey,
                 pageArtifactKey = page.pageArtifactKey,
                 state = page.state,

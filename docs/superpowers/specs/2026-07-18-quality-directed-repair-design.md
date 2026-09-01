@@ -29,7 +29,7 @@ If the repaired run remains blocked, the final report is published and export st
 
 ## Page reuse
 
-Only page orders named by the repair plan are rendered again. A committed unaffected page is digest-verified, then its PNG bytes are copied into the new run with new dependency and page identities. A whole-page preserved outcome is carried forward without decoding or rendering it.
+Only page orders named by the repair plan are rendered again. A committed unaffected page is validated by explicit lineage, safe path, presence, and recorded byte length, then its PNG bytes are copied into the new run with new dependency and page identities. A whole-page preserved outcome is carried forward without decoding or rendering it.
 
 ## Execution
 

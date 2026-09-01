@@ -12,7 +12,6 @@ import java.nio.file.Path
 import java.util.Locale
 import rs.masumi.app.AndroidDocumentSource
 import rs.masumi.app.library.MangaLibraryStore
-import rs.masumi.app.library.mangaSourceFingerprint
 import rs.masumi.core.importer.ImportOutcome
 import rs.masumi.core.importer.PageMediaType
 import rs.masumi.core.importer.ProjectImporter
@@ -153,7 +152,6 @@ class SelectedMangaImporter(
                 title = title,
                 createdAtEpochMillis = outcome.manifest.createdAtEpochMillis,
                 sourceTreeUri = sourceUri,
-                sourceFingerprint = mangaSourceFingerprint(outcome.manifest.pages),
             )
             library.archiveSourcePages(
                 projectId = outcome.manifest.projectId,

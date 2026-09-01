@@ -9,9 +9,8 @@ internal object OcrFixtures {
         packageId = "paddleocr-vl-1.6-gguf",
         repository = "example/model",
         revision = "revision",
-        model = OcrModelFileRef("model.gguf", 11L, "model-sha"),
-        projector = OcrModelFileRef("projector.gguf", 12L, "projector-sha"),
-        packageSha256 = "package-sha",
+        model = OcrModelFileRef("model.gguf", 11L),
+        projector = OcrModelFileRef("projector.gguf", 12L),
         license = "Apache-2.0",
     )
 
@@ -74,7 +73,6 @@ internal object OcrFixtures {
         val attempts = listOf(attempt(rawText, normalizedText))
         return PageOcrArtifact(
             pageId = "page-1",
-            sourceSha256 = "source-sha",
             detectionPageArtifactKey = "detection-key",
             pageArtifactKey = "ocr-page-key",
             visibleWidth = 1200,

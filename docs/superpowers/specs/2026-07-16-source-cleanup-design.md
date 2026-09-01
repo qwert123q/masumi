@@ -16,7 +16,7 @@ Cleanup joins three immutable inputs by stable identity:
 - the OCR page supplies the exact text box and bubble association;
 - the translation page decides whether that OCR region may be cleaned.
 
-An item cannot be cleaned unless all three identities agree. The cleanup cache identity includes the source digest, translation run/page key, and every explicit mask and fill policy field.
+An item cannot be cleaned unless all three identities agree. Cleanup reuse compares the source page ID and recorded length, translation run/page IDs, and every explicit mask and fill policy field.
 
 ## Mask and fill policy
 

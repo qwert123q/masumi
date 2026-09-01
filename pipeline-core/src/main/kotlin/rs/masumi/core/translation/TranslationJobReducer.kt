@@ -1,5 +1,7 @@
 package rs.masumi.core.translation
 
+import rs.masumi.core.identity.SafeOpaqueId
+
 object TranslationJobReducer {
     fun prepareWindow(
         job: TranslationJobRecord,
@@ -10,11 +12,10 @@ object TranslationJobReducer {
         require(job.status == TranslationJobStatus.RUNNING && !job.cancelRequested)
         val target = job.windows.single { it.windowIndex == index }
         require(target.state == TranslationWindowState.PENDING)
-        require(windowArtifactKey.matches(Regex("[0-9a-f]{64}")))
+        SafeOpaqueId.require(windowArtifactKey, "windowArtifactKey")
+        require(windowArtifactKey == target.windowArtifactKey)
         return job.updated(now).copy(
-            windows = job.windows.map {
-                if (it.windowIndex == index) it.copy(windowArtifactKey = windowArtifactKey) else it
-            },
+            windows = job.windows,
         )
     }
 

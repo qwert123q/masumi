@@ -132,7 +132,10 @@ class TranslationRunnerTest {
             assertEquals(30L, completed.report?.totalTokens)
             assertEquals("example-provider", completed.report?.provider?.profileId)
             assertEquals("Example Provider", completed.report?.provider?.displayName)
-            assertEquals("example.invalid", completed.report?.provider?.endpointHost)
+            assertEquals(
+                "https://example.invalid/v1/chat/completions",
+                completed.report?.provider?.endpoint,
+            )
             assertFalse(
                 completed.report.toString().contains("secret-not-for-artifacts"),
             )
@@ -474,7 +477,6 @@ class TranslationRunnerTest {
         val page = PageRecord(
             order = 0,
             pageId = pageId,
-            sourceSha256 = pageId,
             originalName = "page.png",
             mediaType = "image/png",
             byteLength = 1L,
@@ -503,12 +505,8 @@ class TranslationRunnerTest {
             runtime = descriptor.runtime.toRef(),
             generation = OcrGenerationConfig(prompt = descriptor.prompt),
         )
-        val pageArtifactKey = OcrIdentity.pageArtifactKey(
-            page.sourceSha256,
-            detectionPageArtifactKey,
-            dependencies,
-        )
-        val runKey = OcrIdentity.runArtifactKey(listOf(page.order to pageArtifactKey))
+        val runKey = "8".repeat(64)
+        val pageArtifactKey = OcrIdentity.pageArtifactKey(runKey, page.order)
         val runDirectory = project.resolve("artifacts/ocr/$runKey")
         val pageDirectory = runDirectory.resolve("pages/$pageId")
         val previewDirectory = runDirectory.resolve("previews")
@@ -519,10 +517,8 @@ class TranslationRunnerTest {
             val sourceRegionIds = listOf(sourceRegion.regionId)
             return OcrCandidate(
                 ocrRegionId = OcrIdentity.regionId(
-                    pageId = pageId,
-                    detectionPageArtifactKey = detectionPageArtifactKey,
-                    sourceRegionIds = sourceRegionIds,
-                    semantic = OcrSemanticStatus.REQUIRED_TEXT,
+                    pageArtifactKey = pageArtifactKey,
+                    regionIndex = index,
                 ),
                 sourceRegionIds = sourceRegionIds,
                 representativeSourceRegionId = sourceRegion.regionId,
@@ -557,7 +553,6 @@ class TranslationRunnerTest {
         )
         val pageArtifact = PageOcrArtifact(
             pageId = pageId,
-            sourceSha256 = pageId,
             detectionPageArtifactKey = detectionPageArtifactKey,
             pageArtifactKey = pageArtifactKey,
             visibleWidth = 100,
@@ -587,7 +582,6 @@ class TranslationRunnerTest {
                 OcrRunEntry(
                     order = 0,
                     pageId = pageId,
-                    sourceSha256 = pageId,
                     detectionPageArtifactKey = pageArtifact.detectionPageArtifactKey,
                     pageArtifactKey = pageArtifactKey,
                     state = OcrPageState.COMMITTED,
@@ -657,7 +651,6 @@ class TranslationRunnerTest {
         check(processed.textRegions.size == sourceTextCount)
         val pageArtifact = PageDetectionArtifact(
             pageId = page.pageId,
-            sourceSha256 = page.sourceSha256,
             pageArtifactKey = pageArtifactKey,
             visibleWidth = 100,
             visibleHeight = 100,
@@ -731,8 +724,8 @@ class TranslationRunnerTest {
                         durationMillis = 1L,
                     )
                 }
-                // Prompt ids are translation-region hashes, so the poisoned
-                // item is recognized by its source text instead.
+                // The poisoned item is recognized by its source text rather
+                // than making assumptions about the opaque region ID shape.
                 val poisoned = messages.user.contains("退避対象")
                 if (poisoned && failedOnce.compareAndSet(false, true)) {
                     throw TranslationProviderException(
@@ -741,7 +734,7 @@ class TranslationRunnerTest {
                         attemptCount = 1,
                     )
                 }
-                val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val id = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(messages.user).last().groupValues[1]
                 if (poisoned) sawUnexpectedRetry = true
                 return TranslationProviderResult(
@@ -779,7 +772,7 @@ class TranslationRunnerTest {
                     )
                 }
                 translationRequestCount += 1
-                val ids = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val ids = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(messages.user)
                     .map { it.groupValues[1] }
                     .toList()
@@ -830,7 +823,7 @@ class TranslationRunnerTest {
                     retryRetainedOriginalGlossary = messages.user.contains("既有术语") && messages.user.contains("既有译法")
                     retryExcludedRejectedGlossary = !messages.user.contains("恶意")
                 }
-                val ids = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val ids = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(itemPayload)
                     .map { it.groupValues[1] }
                     .toList()
@@ -879,7 +872,7 @@ class TranslationRunnerTest {
                     return result(TranslationModelResponse(items = emptyList()))
                 }
                 translationRequestCount += 1
-                val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val id = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(messages.user.substringAfter("\\\"items\\\":["))
                     .last().groupValues[1]
                 val translated = if (translationRequestCount == 1) "无效项..." else ""
@@ -912,7 +905,7 @@ class TranslationRunnerTest {
                     return result(TranslationModelResponse(items = emptyList()))
                 }
                 val itemPayload = messages.user.substringAfter("\\\"items\\\":[")
-                val ids = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val ids = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(itemPayload)
                     .map { it.groupValues[1] }
                     .toList()
@@ -974,7 +967,7 @@ class TranslationRunnerTest {
                     return result(TranslationModelResponse(items = emptyList()))
                 }
                 val itemPayload = messages.user.substringAfter("\\\"items\\\":[")
-                val ids = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val ids = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(itemPayload).map { it.groupValues[1] }.toList().distinct()
                 val sources = Regex("\\\"source\\\":\\\"([^\\\"]+)\\\"")
                     .findAll(itemPayload).map { it.groupValues[1] }.toList()
@@ -1019,7 +1012,7 @@ class TranslationRunnerTest {
                         durationMillis = 1L,
                     )
                 }
-                val ids = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val ids = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(messages.user)
                     .map { it.groupValues[1] }
                     .toList()
@@ -1058,7 +1051,7 @@ class TranslationRunnerTest {
         ): TranslationProviderCall = object : TranslationProviderCall {
             override fun execute(): TranslationProviderResult {
                 callCount += 1
-                val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val id = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(messages.user).last().groupValues[1]
                 return TranslationProviderResult(
                     response = TranslationModelResponse(
@@ -1095,7 +1088,7 @@ class TranslationRunnerTest {
                     translationSawPrefetchedGlossary =
                         messages.user.contains("\"source\":\"ルミリアさん\"") &&
                             messages.user.contains("\"translation\":\"露米莉亚小姐\"")
-                    val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                    val id = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                         .findAll(messages.user).last().groupValues[1]
                     TranslationModelResponse(
                         items = listOf(
@@ -1131,7 +1124,7 @@ class TranslationRunnerTest {
                         attemptCount = 3,
                     )
                 }
-                val id = Regex("\\\"id\\\":\\\"([0-9a-f]{64})\\\"")
+                val id = Regex("\\\"id\\\":\\\"([A-Za-z0-9._-]+)\\\"")
                     .findAll(messages.user).last().groupValues[1]
                 return TranslationProviderResult(
                     response = TranslationModelResponse(

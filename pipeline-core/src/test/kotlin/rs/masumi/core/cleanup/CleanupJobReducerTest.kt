@@ -31,7 +31,7 @@ class CleanupJobReducerTest {
     fun `unsafe region still finishes the run successfully with preservation`() {
         var job = CleanupJobReducer.start(CleanupFixtures.job(), 2L)
         job = CleanupJobReducer.startPage(job, 0, 3L)
-        job = CleanupJobReducer.commitPage(job, 0, "cleanup.json", "cleaned.png", 0, 1, 4L)
+        job = CleanupJobReducer.commitPage(job, 0, "cleanup.json", "cleaned.png", 4L, 0, 1, 4L)
         job = CleanupJobReducer.finishSuccess(job, 5L)
 
         assertEquals(CleanupJobStatus.SUCCEEDED_WITH_PRESERVED_REGIONS, job.status)

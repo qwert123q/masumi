@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import rs.masumi.app.detection.PageBitmapDecoder
@@ -31,6 +30,7 @@ import rs.masumi.core.translation.TranslationArtifactStore
 import rs.masumi.core.translation.TranslationResultState
 import rs.masumi.core.typesetting.PageTypesettingArtifact
 import rs.masumi.core.typesetting.TypesettingArtifactStore
+import rs.masumi.core.typesetting.TYPESETTING_SCHEMA_VERSION
 import rs.masumi.core.typesetting.TypesettingDependencies
 import rs.masumi.core.typesetting.TypesettingError
 import rs.masumi.core.typesetting.TypesettingIdentity
@@ -95,17 +95,19 @@ class TypesettingRunner(
     ): TypesettingRunResult {
         externallyCancelled.set(false)
         val project = requireNotNull(catalog.openProject(projectId)) { "project was not found" }
-        val detectionRun = requireNotNull(catalog.latestPublishedRun(projectId)) {
+        val detectionRun = requireNotNull(catalog.publishedDetectionRuns(projectId).firstOrNull {
+            PipelineArtifactFreshness.detection(it.artifact, project.manifest)
+        }) {
             "completed detection run was not found"
         }
         val currentOcrRun = requireNotNull(
             catalog.publishedOcrRuns(projectId).firstOrNull {
-                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact.runArtifactKey)
+                PipelineArtifactFreshness.ocr(it.artifact, detectionRun.artifact)
             },
         ) { "completed OCR run was not found" }
         val currentTranslationRun = requireNotNull(
             catalog.publishedTranslationRuns(projectId).firstOrNull {
-                PipelineArtifactFreshness.translation(it.artifact, currentOcrRun.artifact.runArtifactKey)
+                PipelineArtifactFreshness.translation(it.artifact, currentOcrRun.artifact)
             },
         ) { "completed translation run was not found" }
         val cleanupRun = requireNotNull(
@@ -118,7 +120,7 @@ class TypesettingRunner(
             )?.takeIf {
                 PipelineArtifactFreshness.cleanup(
                     it.artifact,
-                    currentTranslationRun.artifact.runArtifactKey,
+                    currentTranslationRun.artifact,
                 )
             },
         ) { "completed cleanup run was not found" }
@@ -141,26 +143,32 @@ class TypesettingRunner(
         val dependencies = TypesettingDependencies(
             cleanupRunArtifactKey = cleanupRun.artifact.runArtifactKey,
             policy = policy,
-        )
-        val pageKeys = project.manifest.pages.associate { page ->
-            val cleanupEntry = cleanupRun.artifact.entries.single { it.pageOrder == page.order }
-            page.order to TypesettingIdentity.pageArtifactKey(
-                page.order,
-                page.sourceSha256,
-                cleanupEntry.pageArtifactKey,
-                dependencies,
-            )
-        }
-        val runKey = TypesettingIdentity.runArtifactKey(
-            project.manifest.pages.map { it.order to pageKeys.getValue(it.order) },
-            dependencies,
+            reuseRunArtifactKey = reuseRunArtifactKey.orEmpty(),
+            reprocessPageOrders = reprocessPageOrders.sorted(),
         )
         val store = TypesettingArtifactStore(project.directory)
-        readPublishedResult(store, project, runKey, dependencies)?.let { cached ->
+        val reusable = catalog.latestPublishedTypesettingRun(
+            projectId = projectId,
+            cleanupRunArtifactKey = cleanupRun.artifact.runArtifactKey,
+            policy = policy,
+        )?.takeIf { published ->
+            dependencies.reuseRunArtifactKey.isEmpty() &&
+                dependencies.reprocessPageOrders.isEmpty() &&
+                published.artifact.schemaVersion == TYPESETTING_SCHEMA_VERSION &&
+                published.artifact.dependencies == dependencies &&
+                published.artifact.entries.map { it.pageOrder to it.pageId to it.cleanupPageArtifactKey } ==
+                project.manifest.pages.map { page ->
+                    val upstream = cleanupRun.artifact.entries.single { it.pageOrder == page.order }
+                    page.order to page.pageId to upstream.pageArtifactKey
+                }
+        }
+        reusable?.let { published ->
+            val cached = requireNotNull(readPublishedResult(store, project, published.artifact.runArtifactKey, dependencies))
             onProgress(cached.job.toProgress())
             return cached
         }
-        var job = recoverOrCreateJob(store, project, cleanupRun, pageKeys, runKey, dependencies)
+        var job = recoverOrCreateJob(store, project, cleanupRun, dependencies)
+        val pageKeys = job.pages.associate { it.pageOrder to it.pageArtifactKey }
         store.prepareRun(job)
         val pageArtifacts = mutableMapOf<Int, PageTypesettingArtifact>()
 
@@ -256,6 +264,7 @@ class TypesettingRunner(
                             sourcePage.order,
                             artifactPath,
                             imagePath,
+                            artifactAndPng.second.size.toLong(),
                             typeset,
                             preserved,
                             clock.millis(),
@@ -383,12 +392,11 @@ class TypesettingRunner(
                 return PageTypesettingArtifact(
                     pageId = sourcePage.pageId,
                     pageOrder = sourcePage.order,
-                    sourceSha256 = sourcePage.sourceSha256,
                     cleanupPageArtifactKey = cleanupEntry.pageArtifactKey,
                     pageArtifactKey = pageKey,
                     visibleWidth = rendered.bitmap.width,
                     visibleHeight = rendered.bitmap.height,
-                    renderedImageSha256 = sha256(png),
+                    renderedImageByteLength = png.size.toLong(),
                     dependencies = dependencies,
                     regions = outcomes,
                 ) to png
@@ -417,6 +425,7 @@ class TypesettingRunner(
         val png = Files.readAllBytes(imagePath)
         return artifact.copy(
             pageArtifactKey = pageKey,
+            renderedImageByteLength = png.size.toLong(),
             reusedFromPageArtifactKey = artifact.pageArtifactKey,
             dependencies = dependencies,
         ) to png
@@ -426,12 +435,17 @@ class TypesettingRunner(
         store: TypesettingArtifactStore,
         project: ProjectRef,
         cleanupRun: PublishedCleanupRun,
-        pageKeys: Map<Int, String>,
-        runKey: String,
         dependencies: TypesettingDependencies,
     ): TypesettingJobRecord {
-        val candidate = store.findResumableJob()?.takeIf {
-            it.projectId == project.manifest.projectId && it.runArtifactKey == runKey && it.dependencies == dependencies
+        val candidate = store.findRecoveryCandidates().firstOrNull {
+            it.schemaVersion == TYPESETTING_SCHEMA_VERSION &&
+                it.projectId == project.manifest.projectId &&
+                it.dependencies == dependencies &&
+                it.pages.map { page -> page.pageOrder to page.pageId to page.cleanupPageArtifactKey } ==
+                project.manifest.pages.map { page ->
+                    val upstream = cleanupRun.artifact.entries.single { it.pageOrder == page.order }
+                    page.order to page.pageId to upstream.pageArtifactKey
+                }
         }
         if (candidate != null) {
             candidate.pages.filter { it.state == TypesettingPageState.RUNNING }.forEach {
@@ -448,6 +462,7 @@ class TypesettingRunner(
             return recovered
         }
         val now = clock.millis()
+        val runKey = idSource.nextId()
         return TypesettingJobRecord(
             jobId = idSource.nextId(),
             projectId = project.manifest.projectId,
@@ -460,9 +475,8 @@ class TypesettingRunner(
                 TypesettingJobPage(
                     pageId = page.pageId,
                     pageOrder = page.order,
-                    sourceSha256 = page.sourceSha256,
                     cleanupPageArtifactKey = cleanupEntry.pageArtifactKey,
-                    pageArtifactKey = pageKeys.getValue(page.order),
+                    pageArtifactKey = TypesettingIdentity.pageArtifactKey(runKey, page.order),
                 )
             },
         ).also(store::writeJob)
@@ -550,12 +564,12 @@ class TypesettingRunner(
             TypesettingRunEntry(
                 pageId = page.pageId,
                 pageOrder = page.pageOrder,
-                sourceSha256 = page.sourceSha256,
                 cleanupPageArtifactKey = page.cleanupPageArtifactKey,
                 pageArtifactKey = page.pageArtifactKey,
                 state = page.state,
                 artifactPath = page.artifactPath,
                 imagePath = page.imagePath,
+                imageByteLength = page.imageByteLength,
                 error = page.error,
             )
         },
@@ -599,9 +613,6 @@ class TypesettingRunner(
         currentPageOrder = currentPageOrder,
         errorCode = errorCode,
     )
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun Throwable.safePageErrorCode(): String = when (this) {
         is FatalTypesettingException -> code

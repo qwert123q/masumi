@@ -8,11 +8,11 @@ import java.nio.file.Path
 data class DetectorModelDescriptor(
     val modelId: String,
     val storageKey: String,
+    val storageRevision: String,
     val repository: String,
     val revision: String,
     val fileName: String,
     val byteLength: Long,
-    val sha256: String,
     val license: String,
     val opset: Int,
     val runtimeRevision: String,
@@ -23,7 +23,6 @@ data class DetectorModelDescriptor(
         repository = repository,
         revision = revision,
         fileName = fileName,
-        sha256 = sha256,
         byteLength = byteLength,
         license = license,
         opset = opset,
@@ -44,6 +43,7 @@ data class DetectorModelSignature(
 @Serializable
 data class DetectorModelPackageMetadata(
     val schemaVersion: Int = 1,
+    val storageRevision: String = "",
     val model: DetectorModelRef,
     val signature: DetectorModelSignature,
     val acquiredAtEpochMillis: Long,
@@ -55,7 +55,6 @@ fun interface ModelSignatureValidator {
 
 enum class ModelPackageErrorCode(val safeMessage: String) {
     LENGTH_MISMATCH("Model byte length did not match the pinned package"),
-    HASH_MISMATCH("Model digest did not match the pinned package"),
     SIGNATURE_MISMATCH("Model tensor signature did not match the pinned package"),
     INSTALL_IO("Model package could not be installed"),
 }
@@ -69,11 +68,11 @@ object PinnedComicDetector {
     val descriptor = DetectorModelDescriptor(
         modelId = "ogkalu/comic-text-and-bubble-detector",
         storageKey = "ogkalu--comic-text-and-bubble-detector",
+        storageRevision = "detector-v4-s-int8-r1",
         repository = "ogkalu/comic-text-and-bubble-detector",
         revision = "16e8a622f91fabc6b5b65c96d32d1183f8843546",
         fileName = "detector-v4-s_int8.onnx",
         byteLength = 11_120_765,
-        sha256 = "5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79",
         license = "Apache-2.0",
         opset = 18,
         runtimeRevision = "onnxruntime-android:1.27.0",

@@ -6,12 +6,18 @@ import kotlin.test.assertNull
 
 class TranslationJobReducerTest {
     @Test
-    fun `pending window identity can follow the committed glossary chain`() {
-        var job = TranslationJobReducer.startRunning(TranslationArtifactFixtures.job(), 2L)
+    fun `pending window keeps its persisted identity and accepts a legacy opaque value`() {
+        val legacyKey = "e".repeat(64)
+        var job = TranslationJobReducer.startRunning(
+            TranslationArtifactFixtures.job().copy(
+                windows = TranslationArtifactFixtures.job().windows.map { it.copy(windowArtifactKey = legacyKey) },
+            ),
+            2L,
+        )
 
-        job = TranslationJobReducer.prepareWindow(job, 0, "e".repeat(64), 3L)
+        job = TranslationJobReducer.prepareWindow(job, 0, legacyKey, 3L)
 
-        assertEquals("e".repeat(64), job.windows.single().windowArtifactKey)
+        assertEquals(legacyKey, job.windows.single().windowArtifactKey)
         assertEquals(TranslationWindowState.PENDING, job.windows.single().state)
     }
 

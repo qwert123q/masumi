@@ -8,7 +8,6 @@ import java.io.BufferedOutputStream
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 
 class DetectorModelPackageStore(
     workspaceRoot: Path,
@@ -27,8 +26,8 @@ class DetectorModelPackageStore(
     ): Path {
         validateDescriptor(descriptor)
         require(SAFE_ID.matches(installId)) { "installId contains unsafe characters" }
+        findExistingPackage(descriptor, signatureValidator)?.let { return it }
         val packageDirectory = packageDirectory(descriptor)
-        validateExistingPackage(packageDirectory, descriptor, signatureValidator)?.let { return it }
 
         if (fileSystem.exists(packageDirectory)) {
             fileSystem.deleteRecursively(packageDirectory)
@@ -43,23 +42,21 @@ class DetectorModelPackageStore(
             fileSystem.createDirectories(stagingDirectory.parent)
             fileSystem.createDirectory(stagingDirectory)
             val partFile = stagingDirectory.resolve("model.onnx.part")
-            val copied = copyAndHash(
+            val copiedLength = copy(
                 input = openStream(),
                 target = partFile,
                 expectedLength = descriptor.byteLength,
                 onProgress = onProgress,
             )
-            if (copied.byteLength != descriptor.byteLength) {
+            if (copiedLength != descriptor.byteLength) {
                 throw ModelPackageException(ModelPackageErrorCode.LENGTH_MISMATCH)
-            }
-            if (copied.sha256 != descriptor.sha256) {
-                throw ModelPackageException(ModelPackageErrorCode.HASH_MISMATCH)
             }
 
             val signature = validateSignature(partFile, signatureValidator)
             val modelFile = stagingDirectory.resolve("model.onnx")
             fileSystem.moveFile(partFile, modelFile)
             val metadata = DetectorModelPackageMetadata(
+                storageRevision = descriptor.storageRevision,
                 model = descriptor.toModelRef(),
                 signature = signature,
                 acquiredAtEpochMillis = acquiredAtEpochMillis,
@@ -78,6 +75,24 @@ class DetectorModelPackageStore(
         }
     }
 
+    private fun findExistingPackage(
+        descriptor: DetectorModelDescriptor,
+        signatureValidator: ModelSignatureValidator,
+    ): Path? {
+        val root = packageRoot(descriptor)
+        if (!Files.isDirectory(root)) return null
+        val preferred = packageDirectory(descriptor)
+        val candidates = Files.list(root).use { paths ->
+            paths.iterator().asSequence()
+                .filter(Files::isDirectory)
+                .sortedWith(compareBy<Path> { if (it == preferred) 0 else 1 }.thenBy { it.fileName.toString() })
+                .toList()
+        }
+        return candidates.firstNotNullOfOrNull { directory ->
+            validateExistingPackage(directory, descriptor, signatureValidator)
+        }
+    }
+
     private fun validateExistingPackage(
         packageDirectory: Path,
         descriptor: DetectorModelDescriptor,
@@ -92,19 +107,28 @@ class DetectorModelPackageStore(
             require(metadata.schemaVersion == 1)
             require(metadata.model == descriptor.toModelRef())
             require(Files.size(modelFile) == descriptor.byteLength)
-            require(sha256(modelFile) == descriptor.sha256)
+            require(Files.getLastModifiedTime(modelFile) <= Files.getLastModifiedTime(metadataFile))
             require(signatureValidator.validate(modelFile) == metadata.signature)
+            if (metadata.storageRevision != descriptor.storageRevision) {
+                runCatching {
+                    fileSystem.replaceUtf8(
+                        metadataFile,
+                        json.encodeModelPackageMetadata(
+                            metadata.copy(storageRevision = descriptor.storageRevision),
+                        ),
+                    )
+                }
+            }
             modelFile
         }.getOrNull()
     }
 
-    private fun copyAndHash(
+    private fun copy(
         input: InputStream,
         target: Path,
         expectedLength: Long,
         onProgress: (Long, Long) -> Unit,
-    ): CopyResult {
-        val digest = MessageDigest.getInstance("SHA-256")
+    ): Long {
         var byteLength = 0L
         onProgress(0, expectedLength)
         BufferedInputStream(input).use { source ->
@@ -114,7 +138,6 @@ class DetectorModelPackageStore(
                     val read = source.read(buffer)
                     if (read < 0) break
                     if (read == 0) continue
-                    digest.update(buffer, 0, read)
                     output.write(buffer, 0, read)
                     byteLength += read
                     onProgress(byteLength, expectedLength)
@@ -122,7 +145,7 @@ class DetectorModelPackageStore(
                 output.flush()
             }
         }
-        return CopyResult(byteLength, digest.digest().toHex())
+        return byteLength
     }
 
     private fun validateSignature(
@@ -134,40 +157,21 @@ class DetectorModelPackageStore(
         throw ModelPackageException(ModelPackageErrorCode.SIGNATURE_MISMATCH, failure)
     }
 
-    private fun packageDirectory(descriptor: DetectorModelDescriptor): Path = workspaceRoot
+    private fun packageRoot(descriptor: DetectorModelDescriptor): Path = workspaceRoot
         .resolve("models")
         .resolve(descriptor.storageKey)
-        .resolve(descriptor.sha256)
+
+    private fun packageDirectory(descriptor: DetectorModelDescriptor): Path = packageRoot(descriptor)
+        .resolve(descriptor.storageRevision)
 
     private fun validateDescriptor(descriptor: DetectorModelDescriptor) {
         require(SAFE_ID.matches(descriptor.storageKey)) { "model storageKey contains unsafe characters" }
-        require(SHA256.matches(descriptor.sha256)) { "model sha256 must be lowercase hexadecimal" }
+        require(SAFE_ID.matches(descriptor.storageRevision)) { "model storageRevision contains unsafe characters" }
         require(descriptor.byteLength > 0) { "model byteLength must be positive" }
         require(descriptor.downloadUrl.startsWith("https://")) { "model URL must use HTTPS" }
     }
 
-    private fun sha256(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).buffered().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read == 0) continue
-                digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().toHex()
-    }
-
-    private fun ByteArray.toHex(): String = joinToString(separator = "") { byte ->
-        "%02x".format(byte)
-    }
-
-    private data class CopyResult(val byteLength: Long, val sha256: String)
-
     private companion object {
         val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA256 = Regex("[0-9a-f]{64}")
     }
 }

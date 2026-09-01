@@ -15,7 +15,6 @@ class PinnedPaddleOcrVlTest {
         assertTrue("image16" !in runtime.buildContract)
         assertEquals(OcrModelFileNormalization.GGUF_BF16_TO_F16, descriptor.model.normalization)
         assertEquals(OcrModelFileNormalization.GGUF_BF16_TO_F16, descriptor.projector.normalization)
-        assertTrue(descriptor.model.sha256 != descriptor.model.installedSha256)
-        assertTrue(descriptor.projector.sha256 != descriptor.projector.installedSha256)
+        assertEquals("paddleocr-vl-1.6-f16-v1", descriptor.storageRevision)
     }
 }

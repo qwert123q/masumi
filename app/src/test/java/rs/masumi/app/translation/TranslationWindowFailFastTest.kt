@@ -4,7 +4,6 @@ import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.fail
 import org.junit.Test
-import rs.masumi.core.translation.TranslationArtifactIdentity
 import rs.masumi.core.translation.TranslationBatchItem
 import rs.masumi.core.translation.TranslationBatchWindow
 import rs.masumi.core.translation.TranslationBatchingConfig
@@ -124,7 +123,6 @@ class TranslationWindowFailFastTest {
             ).executeWindow(
                 window = window(sourceTexts),
                 windowKey = "d".repeat(64),
-                inputGlossarySha256 = TranslationArtifactIdentity.glossarySha256(emptyList()),
                 inputGlossary = emptyList(),
                 settings = TranslationProviderSettings(
                     apiUrl = "https://example.invalid/v1",

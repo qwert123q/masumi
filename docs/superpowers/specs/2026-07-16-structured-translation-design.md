@@ -59,7 +59,7 @@ The coordinator processes pages in manifest order and builds deterministic chapt
 
 The first batching revision uses a conservative, deterministic UTF-8 byte estimate, includes the complete system and JSON user messages, and defaults to a `6000` estimated-input-token ceiling with at most `24` preceding context items. The planner greedily fills a window in page/reading order, then trims oldest context before declaring a single item oversized. Oversized source text is isolated and marked rather than truncated or merged into another item.
 
-Glossary updates are validated and merged serially after a successful window. A committed window records the input digest and glossary digest it used. Re-running with a changed OCR artifact, policy, prompt, model, generation settings, or glossary snapshot produces a new cache key.
+Glossary updates are validated and merged serially after a successful window. A committed window records the exact normalized glossary entries it received and produced. Re-running with a changed OCR artifact, policy, prompt, model, generation settings, or glossary snapshot selects new work through those explicit dependencies.
 
 ## Provider boundary
 
@@ -77,9 +77,9 @@ Translation checkpoints at the window and page boundaries. Ordinary process loss
 
 A provider failure never triggers an automatic retry or fallback. A structurally valid item that still contains Japanese or echoes its source may receive one isolated quality repair; if that result is still semantically invalid, the source artwork is retained and the automatic pipeline may finish with a protected-result status.
 
-Each window checkpoint atomically stores its validated item outcomes, input and output glossary digests, complete normalized output glossary, safe provider metadata, token usage, attempt count, and duration before the job journal advances. The next window accepts only the previous trusted checkpoint's output glossary digest. Recovery deletes stale window and affected-page checkpoints before journalling the rewound suffix, so an interrupted cleanup is safe to repeat and later windows cannot reuse results based on an obsolete glossary.
+Each window checkpoint atomically stores its validated item outcomes, complete normalized input and output glossary entries, safe provider metadata, token usage, attempt count, and duration before the job journal advances. The next window accepts only the previous trusted checkpoint's exact output glossary as its input. Recovery deletes stale window and affected-page checkpoints before journalling the rewound suffix, so an interrupted cleanup is safe to repeat and later windows cannot reuse results based on an obsolete glossary.
 
-Page artifacts join terminal window outcomes back to the original page and carry OCR-protected regions separately. After every page is committed, the run publisher atomically exposes `artifact.json`, page translation JSON, the final `glossary.json`, and `report.json`. Cache identity covers the OCR run/page keys, explicit policy and prompt fields, batching limits, protocol, sanitized model, generation settings, initial glossary digest, stable item source text, and role hints; endpoint and credentials remain excluded.
+Page artifacts join terminal window outcomes back to the original page and carry OCR-protected regions separately. After every page is committed, the run publisher atomically exposes `artifact.json`, page translation JSON, the final `glossary.json`, and `report.json`. Reuse compares the OCR run/page IDs, explicit policy and prompt fields, batching limits, protocol, sanitized model, generation settings, initial glossary entries, stable item source text, and role hints; endpoint and credentials remain excluded.
 
 ## Acceptance boundary
 

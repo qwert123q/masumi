@@ -4,15 +4,18 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import rs.masumi.app.ocr.currentOcrDependencies
-import rs.masumi.core.cleanup.CleanupIdentity
 import rs.masumi.core.cleanup.CleanupPageState
 import rs.masumi.core.cleanup.CleanupRunArtifact
 import rs.masumi.core.cleanup.CleanupRunEntry
-import rs.masumi.core.ocr.OcrIdentity
+import rs.masumi.core.detection.DetectionPageState
+import rs.masumi.core.detection.DetectionPreprocessingConfig
+import rs.masumi.core.detection.DetectionRunArtifact
+import rs.masumi.core.detection.DetectionRunEntry
+import rs.masumi.core.detection.DetectionThresholdConfig
+import rs.masumi.core.modelpackage.PinnedComicDetector
 import rs.masumi.core.ocr.OcrPageState
 import rs.masumi.core.ocr.OcrRunArtifact
 import rs.masumi.core.ocr.OcrRunEntry
-import rs.masumi.core.translation.TranslationArtifactIdentity
 import rs.masumi.core.translation.TranslationBatchingConfig
 import rs.masumi.core.translation.TranslationDependencies
 import rs.masumi.core.translation.TranslationOutputValidationConfig
@@ -24,26 +27,21 @@ import rs.masumi.core.translation.TranslationRunEntry
 
 class PipelineArtifactFreshnessTest {
     @Test
-    fun `ocr requires current dependencies and a self-consistent current identity`() {
-        val detectionRun = sha('d')
-        val detectionPage = sha('e')
-        val source = sha('a')
+    fun `ocr requires current dependencies and exact detection lineage`() {
+        val detection = detectionArtifact()
         val dependencies = currentOcrDependencies()
-        val pageKey = OcrIdentity.pageArtifactKey(source, detectionPage, dependencies)
-        val runKey = OcrIdentity.runArtifactKey(listOf(0 to pageKey))
         val current = OcrRunArtifact(
-            runArtifactKey = runKey,
-            projectId = "project",
-            detectionRunArtifactKey = detectionRun,
+            runArtifactKey = OCR_RUN_ID,
+            projectId = PROJECT_ID,
+            detectionRunArtifactKey = detection.runArtifactKey,
             createdAtEpochMillis = 1L,
             dependencies = dependencies,
             entries = listOf(
                 OcrRunEntry(
                     order = 0,
-                    pageId = source,
-                    sourceSha256 = source,
-                    detectionPageArtifactKey = detectionPage,
-                    pageArtifactKey = pageKey,
+                    pageId = PAGE_ID,
+                    detectionPageArtifactKey = DETECTION_PAGE_ID,
+                    pageArtifactKey = OCR_PAGE_ID,
                     state = OcrPageState.COMMITTED,
                     artifactPath = "page.json",
                     previewPath = "preview.png",
@@ -51,81 +49,73 @@ class PipelineArtifactFreshnessTest {
             ),
         )
 
-        assertTrue(PipelineArtifactFreshness.ocr(current, detectionRun))
-        assertFalse(PipelineArtifactFreshness.ocr(current.copy(runArtifactKey = sha('f')), detectionRun))
-        val stalePageIdentity = sha('9')
+        assertTrue(PipelineArtifactFreshness.ocr(current, detection))
+        assertFalse(
+            PipelineArtifactFreshness.ocr(
+                current.copy(detectionRunArtifactKey = "detection-run-stale"),
+                detection,
+            ),
+        )
         assertFalse(
             PipelineArtifactFreshness.ocr(
                 current.copy(
-                    runArtifactKey = OcrIdentity.runArtifactKey(listOf(0 to stalePageIdentity)),
-                    entries = current.entries.map { it.copy(pageArtifactKey = stalePageIdentity) },
+                    entries = current.entries.map {
+                        it.copy(detectionPageArtifactKey = "detection-page-stale")
+                    },
                 ),
-                detectionRun,
+                detection,
             ),
         )
 
         val legacyDependencies = dependencies.copy(
             crop = dependencies.crop.copy(revision = "three-crops-mobile-v3"),
         )
-        val legacyPageKey = OcrIdentity.pageArtifactKey(source, detectionPage, legacyDependencies)
-        val legacy = current.copy(
-            runArtifactKey = OcrIdentity.runArtifactKey(listOf(0 to legacyPageKey)),
-            dependencies = legacyDependencies,
-            entries = current.entries.map { it.copy(pageArtifactKey = legacyPageKey) },
+        assertFalse(
+            PipelineArtifactFreshness.ocr(
+                current.copy(dependencies = legacyDependencies),
+                detection,
+            ),
         )
-        assertFalse(PipelineArtifactFreshness.ocr(legacy, detectionRun))
     }
 
     @Test
-    fun `translation rejects a stale key even when missing legacy fields decode to current defaults`() {
-        val ocrRun = sha('b')
-        val ocrPage = sha('c')
-        val dependencies = TranslationDependencies(
-            ocrRunArtifactKey = ocrRun,
-            policy = TranslationPolicy(),
-            prompt = TranslationPromptRef(),
-            batching = TranslationBatchingConfig(),
-            outputValidation = TranslationOutputValidationConfig(),
-            provider = TranslationProviderDependency(
-                modelId = "model",
-                temperature = 0.0,
-                maximumOutputTokens = 4096,
-                requestJsonObjectFormat = true,
-            ),
-            initialGlossarySha256 = TranslationArtifactIdentity.glossarySha256(emptyList()),
-        )
-        val pageKey = TranslationArtifactIdentity.pageArtifactKey(ocrPage, dependencies)
-        val runKey = TranslationArtifactIdentity.runArtifactKey(listOf(0 to pageKey), dependencies)
+    fun `translation requires current configuration and exact ocr lineage`() {
+        val ocr = ocrArtifact()
+        val dependencies = translationDependencies(ocr.runArtifactKey)
         val current = TranslationRunArtifact(
-            runArtifactKey = runKey,
-            projectId = "project",
+            runArtifactKey = TRANSLATION_RUN_ID,
+            projectId = PROJECT_ID,
             createdAtEpochMillis = 1L,
             dependencies = dependencies,
             entries = listOf(
                 TranslationRunEntry(
-                    pageId = sha('a'),
+                    pageId = PAGE_ID,
                     pageOrder = 0,
-                    ocrPageArtifactKey = ocrPage,
-                    pageArtifactKey = pageKey,
+                    ocrPageArtifactKey = OCR_PAGE_ID,
+                    pageArtifactKey = TRANSLATION_PAGE_ID,
                     artifactPath = "translation.json",
                 ),
             ),
             glossaryPath = "glossary.json",
         )
 
-        assertTrue(PipelineArtifactFreshness.translation(current, ocrRun))
-        assertFalse(PipelineArtifactFreshness.translation(current.copy(runArtifactKey = sha('f')), ocrRun))
-        val stalePageIdentity = sha('9')
+        assertTrue(PipelineArtifactFreshness.translation(current, ocr))
         assertFalse(
             PipelineArtifactFreshness.translation(
                 current.copy(
-                    runArtifactKey = TranslationArtifactIdentity.runArtifactKey(
-                        listOf(0 to stalePageIdentity),
-                        dependencies,
-                    ),
-                    entries = current.entries.map { it.copy(pageArtifactKey = stalePageIdentity) },
+                    dependencies = dependencies.copy(ocrRunArtifactKey = "ocr-run-stale"),
                 ),
-                ocrRun,
+                ocr,
+            ),
+        )
+        assertFalse(
+            PipelineArtifactFreshness.translation(
+                current.copy(
+                    entries = current.entries.map {
+                        it.copy(ocrPageArtifactKey = "ocr-page-stale")
+                    },
+                ),
+                ocr,
             ),
         )
         assertFalse(
@@ -135,50 +125,59 @@ class PipelineArtifactFreshnessTest {
                         outputValidation = TranslationOutputValidationConfig("legacy-validator"),
                     ),
                 ),
-                ocrRun,
+                ocr,
             ),
         )
     }
 
     @Test
-    fun `cleanup requires current neural model and self-consistent identity`() {
-        val translationRun = sha('b')
-        val source = sha('a')
-        val translationPage = sha('c')
-        val dependencies = currentCleanupDependencies(translationRun)
-        val pageKey = CleanupIdentity.pageArtifactKey(
-            0,
-            source,
-            translationPage,
-            dependencies,
-        )
+    fun `cleanup requires current neural models and exact translation lineage`() {
+        val translation = translationArtifact()
+        val dependencies = currentCleanupDependencies(translation.runArtifactKey)
         val current = CleanupRunArtifact(
-            runArtifactKey = CleanupIdentity.runArtifactKey(listOf(0 to pageKey), dependencies),
-            projectId = "project",
+            runArtifactKey = CLEANUP_RUN_ID,
+            projectId = PROJECT_ID,
             createdAtEpochMillis = 1L,
             dependencies = dependencies,
             entries = listOf(
                 CleanupRunEntry(
-                    pageId = source,
+                    pageId = PAGE_ID,
                     pageOrder = 0,
-                    sourceSha256 = source,
-                    translationPageArtifactKey = translationPage,
-                    pageArtifactKey = pageKey,
+                    translationPageArtifactKey = TRANSLATION_PAGE_ID,
+                    pageArtifactKey = CLEANUP_PAGE_ID,
                     state = CleanupPageState.COMMITTED,
                     artifactPath = "cleanup.json",
                     imagePath = "cleaned.png",
+                    imageByteLength = 1L,
                 ),
             ),
         )
 
-        assertTrue(PipelineArtifactFreshness.cleanup(current, translationRun))
-        assertFalse(PipelineArtifactFreshness.cleanup(current.copy(runArtifactKey = sha('f')), translationRun))
+        assertTrue(PipelineArtifactFreshness.cleanup(current, translation))
         assertFalse(
             PipelineArtifactFreshness.cleanup(
                 current.copy(
-                    dependencies = dependencies.copy(neuralModel = null),
+                    dependencies = dependencies.copy(
+                        translationRunArtifactKey = "translation-run-stale",
+                    ),
                 ),
-                translationRun,
+                translation,
+            ),
+        )
+        assertFalse(
+            PipelineArtifactFreshness.cleanup(
+                current.copy(
+                    entries = current.entries.map {
+                        it.copy(translationPageArtifactKey = "translation-page-stale")
+                    },
+                ),
+                translation,
+            ),
+        )
+        assertFalse(
+            PipelineArtifactFreshness.cleanup(
+                current.copy(dependencies = dependencies.copy(neuralModel = null)),
+                translation,
             ),
         )
         assertFalse(
@@ -188,10 +187,91 @@ class PipelineArtifactFreshnessTest {
                         neuralModel = dependencies.neuralModel?.copy(revision = "stale-revision"),
                     ),
                 ),
-                translationRun,
+                translation,
             ),
         )
     }
 
-    private fun sha(character: Char): String = character.toString().repeat(64)
+    private fun detectionArtifact() = DetectionRunArtifact(
+        runArtifactKey = DETECTION_RUN_ID,
+        projectId = PROJECT_ID,
+        createdAtEpochMillis = 1L,
+        model = PinnedComicDetector.descriptor.toModelRef(),
+        preprocessing = DetectionPreprocessingConfig(),
+        thresholds = DetectionThresholdConfig(),
+        entries = listOf(
+            DetectionRunEntry(
+                order = 0,
+                pageId = PAGE_ID,
+                pageArtifactKey = DETECTION_PAGE_ID,
+                state = DetectionPageState.COMMITTED,
+                regionsPath = "regions.json",
+                previewPath = "preview.png",
+            ),
+        ),
+    )
+
+    private fun ocrArtifact() = OcrRunArtifact(
+        runArtifactKey = OCR_RUN_ID,
+        projectId = PROJECT_ID,
+        detectionRunArtifactKey = DETECTION_RUN_ID,
+        createdAtEpochMillis = 1L,
+        dependencies = currentOcrDependencies(),
+        entries = listOf(
+            OcrRunEntry(
+                order = 0,
+                pageId = PAGE_ID,
+                detectionPageArtifactKey = DETECTION_PAGE_ID,
+                pageArtifactKey = OCR_PAGE_ID,
+                state = OcrPageState.COMMITTED,
+                artifactPath = "ocr.json",
+                previewPath = "preview.png",
+            ),
+        ),
+    )
+
+    private fun translationArtifact() = TranslationRunArtifact(
+        runArtifactKey = TRANSLATION_RUN_ID,
+        projectId = PROJECT_ID,
+        createdAtEpochMillis = 1L,
+        dependencies = translationDependencies(OCR_RUN_ID),
+        entries = listOf(
+            TranslationRunEntry(
+                pageId = PAGE_ID,
+                pageOrder = 0,
+                ocrPageArtifactKey = OCR_PAGE_ID,
+                pageArtifactKey = TRANSLATION_PAGE_ID,
+                artifactPath = "translation.json",
+            ),
+        ),
+        glossaryPath = "glossary.json",
+    )
+
+    private fun translationDependencies(ocrRunId: String) = TranslationDependencies(
+        ocrRunArtifactKey = ocrRunId,
+        policy = TranslationPolicy(),
+        prompt = TranslationPromptRef(),
+        batching = TranslationBatchingConfig(),
+        outputValidation = TranslationOutputValidationConfig(),
+        provider = TranslationProviderDependency(
+            modelId = "model",
+            temperature = 0.0,
+            maximumOutputTokens = 4096,
+            requestJsonObjectFormat = true,
+        ),
+        initialGlossary = emptyList(),
+    )
+
+    private companion object {
+        const val PROJECT_ID = "project"
+        const val PAGE_ID = "page-1"
+        const val DETECTION_RUN_ID = "detection-run-current"
+        const val DETECTION_PAGE_ID = "detection-page-current"
+        const val OCR_RUN_ID = "ocr-run-current"
+        const val OCR_PAGE_ID = "ocr-page-current"
+        const val TRANSLATION_RUN_ID = "translation-run-current"
+        const val TRANSLATION_PAGE_ID = "translation-page-current"
+        const val CLEANUP_RUN_ID = "cleanup-run-current"
+        const val CLEANUP_PAGE_ID = "cleanup-page-current"
+    }
 }

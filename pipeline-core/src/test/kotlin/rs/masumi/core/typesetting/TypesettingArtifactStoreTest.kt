@@ -32,7 +32,7 @@ class TypesettingArtifactStoreTest {
         store.writeJob(job)
         val artifact = TypesettingFixtures.artifact(png)
         val paths = store.commitPage(job, artifact, png)
-        job = TypesettingJobReducer.commitPage(job, 0, paths.first, paths.second, 1, 0, 4L)
+        job = TypesettingJobReducer.commitPage(job, 0, paths.first, paths.second, png.size.toLong(), 1, 0, 4L)
         job = TypesettingJobReducer.finishSuccess(job, 5L)
         store.writeJob(job)
         val run = TypesettingRunArtifact(
@@ -44,12 +44,12 @@ class TypesettingArtifactStoreTest {
                 TypesettingRunEntry(
                     pageId = it.pageId,
                     pageOrder = it.pageOrder,
-                    sourceSha256 = it.sourceSha256,
                     cleanupPageArtifactKey = it.cleanupPageArtifactKey,
                     pageArtifactKey = it.pageArtifactKey,
                     state = it.state,
                     artifactPath = it.artifactPath,
                     imagePath = it.imagePath,
+                    imageByteLength = it.imageByteLength,
                 )
             },
         )
@@ -79,8 +79,35 @@ class TypesettingArtifactStoreTest {
 
         // Local immutable artifacts are not deep-hashed again on every
         // catalog/page read after their atomic publication.
-        Files.write(published.resolve(paths.second), "changed-local-bytes".toByteArray())
+        Files.write(published.resolve(paths.second), "changed-png!!".toByteArray())
         assertEquals(run, store.readPublishedRun(job.runArtifactKey))
         assertEquals(artifact, store.readPublishedPage(job.runArtifactKey, run.entries.single()))
+
+        // Old published JSON had only digest metadata. Decode it with the new
+        // field absent and validate by the ordinary non-zero file length.
+        val legacyDigest = "a".repeat(64)
+        Files.writeString(
+            published.resolve(paths.first),
+            rs.masumi.core.serialization.TypesettingJson().encodePageArtifact(artifact)
+                .replace(
+                    "\"renderedImageByteLength\": ${png.size}",
+                    "\"renderedImageSha256\": \"$legacyDigest\"",
+                ),
+        )
+        Files.writeString(
+            published.resolve("artifact.json"),
+            rs.masumi.core.serialization.TypesettingJson().encodeRun(run)
+                .replace(
+                    "\"imageByteLength\": ${png.size}",
+                    "\"renderedImageSha256\": \"$legacyDigest\"",
+                ),
+        )
+        val legacyRun = assertNotNull(store.readPublishedRun(job.runArtifactKey))
+        assertEquals(0L, legacyRun.entries.single().imageByteLength)
+        assertEquals(
+            0L,
+            assertNotNull(store.readPublishedPage(job.runArtifactKey, legacyRun.entries.single()))
+                .renderedImageByteLength,
+        )
     }
 }

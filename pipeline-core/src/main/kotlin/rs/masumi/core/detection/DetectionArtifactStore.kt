@@ -2,6 +2,7 @@ package rs.masumi.core.detection
 
 import rs.masumi.core.io.NioProjectFileSystem
 import rs.masumi.core.io.ProjectFileSystem
+import rs.masumi.core.identity.SafeOpaqueId
 import rs.masumi.core.serialization.DetectionJson
 import java.nio.file.Path
 
@@ -13,15 +14,15 @@ class DetectionArtifactStore(
     private val projectDirectory = projectDirectory.toAbsolutePath().normalize()
 
     fun writeJob(job: DetectionJobRecord) {
-        requireSafeId(job.jobId, "jobId")
-        requireSha256(job.runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(job.jobId, "jobId")
+        SafeOpaqueId.require(job.runArtifactKey, "runArtifactKey")
         val jobsDirectory = projectDirectory.resolve("jobs")
         fileSystem.createDirectories(jobsDirectory)
         fileSystem.replaceUtf8(jobsDirectory.resolve("${job.jobId}.json"), json.encodeJob(job))
     }
 
     fun readJob(jobId: String): DetectionJobRecord? {
-        requireSafeId(jobId, "jobId")
+        SafeOpaqueId.require(jobId, "jobId")
         val path = projectDirectory.resolve("jobs").resolve("$jobId.json")
         if (!fileSystem.exists(path)) return null
         val job = json.decodeJob(fileSystem.readUtf8(path))
@@ -32,9 +33,12 @@ class DetectionArtifactStore(
     fun findLatestJob(): DetectionJobRecord? = readAllJobs()
         .maxWithOrNull(compareBy<DetectionJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
 
-    fun findResumableJob(): DetectionJobRecord? = readAllJobs()
+    fun findRecoveryCandidates(): List<DetectionJobRecord> = readAllJobs()
         .filter { job -> job.status.isResumable() }
-        .maxWithOrNull(compareBy<DetectionJobRecord> { it.updatedAtEpochMillis }.thenBy { it.jobId })
+        .sortedWith(compareByDescending<DetectionJobRecord> { it.updatedAtEpochMillis }.thenByDescending { it.jobId })
+        .toList()
+
+    fun findResumableJob(): DetectionJobRecord? = findRecoveryCandidates().firstOrNull()
 
     private fun readAllJobs(): Sequence<DetectionJobRecord> = fileSystem
         .list(projectDirectory.resolve("jobs"))
@@ -70,8 +74,8 @@ class DetectionArtifactStore(
             expectedPreprocessing = job.preprocessing,
             expectedThresholds = job.thresholds,
         )
-        requireSha256(pageArtifact.pageId, "pageId")
-        requireSha256(pageArtifact.pageArtifactKey, "pageArtifactKey")
+        SafeOpaqueId.require(pageArtifact.pageId, "pageId")
+        SafeOpaqueId.require(pageArtifact.pageArtifactKey, "pageArtifactKey")
         val matchingPages = job.pages.filter { it.pageId == pageArtifact.pageId }
         require(matchingPages.isNotEmpty()) { "page does not belong to job" }
         require(matchingPages.all { it.state == DetectionPageState.RUNNING }) { "page must be running" }
@@ -165,7 +169,7 @@ class DetectionArtifactStore(
     }
 
     fun readPublishedRun(runArtifactKey: String): DetectionRunArtifact? {
-        requireSha256(runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(runArtifactKey, "runArtifactKey")
         val directory = publishedDirectory(runArtifactKey)
         val artifactPath = directory.resolve("artifact.json")
         if (!fileSystem.exists(artifactPath)) return null
@@ -178,7 +182,7 @@ class DetectionArtifactStore(
     }
 
     fun readPublishedReport(runArtifactKey: String): DetectionReport? {
-        requireSha256(runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(runArtifactKey, "runArtifactKey")
         val reportPath = publishedDirectory(runArtifactKey).resolve("report.json")
         if (!fileSystem.exists(reportPath)) return null
         return runCatching {
@@ -228,7 +232,6 @@ class DetectionArtifactStore(
     ) {
         require(artifact.schemaVersion == DETECTION_SCHEMA_VERSION) { "page schema mismatch" }
         require(artifact.pageId == expectedPageId) { "page identity mismatch" }
-        require(artifact.sourceSha256 == expectedPageId) { "source digest mismatch" }
         require(artifact.pageArtifactKey == expectedPageArtifactKey) { "page artifact key mismatch" }
         require(artifact.visibleWidth > 0 && artifact.visibleHeight > 0) { "page dimensions are invalid" }
         require(artifact.model == expectedModel) { "page model dependency mismatch" }
@@ -243,8 +246,8 @@ class DetectionArtifactStore(
     }
 
     private fun checkpointDirectory(job: DetectionJobRecord): Path {
-        requireSafeId(job.jobId, "jobId")
-        requireSha256(job.runArtifactKey, "runArtifactKey")
+        SafeOpaqueId.require(job.jobId, "jobId")
+        SafeOpaqueId.require(job.runArtifactKey, "runArtifactKey")
         return projectDirectory
             .resolve("staging")
             .resolve("detection")
@@ -264,14 +267,6 @@ class DetectionArtifactStore(
         val resolved = root.resolve(relativePath).normalize()
         require(resolved.startsWith(root.normalize())) { "relative path escapes artifact root" }
         return resolved
-    }
-
-    private fun requireSafeId(value: String, field: String) {
-        require(SAFE_ID.matches(value)) { "$field contains unsafe characters" }
-    }
-
-    private fun requireSha256(value: String, field: String) {
-        require(SHA256.matches(value)) { "$field must be a lowercase SHA-256 digest" }
     }
 
     private fun previewFileName(order: Int): String {
@@ -296,8 +291,4 @@ class DetectionArtifactStore(
         this == DetectionJobStatus.SUCCEEDED ||
             this == DetectionJobStatus.SUCCEEDED_WITH_PRESERVED_PAGES
 
-    private companion object {
-        val SAFE_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA256 = Regex("[0-9a-f]{64}")
-    }
 }

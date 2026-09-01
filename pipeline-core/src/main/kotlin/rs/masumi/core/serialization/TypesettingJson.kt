@@ -13,7 +13,7 @@ class TypesettingJson(
         prettyPrint = true
         encodeDefaults = true
         explicitNulls = true
-        ignoreUnknownKeys = false
+        ignoreUnknownKeys = true
     },
 ) {
     fun encodePageArtifact(value: PageTypesettingArtifact): String = json.encodeToString(value)

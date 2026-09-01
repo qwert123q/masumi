@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import rs.masumi.app.detection.PageBitmapDecoder
@@ -129,7 +128,6 @@ class ExportRunner(
                 if (checkpoint.state == ExportPageState.COMMITTED) {
                     val valid = destination.matches(
                         checkpoint.outputName,
-                        requireNotNull(checkpoint.outputSha256),
                         checkpoint.byteLength,
                     )
                     if (valid) return@forEach
@@ -149,18 +147,15 @@ class ExportRunner(
                 )
                 val resolved = resolvePage(project, sourcePage, typesettingRun, cleanupRun)
                 if (resolved.source != checkpoint.source) throw FatalExportException("EXPORT_SOURCE_CHANGED")
-                val digest = sha256(resolved.bytes)
                 val result = destination.publish(
                     checkpoint.outputName,
                     resolved.bytes,
-                    digest,
                     ::isCancelled,
                 )
                 job = persist(
                     ExportJobReducer.commitPage(
                         job,
                         sourcePage.order,
-                        digest,
                         resolved.bytes.size.toLong(),
                         result.reusedExisting,
                         clock.millis(),
@@ -216,11 +211,13 @@ class ExportRunner(
         dependencies: ExportDependencies,
         requestedDestinationUri: String?,
     ): ExportJobRecord {
-        val requestedDestinationKey = requestedDestinationUri?.let(ExportIdentity::destinationKey)
-        val candidate = store.findRecoverableJob()?.takeIf { existing ->
+        val plannedPages = planPages(project, typesettingRun, cleanupRun)
+        val candidate = store.findRecoveryCandidates().firstOrNull { existing ->
             existing.projectId == project.manifest.projectId &&
+                existing.schemaVersion == rs.masumi.core.exporting.EXPORT_SCHEMA_VERSION &&
                 existing.dependencies == dependencies &&
-                (requestedDestinationKey == null || existing.destinationKey == requestedDestinationKey)
+                (requestedDestinationUri == null || existing.destinationUri == requestedDestinationUri) &&
+                existing.pages.map { it.lineage() } == plannedPages.map { it.lineage() }
         }
         if (candidate != null) {
             val recovered = when (candidate.status) {
@@ -235,48 +232,61 @@ class ExportRunner(
             return recovered
         }
         val destination = requireNotNull(requestedDestinationUri) { "destination was not selected" }
-        val destinationKey = requireNotNull(requestedDestinationKey)
-        val exportKey = ExportIdentity.exportKey(destinationKey, dependencies)
-        val total = project.manifest.pages.size
         val now = clock.millis()
         return ExportJobRecord(
             jobId = idSource.nextId(),
             projectId = project.manifest.projectId,
-            exportKey = exportKey,
+            exportKey = idSource.nextId(),
             destinationUri = destination,
-            destinationKey = destinationKey,
+            destinationKey = idSource.nextId(),
             startedAtEpochMillis = now,
             updatedAtEpochMillis = now,
             dependencies = dependencies,
-            pages = project.manifest.pages.sortedBy(PageRecord::order).map { page ->
-                val typesettingEntry = typesettingRun.artifact.entries.single { it.pageOrder == page.order }
-                val cleanupEntry = cleanupRun.artifact.entries.single { it.pageOrder == page.order }
-                val source = when {
-                    typesettingEntry.state == TypesettingPageState.COMMITTED -> ExportPageSource.FLATTENED
-                    cleanupEntry.state == CleanupPageState.COMMITTED -> ExportPageSource.CLEANED_FALLBACK
-                    else -> ExportPageSource.SOURCE_FALLBACK
-                }
-                // Exported bytes are copied verbatim from the artifact, so the
-                // output name inherits the artifact's encoding; only the raw
-                // source fallback is encoded here and gets to pick its own.
-                val imageExtension = when (source) {
-                    ExportPageSource.FLATTENED ->
-                        imageExtensionOf(requireNotNull(typesettingEntry.imagePath))
-                    ExportPageSource.CLEANED_FALLBACK ->
-                        imageExtensionOf(requireNotNull(cleanupEntry.imagePath))
-                    ExportPageSource.SOURCE_FALLBACK -> PageImageEncoder.preferredExtension
-                }
-                ExportJobPage(
-                    pageId = page.pageId,
-                    pageOrder = page.order,
-                    sourceSha256 = page.sourceSha256,
-                    typesettingPageArtifactKey = typesettingEntry.pageArtifactKey,
-                    outputName = ExportIdentity.outputName(page.order, total, policy, imageExtension),
-                    source = source,
-                )
-            },
+            pages = plannedPages,
         ).also(store::writeJob)
     }
+
+    private fun planPages(
+        project: ProjectRef,
+        typesettingRun: PublishedTypesettingRun,
+        cleanupRun: PublishedCleanupRun,
+    ): List<ExportJobPage> {
+        val total = project.manifest.pages.size
+        return project.manifest.pages.sortedBy(PageRecord::order).map { page ->
+            val typesettingEntry = typesettingRun.artifact.entries.single { it.pageOrder == page.order }
+            val cleanupEntry = cleanupRun.artifact.entries.single { it.pageOrder == page.order }
+            val source = when {
+                typesettingEntry.state == TypesettingPageState.COMMITTED -> ExportPageSource.FLATTENED
+                cleanupEntry.state == CleanupPageState.COMMITTED -> ExportPageSource.CLEANED_FALLBACK
+                else -> ExportPageSource.SOURCE_FALLBACK
+            }
+            // Exported bytes are copied verbatim from the artifact, so the
+            // output name inherits the artifact's encoding; only the raw
+            // source fallback is encoded here and gets to pick its own.
+            val imageExtension = when (source) {
+                ExportPageSource.FLATTENED ->
+                    imageExtensionOf(requireNotNull(typesettingEntry.imagePath))
+                ExportPageSource.CLEANED_FALLBACK ->
+                    imageExtensionOf(requireNotNull(cleanupEntry.imagePath))
+                ExportPageSource.SOURCE_FALLBACK -> PageImageEncoder.preferredExtension
+            }
+            ExportJobPage(
+                pageId = page.pageId,
+                pageOrder = page.order,
+                typesettingPageArtifactKey = typesettingEntry.pageArtifactKey,
+                outputName = ExportIdentity.outputName(page.order, total, policy, imageExtension),
+                source = source,
+            )
+        }
+    }
+
+    private fun ExportJobPage.lineage(): ExportPageLineage = ExportPageLineage(
+        pageId = pageId,
+        pageOrder = pageOrder,
+        typesettingPageArtifactKey = typesettingPageArtifactKey,
+        outputName = outputName,
+        source = source,
+    )
 
     private fun resolvePage(
         project: ProjectRef,
@@ -389,9 +399,13 @@ class ExportRunner(
         else -> "EXPORT_FAILED"
     }
 
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
-
+    private data class ExportPageLineage(
+        val pageId: String,
+        val pageOrder: Int,
+        val typesettingPageArtifactKey: String,
+        val outputName: String,
+        val source: ExportPageSource,
+    )
     private data class ResolvedExportPage(val bytes: ByteArray, val source: ExportPageSource)
     private class FatalExportException(val code: String) : RuntimeException(code)
 }

@@ -79,7 +79,6 @@ data class OcrError(
 data class OcrModelFileRef(
     val fileName: String,
     val byteLength: Long,
-    val sha256: String,
 )
 
 @Serializable
@@ -89,7 +88,6 @@ data class OcrModelPackageRef(
     val revision: String,
     val model: OcrModelFileRef,
     val projector: OcrModelFileRef,
-    val packageSha256: String,
     val license: String,
 )
 
@@ -257,7 +255,6 @@ data class OcrRegionArtifact(
 data class PageOcrArtifact(
     val schemaVersion: Int = OCR_SCHEMA_VERSION,
     val pageId: String,
-    val sourceSha256: String,
     val detectionPageArtifactKey: String,
     val pageArtifactKey: String,
     val visibleWidth: Int,
@@ -280,7 +277,6 @@ data class OcrRegionCheckpoint(
 data class OcrJobPage(
     val order: Int,
     val pageId: String,
-    val sourceSha256: String,
     val detectionPageArtifactKey: String,
     val pageArtifactKey: String,
     val state: OcrPageState = OcrPageState.PENDING,
@@ -310,7 +306,6 @@ data class OcrJobRecord(
 data class OcrRunEntry(
     val order: Int,
     val pageId: String,
-    val sourceSha256: String,
     val detectionPageArtifactKey: String,
     val pageArtifactKey: String,
     val state: OcrPageState,
